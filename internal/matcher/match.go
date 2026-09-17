@@ -90,6 +90,8 @@ type Result struct {
 	Poster_path        string
 	Number_of_seasons  int
 	Number_of_episodes int
+	First_air_date     string
+	Last_air_date      string
 	Candidates         []Candidate
 	Warnings           []string
 }
@@ -420,6 +422,8 @@ func (m *Matcher) fill_from_tv_id(ctx context.Context, result *Result, id int) e
 	result.Genres = genre_names(details.Genres)
 	result.Number_of_seasons = details.Number_of_seasons
 	result.Number_of_episodes = details.Number_of_episodes
+	result.First_air_date = details.First_air_date
+	result.Last_air_date = details.Last_air_date
 	result.Poster_path = details.Poster_path
 	return nil
 }

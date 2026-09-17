@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
 	"github.com/cybersouris/tomovee/internal/tmdb"
 	"github.com/cybersouris/tomovee/internal/webui"
@@ -192,6 +195,41 @@ func Test_settings_update(t *testing.T) {
 	}
 	if !body.Tmdb_configured {
 		t.Errorf("tmdb_configured = false")
+	}
+}
+
+func Test_poster_prune_removes_unreferenced(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	if _, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Keep", Poster_path: "/keep.jpg", Status: "matched",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	dir := t.TempDir()
+	for _, name := range []string{"1.jpg", "99.jpg"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	server.posters = poster_cache.New(poster_cache.Options{Dir: dir})
+
+	response := do_request(t, server, http.MethodPost, "/api/v1/posters/prune", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("prune status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[struct {
+		Removed int `json:"removed"`
+	}](t, response)
+	if body.Removed != 1 {
+		t.Errorf("removed = %d, want 1", body.Removed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "1.jpg")); err != nil {
+		t.Errorf("referenced poster removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "99.jpg")); !os.IsNotExist(err) {
+		t.Errorf("unreferenced poster kept")
 	}
 }
 

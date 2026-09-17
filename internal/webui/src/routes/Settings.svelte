@@ -6,10 +6,22 @@
   let error = '';
   let saving = false;
   let saved = false;
+  let prune_message = '';
 
   async function load() {
     try {
       settings = await api_get('/api/v1/settings');
+    } catch (err) {
+      error = err.message;
+    }
+  }
+
+  async function prune() {
+    prune_message = '';
+    error = '';
+    try {
+      const data = await api_send('/api/v1/posters/prune', 'POST', {});
+      prune_message = `Removed ${data.removed} cached poster${data.removed === 1 ? '' : 's'}.`;
     } catch (err) {
       error = err.message;
     }
@@ -110,6 +122,13 @@
     <p>
       <button on:click={save} disabled={saving}>Save</button>
       {#if saved}<span class="good"> Saved.</span>{/if}
+    </p>
+
+    <h2>Poster cache</h2>
+    <p class="muted">Remove cached images that no longer belong to a catalogue entry.</p>
+    <p>
+      <button class="secondary" on:click={prune}>Prune poster cache</button>
+      {#if prune_message}<span class="good"> {prune_message}</span>{/if}
     </p>
   {/if}
 </section>

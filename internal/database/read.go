@@ -339,3 +339,23 @@ func (s *Store) attach_genres(ctx context.Context, entries []Catalog_entry) erro
 	}
 	return nil
 }
+
+// List_poster_refs returns the ids of catalog entries that have a poster path.
+// It is used by the poster cache to determine which images to keep.
+func (s *Store) List_poster_refs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.db.db.QueryContext(ctx,
+		"SELECT id FROM catalog_entry WHERE poster_path IS NOT NULL AND poster_path != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	refs := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		refs[id] = true
+	}
+	return refs, rows.Err()
+}

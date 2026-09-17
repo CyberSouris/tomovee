@@ -18,6 +18,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/metacache"
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
@@ -116,7 +117,7 @@ type pipeline struct {
 // build_pipeline assembles the matching pipeline from the configured API keys
 // and optional offline dataset. Missing keys are warnings, not errors: the
 // pipeline degrades gracefully per the specification.
-func build_pipeline(logger *slog.Logger, cfg *config.Config) (*pipeline, error) {
+func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Store) (*pipeline, error) {
 	opts := matcher.Options{Logger: logger}
 
 	if cfg.Api.Opensubtitles_api_key != "" {
@@ -132,6 +133,9 @@ func build_pipeline(logger *slog.Logger, cfg *config.Config) (*pipeline, error) 
 		opts.Metadata = tmdb.New(tmdb.Config{Api_key: cfg.Api.Tmdb_key})
 	} else {
 		logger.Warn("tmdb api key not configured; falling back to offline matching")
+	}
+	if store != nil && opts.Metadata != nil {
+		opts.Metadata = metacache.New(opts.Metadata, store, metacache.Default_ttl, logger)
 	}
 
 	if cfg.Imdb_datasets_path != "" {
@@ -161,11 +165,11 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		return err
 	}
 
-	pipe, err := build_pipeline(logger, cfg)
+	store := database.New_store(db)
+	pipe, err := build_pipeline(logger, cfg, store)
 	if err != nil {
 		return err
 	}
-	store := database.New_store(db)
 	runner := scan.New(store, pipe.matcher, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
@@ -247,7 +251,8 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	}
 	defer db.Close()
 
-	pipe, err := build_pipeline(logger, cfg)
+	store := database.New_store(db)
+	pipe, err := build_pipeline(logger, cfg, store)
 	if err != nil {
 		return err
 	}
@@ -258,7 +263,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 				"unmatched", p.Unmatched, "file", p.Path)
 		}
 	}
-	runner := scan.New(database.New_store(db), pipe.matcher, scan.Options{
+	runner := scan.New(store, pipe.matcher, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Logger:         logger,

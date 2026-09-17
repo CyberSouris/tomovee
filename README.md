@@ -101,6 +101,7 @@ internal/opensubtitles  hash computation and lookup
 internal/tmdb       TMDB client
 internal/imdb_datasets  offline IMDb dataset index
 internal/matcher    hash -> TMDB -> offline -> manual matching
+internal/metacache  database-backed cache for TMDB lookups
 internal/scan       scan orchestration and persistence
 internal/watcher    watch-folder polling
 internal/poster_cache   local poster downloads

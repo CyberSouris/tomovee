@@ -1,0 +1,39 @@
+# Tomovee example configuration.
+# Copy to ~/.config/tomovee/config.yaml (or pass --config PATH) and adjust.
+
+# SQLite database file.
+database_path: ~/.local/share/tomovee/tomovee.db
+
+# Directory where poster images are cached.
+poster_cache_dir: ~/.local/share/tomovee/posters
+
+# HTTP listen address for `tomovee serve`.
+listen: 127.0.0.1:8080
+
+# Folders scanned for media files. Required unless watch_enabled is true.
+scan_directories:
+  - ~/Media/Movies
+  - ~/Media/TV
+
+# External API credentials. All are optional; matching degrades gracefully.
+api:
+  tmdb_key: ""
+  opensubtitles_api_key: ""
+  opensubtitles_username: ""
+  opensubtitles_password: ""
+  opensubtitles_user_agent: "Tomovee/0.1 by Cyber Souris"
+
+# Global default for folder watching; per-folder toggles persist to the
+# database and can be changed from the web UI.
+watch_enabled: false
+
+scan:
+  # A file is treated as a quality variant of a sibling when the parent folder
+  # holds at least this many files.
+  quality_subdir_min_size: 2
+  # Files smaller than this are ignored during discovery.
+  min_file_size_mb: 50
+
+# Optional path to an IMDb title.basics.tsv(.gz) export used for offline,
+# network-free matching when the online APIs are unavailable.
+imdb_datasets_path: ""

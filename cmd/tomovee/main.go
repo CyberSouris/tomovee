@@ -19,8 +19,10 @@ import (
 	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
+	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
 	"github.com/cybersouris/tomovee/internal/tmdb"
+	"github.com/cybersouris/tomovee/internal/watcher"
 	"github.com/cybersouris/tomovee/internal/webserver"
 	"github.com/cybersouris/tomovee/internal/webui"
 )
@@ -170,15 +172,40 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Logger:         logger,
 	})
 
+	for _, dir := range cfg.Scan_directories {
+		if err := store.Ensure_watch_folder(context.Background(), dir, cfg.Watch_enabled); err != nil {
+			return err
+		}
+	}
+
+	posters := poster_cache.New(poster_cache.Options{
+		Dir:        cfg.Poster_cache_dir,
+		User_agent: cfg.Api.Opensubtitles_user_agent,
+		Logger:     logger,
+	})
+
 	server := webserver.New(webserver.Options{
 		Store:    store,
 		Config:   cfg,
 		Matcher:  pipe.matcher,
 		Metadata: pipe.metadata,
 		Scanner:  runner,
+		Posters:  posters,
 		Static:   webui.FS(),
 		Logger:   logger,
 	})
+
+	watch_ctx, stop_watch := context.WithCancel(context.Background())
+	defer stop_watch()
+	go func() {
+		w := watcher.New(store, runner, watcher.Options{
+			Default_enabled: cfg.Watch_enabled,
+			Logger:          logger,
+		})
+		if err := w.Run(watch_ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("folder watcher stopped", "error", err)
+		}
+	}()
 
 	http_server := &http.Server{
 		Addr:              cfg.Listen,
@@ -203,6 +230,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	}
 
 	logger.Info("shutting down")
+	stop_watch()
 	shutdown_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return http_server.Shutdown(shutdown_ctx)

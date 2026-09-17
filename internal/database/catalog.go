@@ -116,6 +116,20 @@ func update_entry_tx(ctx context.Context, tx *sql.Tx, id int64, entry Catalog_en
 	return nil
 }
 
+// Update_catalog_entry overwrites the metadata of an existing entry without
+// re-grouping, preserving its versions. It is used by manual re-matching.
+func (s *Store) Update_catalog_entry(ctx context.Context, id int64, entry Catalog_entry) error {
+	return s.with_tx(ctx, func(tx *sql.Tx) error {
+		if err := update_entry_tx(ctx, tx, id, entry); err != nil {
+			return err
+		}
+		if len(entry.Genres) > 0 {
+			return set_genres_tx(ctx, tx, id, entry.Genres)
+		}
+		return nil
+	})
+}
+
 // Set_catalog_status updates the status flag of one catalog entry.
 func (s *Store) Set_catalog_status(ctx context.Context, id int64, status string) error {
 	return s.exec_tx(ctx,

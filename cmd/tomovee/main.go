@@ -3,11 +3,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
@@ -16,6 +21,8 @@ import (
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/scan"
 	"github.com/cybersouris/tomovee/internal/tmdb"
+	"github.com/cybersouris/tomovee/internal/webserver"
+	"github.com/cybersouris/tomovee/internal/webui"
 )
 
 const version = "0.1.0"
@@ -97,10 +104,17 @@ func open_database(cfg *config.Config) (*database.Database, error) {
 	return d, nil
 }
 
-// build_matcher assembles the matching pipeline from the configured API keys
+// pipeline bundles the matching components so both the scanner and the web
+// API can share one configured instance.
+type pipeline struct {
+	matcher  *matcher.Matcher
+	metadata matcher.Metadata_source
+}
+
+// build_pipeline assembles the matching pipeline from the configured API keys
 // and optional offline dataset. Missing keys are warnings, not errors: the
 // pipeline degrades gracefully per the specification.
-func build_matcher(logger *slog.Logger, cfg *config.Config) (*matcher.Matcher, error) {
+func build_pipeline(logger *slog.Logger, cfg *config.Config) (*pipeline, error) {
 	opts := matcher.Options{Logger: logger}
 
 	if cfg.Api.Opensubtitles_api_key != "" {
@@ -127,7 +141,7 @@ func build_matcher(logger *slog.Logger, cfg *config.Config) (*matcher.Matcher, e
 		opts.Offline = imdb_datasets.New_matcher_source(index)
 	}
 
-	return matcher.New(opts), nil
+	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata}, nil
 }
 
 func cmd_serve(logger *slog.Logger, args []string) error {
@@ -135,11 +149,63 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := open_database(cfg); err != nil {
+	db, err := open_database(cfg)
+	if err != nil {
 		return err
 	}
-	logger.Warn("serve mode is not implemented yet; nothing to do", "listen", cfg.Listen)
-	return nil
+	defer db.Close()
+
+	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o755); err != nil {
+		return err
+	}
+
+	pipe, err := build_pipeline(logger, cfg)
+	if err != nil {
+		return err
+	}
+	store := database.New_store(db)
+	runner := scan.New(store, pipe.matcher, scan.Options{
+		Directories:    cfg.Scan_directories,
+		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
+		Logger:         logger,
+	})
+
+	server := webserver.New(webserver.Options{
+		Store:    store,
+		Config:   cfg,
+		Matcher:  pipe.matcher,
+		Metadata: pipe.metadata,
+		Scanner:  runner,
+		Static:   webui.FS(),
+		Logger:   logger,
+	})
+
+	http_server := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errs := make(chan error, 1)
+	go func() {
+		logger.Info("serving", "listen", cfg.Listen, "web_ui", true)
+		if err := http_server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errs:
+		return err
+	case <-stop:
+	}
+
+	logger.Info("shutting down")
+	shutdown_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return http_server.Shutdown(shutdown_ctx)
 }
 
 func cmd_scan(logger *slog.Logger, args []string) error {
@@ -153,7 +219,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	}
 	defer db.Close()
 
-	m, err := build_matcher(logger, cfg)
+	pipe, err := build_pipeline(logger, cfg)
 	if err != nil {
 		return err
 	}
@@ -164,7 +230,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 				"unmatched", p.Unmatched, "file", p.Path)
 		}
 	}
-	runner := scan.New(database.New_store(db), m, scan.Options{
+	runner := scan.New(database.New_store(db), pipe.matcher, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Logger:         logger,

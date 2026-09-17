@@ -1,0 +1,156 @@
+// Package webserver exposes the Tomovee REST API and serves the embedded
+// single-page web UI.
+package webserver
+
+import (
+	"encoding/json"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/cybersouris/tomovee/internal/config"
+	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/scan"
+)
+
+// Options configures a Server.
+type Options struct {
+	Store    *database.Store
+	Config   *config.Config
+	Matcher  *matcher.Matcher
+	Metadata matcher.Metadata_source
+	Scanner  *scan.Scanner
+	Static   fs.FS
+	Logger   *slog.Logger
+}
+
+// Server holds the HTTP handlers and background scan state.
+type Server struct {
+	store    *database.Store
+	cfg      *config.Config
+	matcher  *matcher.Matcher
+	metadata matcher.Metadata_source
+	scanner  *scan.Scanner
+	static   fs.FS
+	logger   *slog.Logger
+	mux      *http.ServeMux
+	jobs     *Job_manager
+}
+
+// New builds a Server and registers its routes.
+func New(opts Options) *Server {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	s := &Server{
+		store:    opts.Store,
+		cfg:      opts.Config,
+		matcher:  opts.Matcher,
+		metadata: opts.Metadata,
+		scanner:  opts.Scanner,
+		static:   opts.Static,
+		logger:   logger,
+		mux:      http.NewServeMux(),
+		jobs:     new_job_manager(logger),
+	}
+	s.routes()
+	return s
+}
+
+// Handler returns the root HTTP handler.
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
+func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/v1/catalog", s.handle_catalog_list)
+	s.mux.HandleFunc("GET /api/v1/catalog/{id}", s.handle_catalog_detail)
+	s.mux.HandleFunc("POST /api/v1/catalog/{id}/match", s.handle_manual_match)
+	s.mux.HandleFunc("GET /api/v1/unmatched", s.handle_unmatched)
+	s.mux.HandleFunc("POST /api/v1/scan", s.handle_scan_start)
+	s.mux.HandleFunc("GET /api/v1/scan/status", s.handle_scan_status)
+	s.mux.HandleFunc("GET /api/v1/scan/stream", s.handle_scan_stream)
+	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)
+	s.mux.HandleFunc("PUT /api/v1/settings", s.handle_settings_put)
+	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
+	s.mux.HandleFunc("/", s.handle_spa)
+}
+
+func (s *Server) handle_spa(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		write_error(w, http.StatusNotFound, "unknown endpoint")
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	if name == "" {
+		name = "index.html"
+	}
+	if data, err := fs.ReadFile(s.static, name); err == nil {
+		if content_type := content_type_for(name); content_type != "" {
+			w.Header().Set("Content-Type", content_type)
+		}
+		_, _ = w.Write(data)
+		return
+	}
+	index, err := fs.ReadFile(s.static, "index.html")
+	if err != nil {
+		write_error(w, http.StatusNotFound, "web ui not available")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(index)
+}
+
+func content_type_for(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(name, ".js"):
+		return "text/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".ico"):
+		return "image/x-icon"
+	}
+	return ""
+}
+
+func write_json(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func write_error(w http.ResponseWriter, status int, message string) {
+	write_json(w, status, map[string]string{"error": message})
+}
+
+func path_id(r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func int_query(r *http.Request, key string) int {
+	value, err := strconv.Atoi(r.URL.Query().Get(key))
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func itoa(n int64) string {
+	return strconv.FormatInt(n, 10)
+}

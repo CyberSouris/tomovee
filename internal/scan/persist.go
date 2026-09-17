@@ -50,18 +50,17 @@ func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *me
 	return err
 }
 
-func catalog_entry_from(file scanner.Found_file, match *matcher.Result, media_type string) database.Catalog_entry {
+// Catalog_entry_from_match converts a matcher result into a catalog entry,
+// deriving its status from whether the match succeeded. It is exported for the
+// web API's manual re-matching.
+func Catalog_entry_from_match(match *matcher.Result) database.Catalog_entry {
 	status := "needs_lookup"
 	if match.Matched {
 		status = "matched"
 	}
-	title := match.Title
-	if title == "" {
-		title = strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
-	}
 	return database.Catalog_entry{
-		Media_type:      media_type,
-		Title:           title,
+		Media_type:      media_type_string(match.Media_type),
+		Title:           match.Title,
 		Original_title:  match.Original_title,
 		Release_year:    match.Year,
 		Overview:        match.Overview,
@@ -74,6 +73,15 @@ func catalog_entry_from(file scanner.Found_file, match *matcher.Result, media_ty
 		Status:          status,
 		Genres:          match.Genres,
 	}
+}
+
+func catalog_entry_from(file scanner.Found_file, match *matcher.Result, media_type string) database.Catalog_entry {
+	entry := Catalog_entry_from_match(match)
+	entry.Media_type = media_type
+	if entry.Title == "" {
+		entry.Title = strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
+	}
+	return entry
 }
 
 func episode_from(entry_id int64, file scanner.Found_file, match *matcher.Result) database.Episode {

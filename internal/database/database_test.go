@@ -22,6 +22,19 @@ func Test_open_in_memory_applies_migrations(t *testing.T) {
 	}
 }
 
+func Test_open_creates_missing_parent_directory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "deeper", "tomovee.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+
+	if _, err := d.Migrations_applied(); err != nil {
+		t.Fatalf("migrations applied: %v", err)
+	}
+}
+
 func Test_open_creates_all_tables(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {

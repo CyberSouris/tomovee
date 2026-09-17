@@ -12,12 +12,23 @@
     loading = true;
     error = '';
     try {
-      data = await api_get('/api/v1/catalog/' + encodeURIComponent(id));
+      const detail = await api_get('/api/v1/catalog/' + encodeURIComponent(id));
+      detail.entry.genres = detail.entry.genres || [];
+      detail.versions = (detail.versions || []).map(normalize_version);
+      detail.episodes = (detail.episodes || []).map((episode) => ({
+        ...episode,
+        versions: (episode.versions || []).map(normalize_version),
+      }));
+      data = detail;
     } catch (err) {
       error = err.message;
     } finally {
       loading = false;
     }
+  }
+
+  function normalize_version(version) {
+    return { ...version, audio: version.audio || [], subtitles: version.subtitles || [] };
   }
 
   function tracks_label(tracks) {

@@ -40,6 +40,7 @@ scan_directories:
   - /mnt/media/shows
 api:
   tmdb_key: abc123
+  opensubtitles_api_key: os-key
   opensubtitles_username: user
   opensubtitles_password: pass
 watch_enabled: true
@@ -55,6 +56,9 @@ scan:
 	}
 	if cfg.Api.Tmdb_key != "abc123" {
 		t.Errorf("tmdb_key = %q, want abc123", cfg.Api.Tmdb_key)
+	}
+	if cfg.Api.Opensubtitles_api_key != "os-key" {
+		t.Errorf("opensubtitles_api_key = %q, want os-key", cfg.Api.Opensubtitles_api_key)
 	}
 	if len(cfg.Scan_directories) != 2 {
 		t.Fatalf("scan_directories = %v, want 2 entries", cfg.Scan_directories)

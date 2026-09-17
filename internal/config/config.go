@@ -21,6 +21,9 @@ type Config struct {
 	Api              Api_config  `yaml:"api"`
 	Watch_enabled    bool        `yaml:"watch_enabled"`
 	Scan             Scan_config `yaml:"scan"`
+	// Imdb_datasets_path optionally points at an IMDb title.basics.tsv(.gz)
+	// export used for offline, network-free enrichment when APIs are down.
+	Imdb_datasets_path string `yaml:"imdb_datasets_path"`
 }
 
 // Api_config holds credentials and settings for the external matching APIs.
@@ -102,6 +105,9 @@ func (c *Config) Normalize() error {
 	var errs []string
 	c.Database_path = normalize_path(c.Database_path)
 	c.Poster_cache_dir = normalize_path(c.Poster_cache_dir)
+	if c.Imdb_datasets_path != "" {
+		c.Imdb_datasets_path = normalize_path(c.Imdb_datasets_path)
+	}
 	dirs := make([]string, 0, len(c.Scan_directories))
 	for i, dir := range c.Scan_directories {
 		norm := normalize_path(dir)

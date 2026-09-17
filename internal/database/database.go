@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,14 @@ type Database struct {
 // Open opens (creating if necessary) the SQLite database at dsn_path and
 // applies any pending migrations. Use dsn_path == ":memory:" for tests.
 func Open(dsn_path string) (*Database, error) {
+	if dsn_path != ":memory:" {
+		plain := strings.TrimPrefix(dsn_path, "file:")
+		if dir := filepath.Dir(plain); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create database directory %s: %w", dir, err)
+			}
+		}
+	}
 	dsn := build_dsn(dsn_path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

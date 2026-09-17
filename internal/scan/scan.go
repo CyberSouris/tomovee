@@ -20,6 +20,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/metadata"
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/scanner"
+	"github.com/cybersouris/tomovee/internal/thumbnail"
 )
 
 // Options configures a Scanner.
@@ -27,7 +28,10 @@ type Options struct {
 	Directories      []string
 	Exclude_patterns []string
 	Min_size_bytes   int64
-	Logger           *slog.Logger
+	// Poster_dir, when set, receives generated frame posters for entries that
+	// have no online artwork. Empty disables the fallback.
+	Poster_dir string
+	Logger     *slog.Logger
 	// Progress, when set, receives a snapshot after each processed file and at
 	// phase transitions. It must not block for long; it is called synchronously.
 	Progress func(Progress)
@@ -66,9 +70,13 @@ type Scanner struct {
 
 	run_mu sync.Mutex
 
+	ffmpeg_warn sync.Once
+
 	// probe and hash are seams for testing.
 	probe func(context.Context, string) (*metadata.File_info, error)
 	hash  func(string) (string, error)
+	// extract is a seam for the frame-poster fallback.
+	extract func(context.Context, string, float64, string) error
 }
 
 // New builds a Scanner.
@@ -84,6 +92,7 @@ func New(store *database.Store, m *matcher.Matcher, opts Options) *Scanner {
 		opts:    opts,
 		probe:   metadata.Probe,
 		hash:    opensubtitles.Compute_hash,
+		extract: thumbnail.Extract,
 	}
 }
 

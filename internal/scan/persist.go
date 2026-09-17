@@ -47,7 +47,11 @@ func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *me
 		version.Catalog_entry_id = entry_id
 	}
 	_, err = s.store.Save_version(ctx, version)
-	return err
+	if err != nil {
+		return err
+	}
+	s.ensure_frame_poster(ctx, entry_id, file.Path, info.Duration_seconds)
+	return nil
 }
 
 // Catalog_entry_from_match converts a matcher result into a catalog entry,

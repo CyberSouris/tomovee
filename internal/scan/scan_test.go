@@ -9,6 +9,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/metadata"
+	"github.com/cybersouris/tomovee/internal/thumbnail"
 	"github.com/cybersouris/tomovee/internal/tmdb"
 )
 
@@ -185,6 +186,35 @@ func Test_run_marks_missing(t *testing.T) {
 	missing, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "missing"})
 	if len(missing) != 1 {
 		t.Fatalf("missing entries = %+v", missing)
+	}
+}
+
+func Test_run_extracts_frame_poster(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "Mystery.Film.mkv", 1000)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, matcher.New(matcher.Options{}), dir)
+	poster_dir := t.TempDir()
+	s.opts.Poster_dir = poster_dir
+	s.extract = func(_ context.Context, _ string, _ float64, out string) error {
+		return os.WriteFile(out, []byte("fake-jpeg"), 0o644)
+	}
+
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{})
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	if entries[0].Poster_path != thumbnail.Local_marker {
+		t.Fatalf("poster_path = %q, want %q", entries[0].Poster_path, thumbnail.Local_marker)
+	}
+	local := thumbnail.Local_path(poster_dir, entries[0].Id)
+	if data, err := os.ReadFile(local); err != nil || string(data) != "fake-jpeg" {
+		t.Fatalf("frame poster missing: %v (%q)", err, data)
 	}
 }
 

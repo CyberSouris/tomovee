@@ -77,6 +77,7 @@ internal/             all non-public app code lives under internal/
   config/             YAML config load + validation
   scanner/            filesystem walking, file classification, hashing, orchestration
   metadata/           ffprobe wrapper
+  sidecar/            .nfo / .txt sidecar parsing and merging
   matcher/            matching pipeline (hash-first, search fallback, manual)
   tmdb/               TMDB API client
   opensubtitles/      OpenSubtitles API client (+ hash computation)
@@ -158,7 +159,29 @@ Run `ffprobe` (JSON output) per file and extract:
 
 Data must tolerate one bad stream without failing the whole file.
 
-### 6.4 Matching
+### 6.4 Sidecar metadata files (.nfo / .txt)
+
+Video files often sit next to a same-named sidecar text file (Kodi-style `.nfo`,
+occasionally `.txt`) holding extra metadata. When a video file is new/changed,
+look for sidecars next to it (same basename, `.nfo` then `.txt`; if multiple
+siblings exist, read all and merge):
+
+- Kodi `.nfo` files (XML) and plain-text `.txt` sidecars are both supported.
+- Extract and merge, preferring sidecar data when present:
+  - **Track metadata**: audio track language, subtitle language, video/audio
+    codec, channels, resolution, bitrate — useful when ffprobe reports
+    undetectable or missing values, or as additional confidence data.
+  - **Content metadata**: movie/show title, original title, year, plot/overview,
+    genres, runtime, ratings, and `imdbid` when present. This feeds the matching
+    step (§6.5) as a hint and disambiguation source.
+- ffprobe remains the authoritative technical source; sidecar data augments and,
+  for fields ffprobe cannot report, fills them in. Conflicting sources are
+  marked or resolved in order: ffprobe > sidecar for technical fields, sidecar >
+  parsed filename for content fields.
+- Sidecar files are read from disk per video when the video is new/changed;
+  content is stored with the version/catalog entry so re-scans are cheap.
+
+### 6.5 Matching
 
 Priority order:
 
@@ -176,7 +199,7 @@ Priority order:
 Series matching: match the series by cleaned show name, then attach specific
 season/episode metadata (episode title, airdate if available).
 
-### 6.5 External API etiquette
+### 6.6 External API etiquette
 
 - Cache external lookups in SQLite (hash → imdb id, tmdb search queries) so
   re-scans need no network.
@@ -185,14 +208,14 @@ season/episode metadata (episode title, airdate if available).
 - Never block the whole scan when external services are unreachable; store what
   we have locally and mark the entry as "needs matching".
 
-### 6.6 Re-scan detection
+### 6.7 Re-scan detection
 
 - File identity = absolute path + size + mtime. If unchanged and already
   catalogued with full metadata, skip cheaply (no ffprobe, no network).
 - Detect removed files and mark entries as missing (do not delete the DB row;
   flag it `missing`).
 
-### 6.7 Version grouping
+### 6.8 Version grouping
 
 - The same movie (or the same episode) present in multiple files — different
   qualities, e.g. 1080p and 4K — is grouped under one catalog entry.
@@ -223,8 +246,10 @@ Tables (names in `snake_case`; expand during migration work):
   - `id`, `catalog_entry_id` OR `episode_id`, `file_path`, `size_bytes`,
     `mtime`, `duration_seconds`, `container`, `resolution` (w × h + label),
     `video_codec`, `hdr`, `frame_rate`, `bit_depth`
-- `audio_track` (`version_id`, `language`, `codec`, `channels`)
-- `subtitle_track` (`version_id`, `language`, `format`)
+  - track data may be augmented from sidecar files; provenance is tracked
+    (`ffprobe` | `sidecar`) so conflicts can be reviewed
+- `audio_track` (`version_id`, `language`, `codec`, `channels`, `source`)
+- `subtitle_track` (`version_id`, `language`, `format`, `source`)
 - `lookup_cache` (`kind`, `key`, `payload`, `created_at`) — cached external API results
 - `watch_folder` (`path`, `enabled`, `last_scan`)
 
@@ -274,11 +299,12 @@ poster image serving (from local cache).
 
 1. Scaffold the module, config package, database schema + migrations.
 2. Implement ffprobe metadata extraction + tests with fixture files.
-3. Implement file discovery/classification + OpenSubtitles hash.
-4. Implement matching (hash → TMDB → datasets → manual).
-5. Implement version grouping, scanning orchestration, re-scan detection.
-6. Implement the SPA (browse, detail, scan, unmatched, settings).
-7. Watch folders, caching polish, docs, packaging.
+3. Implement `.nfo`/`.txt` sidecar parsing and metadata merging + tests with fixture files.
+4. Implement file discovery/classification + OpenSubtitles hash.
+5. Implement matching (hash → TMDB → datasets → manual).
+6. Implement version grouping, scanning orchestration, re-scan detection.
+7. Implement the SPA (browse, detail, scan, unmatched, settings).
+8. Watch folders, caching polish, docs, packaging.
 
 Each step lands as gradual semantic commits (see §11).
 

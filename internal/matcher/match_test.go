@@ -19,6 +19,19 @@ func (f *fake_subtitles) Search_by_hash(_ context.Context, _ string) ([]opensubt
 	return f.features, f.err
 }
 
+// fake_offline is a scripted Offline_source for tests. calls counts how often
+// the offline layer was consulted, so precedence can be asserted.
+type fake_offline struct {
+	candidates []Offline_candidate
+	err        error
+	calls      int
+}
+
+func (f *fake_offline) Search(_ context.Context, _ string, _ int, _ scanner.Media_type) ([]Offline_candidate, error) {
+	f.calls++
+	return f.candidates, f.err
+}
+
 // fake_metadata is a scripted Metadata_source for tests.
 type fake_metadata struct {
 	movies  []tmdb.Movie_search_result
@@ -326,5 +339,113 @@ func Test_top_candidates(t *testing.T) {
 	short := make([]Candidate, 3)
 	if got := top_candidates(short, max_candidates); len(got) != 3 {
 		t.Errorf("short = %d, want 3", len(got))
+	}
+}
+
+func Test_match_offline_single_candidate(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if !result.Matched || result.Source != "imdb-datasets" || result.Imdb_id != "tt0133093" {
+		t.Fatalf("expected offline match, got %+v", result)
+	}
+	if result.Title != "The Matrix" || result.Year != 1999 {
+		t.Errorf("title/year = %q/%d", result.Title, result.Year)
+	}
+}
+
+func Test_match_offline_ambiguous_leaves_for_review(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{
+		{Imdb_id: "tt0000005", Title: "Remake", Year: 2000, Media_type: scanner.Movie},
+		{Imdb_id: "tt0000006", Title: "Remake", Year: 2000, Media_type: scanner.Movie},
+	}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/Remake.2000.mkv", File_name: "Remake.2000.mkv", Kind: scanner.Movie,
+	})
+	if result.Matched {
+		t.Fatalf("ambiguous offline result must not auto-match: %+v", result)
+	}
+	if len(result.Candidates) != 2 {
+		t.Errorf("candidates = %d, want 2", len(result.Candidates))
+	}
+}
+
+func Test_match_offline_low_confidence_leaves_for_review(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "Completely Different", Year: 1999, Media_type: scanner.Movie,
+	}}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if result.Matched {
+		t.Fatalf("weak offline result must not auto-match: %+v", result)
+	}
+	if len(result.Candidates) == 0 {
+		t.Error("expected offline candidates for manual review")
+	}
+}
+
+func Test_match_offline_appends_after_weak_tmdb_search(t *testing.T) {
+	meta := &fake_metadata{
+		movies: []tmdb.Movie_search_result{{Id: 999, Title: "Unrelated Picture", Release_date: "1980-01-01"}},
+	}
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}}
+	m := New(Options{Metadata: meta, Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if !result.Matched || result.Source != "imdb-datasets" {
+		t.Fatalf("expected offline fallback, got %+v", result)
+	}
+	if len(result.Candidates) != 2 {
+		t.Errorf("candidates = %d, want tmdb + offline", len(result.Candidates))
+	}
+}
+
+func Test_match_offline_not_consulted_when_tmdb_matches(t *testing.T) {
+	meta := &fake_metadata{
+		movies:  []tmdb.Movie_search_result{{Id: 603, Title: "The Matrix", Release_date: "1999-03-31"}},
+		details: map[int]any{603: matrix_movie_details()},
+	}
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}}
+	m := New(Options{Metadata: meta, Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if !result.Matched || result.Source != "tmdb" {
+		t.Fatalf("expected tmdb match, got %+v", result)
+	}
+	if offline.calls != 0 {
+		t.Errorf("offline consulted %d times after a tmdb match, want 0", offline.calls)
+	}
+}
+
+func Test_match_offline_error_records_warning(t *testing.T) {
+	offline := &fake_offline{err: context.DeadlineExceeded}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if result.Matched {
+		t.Fatalf("unexpected match: %+v", result)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected a warning about the offline lookup")
 	}
 }

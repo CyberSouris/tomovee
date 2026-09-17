@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cybersouris/tomovee/internal/database"
@@ -63,6 +64,8 @@ type Scanner struct {
 	matcher *matcher.Matcher
 	opts    Options
 
+	run_mu sync.Mutex
+
 	// probe and hash are seams for testing.
 	probe func(context.Context, string) (*metadata.File_info, error)
 	hash  func(string) (string, error)
@@ -86,6 +89,38 @@ func New(store *database.Store, m *matcher.Matcher, opts Options) *Scanner {
 
 // Run executes one full scan of the configured directories.
 func (s *Scanner) Run(ctx context.Context) (*Result, error) {
+	return s.Run_paths(ctx, nil, nil)
+}
+
+// Run_with_progress behaves like Run but reports progress to the supplied
+// callback for this invocation only.
+func (s *Scanner) Run_with_progress(ctx context.Context, progress func(Progress)) (*Result, error) {
+	return s.Run_paths(ctx, nil, progress)
+}
+
+// Run_paths runs a scan, optionally scanning directories instead of the
+// configured ones (used by folder watching) and reporting progress. Scans are
+// serialized: a call blocks until any in-flight scan on this Scanner finishes.
+func (s *Scanner) Run_paths(ctx context.Context, directories []string, progress func(Progress)) (*Result, error) {
+	s.run_mu.Lock()
+	defer s.run_mu.Unlock()
+
+	previous_dirs := s.opts.Directories
+	previous_progress := s.opts.Progress
+	if directories != nil {
+		s.opts.Directories = directories
+	}
+	if progress != nil {
+		s.opts.Progress = progress
+	}
+	defer func() {
+		s.opts.Directories = previous_dirs
+		s.opts.Progress = previous_progress
+	}()
+	return s.run(ctx)
+}
+
+func (s *Scanner) run(ctx context.Context) (*Result, error) {
 	result := &Result{}
 	seen := make(map[string]bool)
 
@@ -128,16 +163,6 @@ func (s *Scanner) Run(ctx context.Context) (*Result, error) {
 		Errors:      len(result.Errors),
 	})
 	return result, nil
-}
-
-// Run_with_progress behaves like Run but reports progress to the supplied
-// callback for this invocation only. It must not be called concurrently with
-// another Run on the same Scanner.
-func (s *Scanner) Run_with_progress(ctx context.Context, progress func(Progress)) (*Result, error) {
-	previous := s.opts.Progress
-	s.opts.Progress = progress
-	defer func() { s.opts.Progress = previous }()
-	return s.Run(ctx)
 }
 
 func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, result *Result) {

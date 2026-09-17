@@ -87,6 +87,14 @@ func (s *Store) Enabled_watch_folders(ctx context.Context) ([]Watch_folder, erro
 	return enabled, nil
 }
 
+// Ensure_watch_folder registers path if it is not already tracked, without
+// altering the enabled state of an existing row.
+func (s *Store) Ensure_watch_folder(ctx context.Context, path string, enabled bool) error {
+	return s.exec_tx(ctx, `
+		INSERT INTO watch_folder (path, enabled) VALUES (?, ?)
+		ON CONFLICT(path) DO NOTHING`, path, bool_to_int(enabled))
+}
+
 // Set_watch_folder enables or disables watching for path, creating the row if
 // needed. Disabling preserves the recorded last_scan time.
 func (s *Store) Set_watch_folder(ctx context.Context, path string, enabled bool) error {

@@ -26,6 +26,7 @@ type Config struct {
 // Api_config holds credentials and settings for the external matching APIs.
 type Api_config struct {
 	Tmdb_key                 string `yaml:"tmdb_key"`
+	Opensubtitles_api_key    string `yaml:"opensubtitles_api_key"`
 	Opensubtitles_username   string `yaml:"opensubtitles_username"`
 	Opensubtitles_password   string `yaml:"opensubtitles_password"`
 	Opensubtitles_user_agent string `yaml:"opensubtitles_user_agent"`

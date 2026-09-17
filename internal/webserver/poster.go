@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/cybersouris/tomovee/internal/poster_cache"
+	"github.com/cybersouris/tomovee/internal/thumbnail"
 	"github.com/cybersouris/tomovee/internal/tmdb"
 )
 
@@ -24,6 +25,15 @@ func (s *Server) handle_poster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entry == nil || entry.Poster_path == "" {
+		write_error(w, http.StatusNotFound, "no poster available")
+		return
+	}
+	if thumbnail.Is_local(entry.Poster_path) {
+		local := thumbnail.Local_path(s.cfg.Poster_cache_dir, id)
+		if info, err := os.Stat(local); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, local)
+			return
+		}
 		write_error(w, http.StatusNotFound, "no poster available")
 		return
 	}

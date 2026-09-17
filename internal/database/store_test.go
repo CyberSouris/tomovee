@@ -51,6 +51,32 @@ func Test_upsert_catalog_entry_groups_by_imdb_id(t *testing.T) {
 	}
 }
 
+func Test_upsert_preserves_poster_when_empty(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+		Poster_path: "local://frame.jpg",
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+	}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if entry.Poster_path != "local://frame.jpg" {
+		t.Errorf("poster_path = %q, want preserved", entry.Poster_path)
+	}
+}
+
 func Test_upsert_catalog_entry_groups_by_title_year_without_ids(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()

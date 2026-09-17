@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cybersouris/tomovee/internal/thumbnail"
 )
 
 // Err_no_poster is returned by Ensure when an entry has no poster path.
@@ -153,9 +155,8 @@ func (c *Cache) Prune(referenced map[int64]bool) (int, error) {
 		if entry.IsDir() {
 			continue
 		}
-		stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-		id, err := strconv.ParseInt(stem, 10, 64)
-		if err != nil {
+		id, ok := thumbnail.Parse_local_name(entry.Name())
+		if !ok {
 			continue
 		}
 		if referenced[id] {

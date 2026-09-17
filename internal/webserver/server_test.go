@@ -18,6 +18,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
+	"github.com/cybersouris/tomovee/internal/thumbnail"
 	"github.com/cybersouris/tomovee/internal/tmdb"
 	"github.com/cybersouris/tomovee/internal/webui"
 )
@@ -174,6 +175,30 @@ func Test_empty_lists_encode_as_arrays(t *testing.T) {
 		if !strings.Contains(settings_body, want) {
 			t.Errorf("settings body missing %s: %s", want, settings_body)
 		}
+	}
+}
+
+func Test_poster_serves_local_frame(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+		Poster_path: thumbnail.Local_marker,
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	local := thumbnail.Local_path(server.cfg.Poster_cache_dir, id)
+	if err := os.WriteFile(local, []byte("jpeg-bytes"), 0o644); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+
+	recorder := do_request(t, server, http.MethodGet, "/api/v1/posters/"+itoa(id), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body)
+	}
+	if recorder.Body.String() != "jpeg-bytes" {
+		t.Errorf("body = %q", recorder.Body.String())
 	}
 }
 

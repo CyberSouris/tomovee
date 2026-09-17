@@ -173,6 +173,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	runner := scan.New(store, pipe.matcher, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
+		Poster_dir:     cfg.Poster_cache_dir,
 		Logger:         logger,
 	})
 
@@ -266,6 +267,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	runner := scan.New(store, pipe.matcher, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
+		Poster_dir:     cfg.Poster_cache_dir,
 		Logger:         logger,
 		Progress:       progress,
 	})

@@ -102,7 +102,7 @@ func update_entry_tx(ctx context.Context, tx *sql.Tx, id int64, entry Catalog_en
 		UPDATE catalog_entry SET
 			media_type = ?, title = ?, original_title = ?, release_year = ?,
 			overview = ?, runtime_minutes = ?, rating = ?, vote_count = ?,
-			imdb_id = ?, tmdb_id = ?, poster_path = ?, status = ?,
+			imdb_id = ?, tmdb_id = ?, poster_path = COALESCE(?, poster_path), status = ?,
 			updated_at = datetime('now')
 		WHERE id = ?`,
 		entry.Media_type, entry.Title, entry.Original_title, nullable_int(entry.Release_year),

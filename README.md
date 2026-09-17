@@ -22,11 +22,15 @@ and serves a browsable web UI plus a JSON API.
 - **Folder watching** — optional polling of enabled folders picks up new files
   automatically.
 - **Local poster cache** — posters are downloaded and served from disk.
+- **Frame fallback** — items without online artwork get a still frame extracted
+  from the video (taken 10 minutes in, stepping 5 minutes past uniform frames).
 
 ## Requirements
 
 - Go 1.26 or newer.
 - `ffprobe` (from FFmpeg) on `PATH`.
+- `ffmpeg` on `PATH` for fallback frame posters (optional; scans skip it if
+  absent).
 - Optional: a TMDB API key and OpenSubtitles credentials for online matching.
 
 ## Build
@@ -105,6 +109,7 @@ internal/metacache  database-backed cache for TMDB lookups
 internal/scan       scan orchestration and persistence
 internal/watcher    watch-folder polling
 internal/poster_cache   local poster downloads
+internal/thumbnail  fallback frame extraction from video files
 internal/webserver  REST API and SSE
 internal/webui      Svelte SPA (source + embedded build)
 ```

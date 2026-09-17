@@ -83,7 +83,14 @@
         </tr>
         <tr>
           <th>IMDb datasets</th>
-          <td>{settings.imdb_datasets_path || '—'}</td>
+          <td>
+            {settings.imdb_datasets_path || '—'}
+            <div class="muted help">
+              Download <a href="https://datasets.imdbws.com/title.basics.tsv.gz" target="_blank" rel="noreferrer">title.basics.tsv.gz</a>
+              and set <code>imdb_datasets_path</code> to it
+              (<a href="https://developer.imdb.com/non-commercial-datasets/" target="_blank" rel="noreferrer">dataset details</a>).
+            </div>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -99,6 +106,19 @@
         {settings.opensubtitles_configured ? 'configured' : 'not configured'}
       </span>
     </p>
+    <ul class="help">
+      <li>
+        <strong>TMDB</strong> — request a key at
+        <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">themoviedb.org → Settings → API</a>,
+        then set <code>api.tmdb_key</code> in the config file.
+      </li>
+      <li>
+        <strong>OpenSubtitles</strong> — create a key under
+        <a href="https://www.opensubtitles.com/en/consumers" target="_blank" rel="noreferrer">opensubtitles.com → Account → API consumers</a>,
+        then set <code>api.opensubtitles_api_key</code>, <code>api.opensubtitles_username</code> and
+        <code>api.opensubtitles_password</code>.
+      </li>
+    </ul>
 
     <h2>Watching</h2>
     <label class="toggle">
@@ -163,6 +183,24 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0.5rem 0;
+  }
+
+  .help {
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding-left: 1.2rem;
+  }
+
+  .help li {
+    margin: 0.3rem 0;
+  }
+
+  code {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 0.25rem;
+    font-size: 0.85em;
   }
 
   h2 {

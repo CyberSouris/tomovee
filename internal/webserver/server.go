@@ -13,6 +13,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
 )
 
@@ -23,6 +24,7 @@ type Options struct {
 	Matcher  *matcher.Matcher
 	Metadata matcher.Metadata_source
 	Scanner  *scan.Scanner
+	Posters  *poster_cache.Cache
 	Static   fs.FS
 	Logger   *slog.Logger
 }
@@ -34,6 +36,7 @@ type Server struct {
 	matcher  *matcher.Matcher
 	metadata matcher.Metadata_source
 	scanner  *scan.Scanner
+	posters  *poster_cache.Cache
 	static   fs.FS
 	logger   *slog.Logger
 	mux      *http.ServeMux
@@ -52,6 +55,7 @@ func New(opts Options) *Server {
 		matcher:  opts.Matcher,
 		metadata: opts.Metadata,
 		scanner:  opts.Scanner,
+		posters:  opts.Posters,
 		static:   opts.Static,
 		logger:   logger,
 		mux:      http.NewServeMux(),
@@ -77,6 +81,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)
 	s.mux.HandleFunc("PUT /api/v1/settings", s.handle_settings_put)
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
+	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)
 	s.mux.HandleFunc("/", s.handle_spa)
 }
 

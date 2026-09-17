@@ -140,7 +140,11 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := detail_response{Entry: catalog_item_from(*entry)}
+	response := detail_response{
+		Entry:    catalog_item_from(*entry),
+		Episodes: []episode_item{},
+		Versions: []version_item{},
+	}
 	if entry.Media_type == "series" {
 		if meta, err := s.store.Get_series_metadata(r.Context(), id); err == nil && meta != nil {
 			response.Series = &series_item{
@@ -183,6 +187,8 @@ func (s *Server) version_items(ctx context.Context, versions []database.Version)
 			Resolution_width: version.Resolution_width, Resolution_height: version.Resolution_height,
 			Resolution_label: version.Resolution_label, Video_codec: version.Video_codec,
 			Hdr: version.Hdr, Frame_rate: version.Frame_rate, Bit_depth: version.Bit_depth,
+			Audio:     []audio_item{},
+			Subtitles: []subtitle_item{},
 		}
 		for _, track := range audio {
 			item.Audio = append(item.Audio, audio_item{
@@ -208,12 +214,16 @@ func catalog_items(entries []database.Catalog_entry) []catalog_item {
 }
 
 func catalog_item_from(entry database.Catalog_entry) catalog_item {
+	genres := entry.Genres
+	if genres == nil {
+		genres = []string{}
+	}
 	item := catalog_item{
 		Id: entry.Id, Media_type: entry.Media_type, Title: entry.Title,
 		Original_title: entry.Original_title, Release_year: entry.Release_year,
 		Overview: entry.Overview, Runtime_minutes: entry.Runtime_minutes,
 		Rating: entry.Rating, Vote_count: entry.Vote_count, Imdb_id: entry.Imdb_id,
-		Tmdb_id: entry.Tmdb_id, Status: entry.Status, Genres: entry.Genres,
+		Tmdb_id: entry.Tmdb_id, Status: entry.Status, Genres: genres,
 	}
 	if entry.Poster_path != "" {
 		item.Poster_url = "/api/v1/posters/" + itoa(entry.Id)

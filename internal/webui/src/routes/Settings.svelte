@@ -10,10 +10,16 @@
 
   async function load() {
     try {
-      settings = await api_get('/api/v1/settings');
+      settings = normalize(await api_get('/api/v1/settings'));
     } catch (err) {
       error = err.message;
     }
+  }
+
+  function normalize(data) {
+    data.scan_directories = data.scan_directories || [];
+    data.watch_folders = data.watch_folders || [];
+    return data;
   }
 
   async function prune() {
@@ -32,13 +38,15 @@
     saved = false;
     error = '';
     try {
-      settings = await api_send('/api/v1/settings', 'PUT', {
-        watch_enabled: settings.watch_enabled,
-        folders: settings.watch_folders.map((folder) => ({
-          path: folder.path,
-          enabled: folder.enabled,
-        })),
-      });
+      settings = normalize(
+        await api_send('/api/v1/settings', 'PUT', {
+          watch_enabled: settings.watch_enabled,
+          folders: settings.watch_folders.map((folder) => ({
+            path: folder.path,
+            enabled: folder.enabled,
+          })),
+        }),
+      );
       saved = true;
     } catch (err) {
       error = err.message;

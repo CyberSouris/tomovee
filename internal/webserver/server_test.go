@@ -144,6 +144,39 @@ func Test_catalog_list_and_detail(t *testing.T) {
 	}
 }
 
+func Test_empty_lists_encode_as_arrays(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "Empty Show", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	detail := do_request(t, server, http.MethodGet, "/api/v1/catalog/"+itoa(id), "")
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status = %d: %s", detail.Code, detail.Body)
+	}
+	body := detail.Body.String()
+	for _, want := range []string{`"genres":[]`, `"episodes":[]`, `"versions":[]`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail body missing %s: %s", want, body)
+		}
+	}
+
+	settings := do_request(t, server, http.MethodGet, "/api/v1/settings", "")
+	if settings.Code != http.StatusOK {
+		t.Fatalf("settings status = %d: %s", settings.Code, settings.Body)
+	}
+	settings_body := settings.Body.String()
+	for _, want := range []string{`"scan_directories":[]`, `"watch_folders":[]`} {
+		if !strings.Contains(settings_body, want) {
+			t.Errorf("settings body missing %s: %s", want, settings_body)
+		}
+	}
+}
+
 func Test_unmatched_and_manual_match(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()

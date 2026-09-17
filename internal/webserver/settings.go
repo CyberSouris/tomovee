@@ -74,15 +74,20 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) settings(r *http.Request) (settings_response, error) {
+	scan_directories := s.cfg.Scan_directories
+	if scan_directories == nil {
+		scan_directories = []string{}
+	}
 	response := settings_response{
 		Listen:                   s.cfg.Listen,
 		Database_path:            s.cfg.Database_path,
 		Poster_cache_dir:         s.cfg.Poster_cache_dir,
-		Scan_directories:         s.cfg.Scan_directories,
+		Scan_directories:         scan_directories,
 		Imdb_datasets_path:       s.cfg.Imdb_datasets_path,
 		Watch_enabled:            s.cfg.Watch_enabled,
 		Tmdb_configured:          s.cfg.Api.Tmdb_key != "",
 		Opensubtitles_configured: s.cfg.Api.Opensubtitles_api_key != "",
+		Watch_folders:            []watch_folder_item{},
 	}
 	if value, ok, err := s.store.Config_get(r.Context(), "watch_enabled"); err != nil {
 		return response, err

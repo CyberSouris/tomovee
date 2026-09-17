@@ -16,9 +16,7 @@ config.local.yaml
 
 # Frontend build
 node_modules/
-frontend/dist/
-webui/node_modules/
-webui/dist/
+internal/webui/node_modules/
 
 # Editor/OS
 .idea/

@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 
@@ -33,6 +34,21 @@ type Metadata_source interface {
 	Movie_details(ctx context.Context, id int) (*tmdb.Movie_details, error)
 	Tv_details(ctx context.Context, id int) (*tmdb.Tv_details, error)
 	Find_by_imdb(ctx context.Context, imdb_id string) (*tmdb.Find_result, error)
+}
+
+// Offline_source supplies candidate matches from a local dataset (IMDb
+// datasets) when online services are unreachable or inconclusive. It is the
+// third layer of the matching pipeline.
+type Offline_source interface {
+	Search(ctx context.Context, query string, year int, media_type scanner.Media_type) ([]Offline_candidate, error)
+}
+
+// Offline_candidate is one local-dataset match.
+type Offline_candidate struct {
+	Imdb_id    string
+	Title      string
+	Year       int
+	Media_type scanner.Media_type
 }
 
 // Input describes a single file to identify.
@@ -82,15 +98,18 @@ type Result struct {
 type Options struct {
 	Subtitles      Subtitles_source
 	Metadata       Metadata_source
+	Offline        Offline_source
 	Min_confidence float64
 	Logger         *slog.Logger
 }
 
 // Matcher runs the matching pipeline: OpenSubtitles hash first, then a TMDB
-// title search, leaving unmatched files for manual review.
+// title search, then the offline IMDb dataset, leaving unmatched files for
+// manual review.
 type Matcher struct {
 	subtitles      Subtitles_source
 	metadata       Metadata_source
+	offline        Offline_source
 	min_confidence float64
 	logger         *slog.Logger
 }
@@ -108,6 +127,7 @@ func New(opts Options) *Matcher {
 	return &Matcher{
 		subtitles:      opts.Subtitles,
 		metadata:       opts.Metadata,
+		offline:        opts.Offline,
 		min_confidence: min_confidence,
 		logger:         logger,
 	}
@@ -132,9 +152,15 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	if m.metadata != nil {
 		search_result := m.match_by_search(ctx, input, hint)
 		search_result.Warnings = append(search_result.Warnings, result.Warnings...)
-		return search_result
+		if search_result.Matched {
+			return search_result
+		}
+		result = search_result
 	}
-	if len(result.Warnings) == 0 {
+	if m.offline != nil {
+		m.match_offline(ctx, input, hint, result)
+	}
+	if !result.Matched && len(result.Warnings) == 0 && m.metadata == nil && m.offline == nil {
 		result.Warnings = append(result.Warnings, "no metadata source configured")
 	}
 	return result
@@ -258,6 +284,71 @@ func (m *Matcher) finish_search(ctx context.Context, result *Result, scored []Ca
 	}
 	_ = hint
 	return result
+}
+
+// match_offline queries the offline dataset for candidates. It never discards
+// a TMDB match; when TMDB was inconclusive it appends offline candidates and
+// auto-accepts an unambiguous, confident one.
+func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_hint, result *Result) {
+	if hint.Title == "" {
+		return
+	}
+	candidates, err := m.offline.Search(ctx, hint.Title, hint.Year, input.Kind)
+	if err != nil {
+		result.Warnings = append(result.Warnings, "imdb datasets lookup: "+err.Error())
+		return
+	}
+	scored := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		scored = append(scored, Candidate{
+			Source:  "imdb-datasets",
+			Imdb_id: c.Imdb_id,
+			Title:   c.Title,
+			Year:    c.Year,
+			Score:   score_match(hint.Title, hint.Year, c.Title, c.Year),
+		})
+	}
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
+	result.Candidates = top_candidates(merge_candidates(result.Candidates, scored), max_candidates)
+	if result.Matched || len(scored) == 0 {
+		return
+	}
+
+	best := scored[0]
+	if best.Score < m.min_confidence {
+		return
+	}
+	if len(scored) > 1 && scored[1].Score >= best.Score {
+		return // ambiguous (e.g. identical title/year remakes): manual review
+	}
+	result.Matched = true
+	result.Confidence = best.Score
+	result.Source = "imdb-datasets"
+	result.Imdb_id = best.Imdb_id
+	result.Title = best.Title
+	result.Year = best.Year
+}
+
+// merge_candidates appends extra candidates to existing, dropping duplicates
+// while preserving the original order.
+func merge_candidates(existing, extra []Candidate) []Candidate {
+	seen := make(map[string]bool, len(existing)+len(extra))
+	for _, c := range existing {
+		seen[candidate_key(c)] = true
+	}
+	for _, c := range extra {
+		key := candidate_key(c)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, c)
+	}
+	return existing
+}
+
+func candidate_key(c Candidate) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%d", c.Source, c.Tmdb_id, c.Imdb_id, c.Title, c.Year)
 }
 
 // enrich fills a hash-matched result with full metadata from TMDB, resolving

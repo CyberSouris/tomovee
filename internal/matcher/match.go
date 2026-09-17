@@ -353,6 +353,49 @@ func candidate_key(c Candidate) string {
 	return fmt.Sprintf("%s|%d|%s|%s|%d", c.Source, c.Tmdb_id, c.Imdb_id, c.Title, c.Year)
 }
 
+// Enrich_by_tmdb builds a matched result for a specific TMDB id and media type.
+// It backs manual re-matching from the web UI.
+func (m *Matcher) Enrich_by_tmdb(ctx context.Context, media_type scanner.Media_type, tmdb_id int) (*Result, error) {
+	result := &Result{Media_type: media_type}
+	if media_type == scanner.Series {
+		if err := m.fill_from_tv_id(ctx, result, tmdb_id); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := m.fill_from_movie_id(ctx, result, tmdb_id); err != nil {
+			return nil, err
+		}
+	}
+	result.Matched = true
+	result.Confidence = 1
+	result.Source = "manual"
+	return result, nil
+}
+
+// Enrich_by_imdb resolves an IMDb id through TMDB and builds a matched result.
+func (m *Matcher) Enrich_by_imdb(ctx context.Context, media_type scanner.Media_type, imdb_id string) (*Result, error) {
+	result := &Result{Media_type: media_type, Imdb_id: imdb_id}
+	found, err := m.metadata.Find_by_imdb(ctx, imdb_id)
+	if err != nil {
+		return nil, err
+	}
+	if media_type == scanner.Series && len(found.Tv_results) > 0 {
+		if err := m.fill_from_tv_id(ctx, result, found.Tv_results[0].Id); err != nil {
+			return nil, err
+		}
+	} else if len(found.Movie_results) > 0 {
+		if err := m.fill_from_movie_id(ctx, result, found.Movie_results[0].Id); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("no TMDB match for imdb id %s", imdb_id)
+	}
+	result.Matched = true
+	result.Confidence = 1
+	result.Source = "manual"
+	return result, nil
+}
+
 // enrich fills a hash-matched result with full metadata from TMDB, resolving
 // by TMDB id first and falling back to the IMDb id.
 func (m *Matcher) enrich(ctx context.Context, result *Result) error {

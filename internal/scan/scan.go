@@ -130,6 +130,16 @@ func (s *Scanner) Run(ctx context.Context) (*Result, error) {
 	return result, nil
 }
 
+// Run_with_progress behaves like Run but reports progress to the supplied
+// callback for this invocation only. It must not be called concurrently with
+// another Run on the same Scanner.
+func (s *Scanner) Run_with_progress(ctx context.Context, progress func(Progress)) (*Result, error) {
+	previous := s.opts.Progress
+	s.opts.Progress = progress
+	defer func() { s.opts.Progress = previous }()
+	return s.Run(ctx)
+}
+
 func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, result *Result) {
 	mtime := format_mtime(file.Mtime)
 

@@ -74,14 +74,17 @@ type Subtitle_track struct {
 
 // Version is one media file backing a catalog entry or episode.
 type Version struct {
-	Id                int64
-	Catalog_entry_id  int64
-	Episode_id        int64
-	File_path         string
-	Size_bytes        int64
-	Mtime             string
-	Duration_seconds  float64
-	Container         string
+	Id               int64
+	Catalog_entry_id int64
+	Episode_id       int64
+	File_path        string
+	Size_bytes       int64
+	Mtime            string
+	Duration_seconds float64
+	Container        string
+	// Hash is the OpenSubtitles content hash computed during scanning. It is
+	// stored so background matching can hash-lookup without re-reading files.
+	Hash              string
 	Resolution_width  int
 	Resolution_height int
 	Resolution_label  string
@@ -101,6 +104,7 @@ type Version_ref struct {
 	File_path        string
 	Size_bytes       int64
 	Mtime            string
+	Hash             string
 	Status           string
 }
 

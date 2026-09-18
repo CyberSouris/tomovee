@@ -211,7 +211,7 @@ const version_columns = `
 	       COALESCE(v.size_bytes, 0), COALESCE(v.mtime, ''), COALESCE(v.duration_seconds, 0),
 	       COALESCE(v.container, ''), COALESCE(v.resolution_width, 0), COALESCE(v.resolution_height, 0),
 	       COALESCE(v.resolution_label, ''), COALESCE(v.video_codec, ''), COALESCE(v.hdr, 0),
-	       COALESCE(v.frame_rate, 0), COALESCE(v.bit_depth, 0)
+	       COALESCE(v.frame_rate, 0), COALESCE(v.bit_depth, 0), COALESCE(v.hash, '')
 	FROM version v`
 
 func catalog_where(filter Catalog_filter) (string, []any) {
@@ -295,7 +295,7 @@ func scan_version(row row_scanner) (*Version, error) {
 	err := row.Scan(&version.Id, &version.Catalog_entry_id, &version.Episode_id, &version.File_path,
 		&version.Size_bytes, &version.Mtime, &version.Duration_seconds, &version.Container,
 		&version.Resolution_width, &version.Resolution_height, &version.Resolution_label,
-		&version.Video_codec, &hdr, &version.Frame_rate, &version.Bit_depth)
+		&version.Video_codec, &hdr, &version.Frame_rate, &version.Bit_depth, &version.Hash)
 	if err != nil {
 		return nil, err
 	}

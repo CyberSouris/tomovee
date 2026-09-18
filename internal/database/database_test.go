@@ -14,7 +14,7 @@ func Test_open_in_memory_applies_migrations(t *testing.T) {
 	}
 	defer d.Close()
 
-	want := []int{1}
+	want := []int{1, 2}
 	if got, err := d.Migrations_applied(); err != nil {
 		t.Fatalf("migrations applied: %v", err)
 	} else if !reflect.DeepEqual(got, want) {
@@ -86,7 +86,7 @@ func Test_open_is_idempotent_across_reopen(t *testing.T) {
 	}
 	defer d2.Close()
 
-	want := []int{1}
+	want := []int{1, 2}
 	if got, err := d2.Migrations_applied(); err != nil {
 		t.Fatalf("migrations applied: %v", err)
 	} else if !reflect.DeepEqual(got, want) {

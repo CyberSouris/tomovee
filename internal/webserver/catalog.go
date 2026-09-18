@@ -96,30 +96,56 @@ func (s *Server) handle_catalog_list(w http.ResponseWriter, r *http.Request) {
 		Offset:     int_query(r, "offset"),
 	}
 	if filter.Limit <= 0 || filter.Limit > 500 {
-		filter.Limit = 200
+		filter.Limit = 100
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
 	}
 	entries, err := s.store.List_catalog_entries(r.Context(), filter)
 	if err != nil {
 		write_error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	total, err := s.store.Count_catalog_entries(r.Context(), filter)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	write_json(w, http.StatusOK, map[string]any{
+		"total":   total,
 		"count":   len(entries),
 		"entries": catalog_items(entries),
 	})
 }
 
 func (s *Server) handle_unmatched(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.store.List_catalog_entries(r.Context(), database.Catalog_filter{
+	limit := int_query(r, "limit")
+	offset := int_query(r, "offset")
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	filter := database.Catalog_filter{
 		Status: "needs_lookup",
 		Sort:   "added",
 		Desc:   true,
-	})
+		Limit:  limit,
+		Offset: offset,
+	}
+	entries, err := s.store.List_catalog_entries(r.Context(), filter)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	total, err := s.store.Count_catalog_entries(r.Context(), filter)
 	if err != nil {
 		write_error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{
+		"total":   total,
 		"count":   len(entries),
 		"entries": catalog_items(entries),
 	})

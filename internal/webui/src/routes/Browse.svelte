@@ -2,8 +2,11 @@
   import { onMount } from 'svelte';
   import { api_get, poster_image } from '../api.js';
 
+  const PAGE = 100;
+
   let entries = [];
-  let count = 0;
+  let total = 0;
+  let offset = 0;
   let loading = false;
   let error = '';
 
@@ -12,7 +15,7 @@
   let status = '';
   let sort = 'added';
 
-  async function load() {
+  async function load(reset = true) {
     loading = true;
     error = '';
     try {
@@ -21,9 +24,13 @@
       if (media_type) params.set('media_type', media_type);
       if (status) params.set('status', status);
       if (sort) params.set('sort', sort);
+      params.set('limit', String(PAGE));
+      params.set('offset', String(reset ? 0 : offset));
       const data = await api_get('/api/v1/catalog?' + params.toString());
-      entries = data.entries || [];
-      count = data.count || 0;
+      const page = data.entries || [];
+      entries = reset ? page : entries.concat(page);
+      total = data.total || 0;
+      offset += page.length;
     } catch (err) {
       error = err.message;
     } finally {
@@ -33,10 +40,10 @@
 
   function submit(event) {
     event.preventDefault();
-    load();
+    load(true);
   }
 
-  onMount(load);
+  onMount(() => load(true));
 </script>
 
 <section>
@@ -66,7 +73,9 @@
     <p class="error">{error}</p>
   {/if}
 
-  <p class="muted">{count} title{count === 1 ? '' : 's'}</p>
+  <p class="muted">
+    {total} title{total === 1 ? '' : 's'}{#if entries.length < total} · showing {entries.length}{/if}
+  </p>
 
   <div class="grid">
     {#each entries as entry (entry.id)}
@@ -91,6 +100,12 @@
       </a>
     {/each}
   </div>
+
+  {#if entries.length < total}
+    <p class="more">
+      <button on:click={() => load(false)} disabled={loading}>Load more</button>
+    </p>
+  {/if}
 </section>
 
 <style>

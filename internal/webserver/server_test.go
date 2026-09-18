@@ -68,6 +68,27 @@ func (fake_offline) Search(_ context.Context, _ string, _ int, _ scanner.Media_t
 	}}, nil
 }
 
+// fake_local extends fake_offline so the search box can also answer from the
+// local IMDb index, like the real Matcher_source-backed server.
+type fake_local struct {
+	fake_offline
+	hits []matcher.Offline_candidate
+}
+
+func (f fake_local) Search_local(_ context.Context, query string, _ int, _ scanner.Media_type, _ int) ([]matcher.Offline_candidate, error) {
+	var hits []matcher.Offline_candidate
+	for _, hit := range f.hits {
+		if strings.Contains(strings.ToLower(hit.Title), strings.ToLower(query)) {
+			hits = append(hits, hit)
+		}
+	}
+	return hits, nil
+}
+
+func (f fake_local) Search(_ context.Context, _ string, _ int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	return nil, nil
+}
+
 func new_test_server(t *testing.T) (*Server, *database.Store) {
 	t.Helper()
 	d, err := database.Open(":memory:")
@@ -249,6 +270,58 @@ func Test_unmatched_and_manual_match(t *testing.T) {
 	if match_body.Entry.Tmdb_id != 603 {
 		t.Errorf("tmdb id = %d", match_body.Entry.Tmdb_id)
 	}
+}
+
+func Test_search_local_merge(t *testing.T) {
+	server, _ := new_test_server(t)
+	server.matcher = matcher.New(matcher.Options{
+		Offline: fake_local{hits: []matcher.Offline_candidate{
+			{Imdb_id: "tt0295432", Title: "The Matrix Revisited", Year: 2001, Media_type: scanner.Movie},
+			{Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie},
+		}},
+	})
+
+	server.metadata = fake_metadata{
+		search_movies: []tmdb.Movie_search_result{
+			{Id: 603, Title: "The Matrix", Release_date: "1999-03-31", Overview: "A hacker.", Poster_path: "/matrix.jpg", Vote_average: 8.2},
+		},
+	}
+
+	t.Run("merged", func(t *testing.T) {
+		found := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix&media_type=movie", "")
+		if found.Code != http.StatusOK {
+			t.Fatalf("search status = %d: %s", found.Code, found.Body)
+		}
+		got := decode[struct {
+			Results []search_item `json:"results"`
+		}](t, found)
+		if len(got.Results) != 2 {
+			t.Fatalf("results = %d, want 2 (TMDB + 1 local, one local deduped): %+v", len(got.Results), got.Results)
+		}
+
+		first := got.Results[0]
+		if first.Tmdb_id != 603 || first.Imdb_id != "" || first.Title != "The Matrix" || first.Year != 1999 {
+			t.Fatalf("unexpected first result: %+v", first)
+		}
+		revisited := got.Results[1]
+		if revisited.Tmdb_id != 0 || revisited.Imdb_id != "tt0295432" || revisited.Title != "The Matrix Revisited" || revisited.Year != 2001 {
+			t.Fatalf("unexpected merged local result: %+v", revisited)
+		}
+	})
+
+	t.Run("local only", func(t *testing.T) {
+		server.metadata = nil
+		local_only := do_request(t, server, http.MethodGet, "/api/v1/search?q=revisited&media_type=movie", "")
+		if local_only.Code != http.StatusOK {
+			t.Fatalf("metadata-less search status = %d, want 200: %s", local_only.Code, local_only.Body)
+		}
+		local_body := decode[struct {
+			Results []search_item `json:"results"`
+		}](t, local_only)
+		if len(local_body.Results) != 1 || local_body.Results[0].Imdb_id != "tt0295432" {
+			t.Fatalf("unexpected local-only results: %+v", local_body.Results)
+		}
+	})
 }
 
 func Test_search_autocomplete(t *testing.T) {

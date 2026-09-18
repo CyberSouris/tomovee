@@ -44,6 +44,38 @@ type Offline_source interface {
 	Search(ctx context.Context, query string, year int, media_type scanner.Media_type) ([]Offline_candidate, error)
 }
 
+// Local_search_source extends Offline_source for sources that can answer fuzzy
+// title lookups against their own data (the local IMDb index). It backs the
+// autocomplete search box so users can find titles even without a TMDB
+// connection.
+type Local_search_source interface {
+	Search_local(ctx context.Context, query string, year int, media_type scanner.Media_type, limit int) ([]Offline_candidate, error)
+}
+
+func (m *Matcher) Has_local_search() bool {
+	ref := m.offline.Load()
+	if ref == nil {
+		return false
+	}
+	_, ok := ref.src.(Local_search_source)
+	return ok
+}
+
+// Search_local_autocomplete returns title suggestions for the manual-match
+// search box from the local IMDb index, when one is attached. A missing or
+// non-searchable source yields nil results.
+func (m *Matcher) Search_local_autocomplete(ctx context.Context, query string, year int, media_type scanner.Media_type, limit int) ([]Offline_candidate, error) {
+	ref := m.offline.Load()
+	if ref == nil {
+		return nil, nil
+	}
+	src, ok := ref.src.(Local_search_source)
+	if !ok {
+		return nil, nil
+	}
+	return src.Search_local(ctx, query, year, media_type, limit)
+}
+
 // Offline_candidate is one local-dataset match.
 type Offline_candidate struct {
 	Imdb_id    string

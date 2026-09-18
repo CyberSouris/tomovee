@@ -47,6 +47,7 @@ func New_index(titles []Title) *Index {
 	}
 	idx := &Index{db: db}
 	idx.insert_titles(titles)
+	_ = populate_fts(db)
 	return idx
 }
 
@@ -316,6 +317,99 @@ func (idx *Index) Search(query string, year int, want scanner.Media_type) []Resu
 		})
 	}
 	return out
+}
+
+// Search_autocomplete performs a fuzzy prefix search over the normalized
+// primary and original titles, for the manual-match autocomplete backed by the
+// local IMDb data. Every token of the query is required, but the final token
+// is matched as a prefix, so typing "matrix relo" finds "The Matrix
+// Reloaded". Results are ranked by bm25 relevance then vote count and
+// restricted to the requested media type when want is Movie or Series.
+func (idx *Index) Search_autocomplete(query string, year int, want scanner.Media_type, limit int) []Result {
+	if idx.db == nil {
+		return nil
+	}
+	match := fts_match_query(Normalize_title(query))
+	if match == "" {
+		return nil
+	}
+	want_types := `'movie', 'tvMovie', 'tvSpecial', 'tvSeries', 'tvMiniSeries'`
+	switch want {
+	case scanner.Movie:
+		want_types = `'movie', 'tvMovie', 'tvSpecial'`
+	case scanner.Series:
+		want_types = `'tvSeries', 'tvMiniSeries'`
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := idx.db.Query(`
+		SELECT DISTINCT t.id, t.title_type, t.primary_title, t.original_title,
+		       t.start_year, t.end_year, t.runtime_minutes, t.genres,
+		       COALESCE(r.average_rating, 0), COALESCE(r.num_votes, 0)
+		FROM title_fts f
+		JOIN title t ON t.id = f.id
+		LEFT JOIN title_rating r ON r.id = t.id
+		WHERE title_fts MATCH ?
+		  AND t.title_type IN (`+want_types+`)
+		  AND (? = 0 OR t.start_year = ? OR t.end_year = ?)
+		ORDER BY bm25(title_fts), r.num_votes DESC
+		LIMIT ?`,
+		match, year, year, year, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	seen := make(map[string]bool)
+	var out []Result
+	for rows.Next() {
+		title, err := scan_title(rows)
+		if err != nil {
+			return out
+		}
+		if seen[title.Id] {
+			continue
+		}
+		seen[title.Id] = true
+		out = append(out, Result{
+			Id:              title.Id,
+			Title:           title.Primary_title,
+			Original_title:  title.Original_title,
+			Year:            title.Start_year,
+			End_year:        title.End_year,
+			Media_type:      media_type_of_result(title.Title_type),
+			Runtime_minutes: title.Runtime_minutes,
+			Genres:          split_genres(title.Genres),
+			Rating:          title.Average_rating,
+			Votes:           title.Num_votes,
+		})
+	}
+	return out
+}
+
+// fts_match_query turns a normalized title into an FTS5 MATCH expression.
+// Tokens are already lowercase alphanumeric (see Normalize_title), so they are
+// safe as bare query terms; the last one is turned into a prefix match so the
+// search completes as the user types.
+func fts_match_query(normalized string) string {
+	tokens := strings.Fields(normalized)
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tokens))
+	for i, token := range tokens {
+		if i == len(tokens)-1 {
+			parts = append(parts, token+"*")
+		} else {
+			parts = append(parts, token)
+		}
+	}
+	return strings.Join(parts, " AND ")
+}
+
+func media_type_of_result(title_type string) scanner.Media_type {
+	media_type, _ := media_type_of(title_type)
+	return media_type
 }
 
 // Normalize_title lower-cases and reduces a title to space-separated

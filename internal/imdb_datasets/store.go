@@ -17,6 +17,10 @@ import (
 // datasets later never requires loading them into RAM.
 const index_db_name = "tomovee_imdb.db"
 
+// schema_version is bumped whenever the index schema changes; an existing
+// index file with an older version is rebuilt on the next open.
+const schema_version = 2
+
 // Build_step names the stages of building the datasets index database.
 type Build_step string
 
@@ -102,11 +106,42 @@ func create_schema(db *sql.DB) error {
 			average_rating REAL NOT NULL DEFAULT 0,
 			num_votes INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
+			id UNINDEXED,
+			key,
+			tokenize = 'unicode61 remove_diacritics 2'
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("imdb_datasets: create schema: %w", err)
 		}
+	}
+	_, err := db.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, schema_version)
+	if err != nil {
+		return fmt.Errorf("imdb_datasets: record schema version: %w", err)
+	}
+	return nil
+}
+
+// populate_fts fills the FTS5 search table from the parsed titles. Primary and
+// original title keys become separate documents so both are searchable; the
+// caller deduplicates results by title id.
+func populate_fts(db *sql.DB) error {
+	if _, err := db.Exec(`
+		INSERT INTO title_fts (id, key)
+		SELECT id, pri_key FROM title WHERE pri_key != ''`); err != nil {
+		return fmt.Errorf("imdb_datasets: index primary titles: %w", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO title_fts (id, key)
+		SELECT id, orig_key FROM title WHERE orig_key IS NOT NULL AND orig_key != ''`); err != nil {
+		return fmt.Errorf("imdb_datasets: index original titles: %w", err)
 	}
 	return nil
 }
@@ -207,6 +242,9 @@ func build_index_db(source string, db_path string, on_progress func(Build_progre
 			if err != nil {
 				return err
 			}
+		}
+		if err := populate_fts(db); err != nil {
+			return err
 		}
 		return nil
 	}()
@@ -399,7 +437,8 @@ func each_row(r io.Reader, name string, required []string, fn func(func([]string
 }
 
 // index_db_fresh reports whether db_path is a complete index of the datasets
-// in source (i.e. it exists and no export is newer than it).
+// in source (i.e. it exists, was built by a compatible builder, and no export
+// is newer than it).
 func index_db_fresh(source string, db_path string) bool {
 	db_info, err := os.Stat(db_path)
 	if err != nil {
@@ -415,5 +454,22 @@ func index_db_fresh(source string, db_path string) bool {
 			return false
 		}
 	}
-	return true
+	return index_db_version(db_path) == schema_version
+}
+
+// index_db_version returns the recorded schema version of an index database,
+// or 0 when it cannot be determined (missing or unreadable file, or a file
+// built before versioning was introduced).
+func index_db_version(db_path string) int {
+	db, err := open_file_db(db_path)
+	if err != nil {
+		return 0
+	}
+	defer db.Close()
+	var version int
+	err = db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version)
+	if err != nil {
+		return 0
+	}
+	return version
 }

@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 
 	"github.com/cybersouris/tomovee/internal/database"
 )
@@ -178,11 +179,21 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) version_items(ctx context.Context, versions []database.Version) []version_item {
+	roots := make(map[int64]string)
+	if libraries, err := s.store.List_libraries(ctx); err == nil {
+		for _, library := range libraries {
+			roots[library.Id] = library.Path
+		}
+	}
 	items := make([]version_item, 0, len(versions))
 	for _, version := range versions {
 		audio, subtitles, _ := s.store.Version_tracks(ctx, version.Id)
+		display_path := version.File_path
+		if root := roots[version.Library_id]; root != "" {
+			display_path = filepath.Join(root, display_path)
+		}
 		item := version_item{
-			Id: version.Id, File_path: version.File_path, Size_bytes: version.Size_bytes,
+			Id: version.Id, File_path: display_path, Size_bytes: version.Size_bytes,
 			Duration_seconds: version.Duration_seconds, Container: version.Container,
 			Resolution_width: version.Resolution_width, Resolution_height: version.Resolution_height,
 			Resolution_label: version.Resolution_label, Video_codec: version.Video_codec,

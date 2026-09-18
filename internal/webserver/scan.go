@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -220,8 +221,18 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusServiceUnavailable, "scanner is not configured")
 		return
 	}
+	var request struct {
+		Libraries []string `json:"libraries"`
+	}
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			write_error(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
 	job, err := s.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
-		return s.scanner.Run_with_progress(ctx, progress)
+		return s.scanner.Run_libraries(ctx, request.Libraries, progress)
 	})
 	if err != nil {
 		write_error(w, http.StatusConflict, job_running_error("a scan is already running", err))

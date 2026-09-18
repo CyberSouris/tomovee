@@ -184,7 +184,7 @@ func Test_empty_lists_encode_as_arrays(t *testing.T) {
 		t.Fatalf("settings status = %d: %s", settings.Code, settings.Body)
 	}
 	settings_body := settings.Body.String()
-	for _, want := range []string{`"scan_directories":[]`, `"watch_folders":[]`} {
+	for _, want := range []string{`"libraries":[]`} {
 		if !strings.Contains(settings_body, want) {
 			t.Errorf("settings body missing %s: %s", want, settings_body)
 		}
@@ -253,7 +253,7 @@ func Test_settings_update(t *testing.T) {
 	server, _ := new_test_server(t)
 
 	update := do_request(t, server, http.MethodPut, "/api/v1/settings",
-		`{"watch_enabled": true, "folders": [{"path": "/media/movies", "enabled": true}]}`)
+		`{"watch_enabled": true, "libraries": [{"name": "Movies", "path": "/media/movies", "enabled": true}]}`)
 	if update.Code != http.StatusOK {
 		t.Fatalf("update status = %d: %s", update.Code, update.Body)
 	}
@@ -261,8 +261,8 @@ func Test_settings_update(t *testing.T) {
 	if !body.Watch_enabled {
 		t.Errorf("watch_enabled = false")
 	}
-	if len(body.Watch_folders) != 1 || body.Watch_folders[0].Path != "/media/movies" {
-		t.Fatalf("watch folders = %+v", body.Watch_folders)
+	if len(body.Libraries) != 1 || body.Libraries[0].Name != "Movies" || body.Libraries[0].Path != "/media/movies" || !body.Libraries[0].Enabled {
+		t.Fatalf("libraries = %+v", body.Libraries)
 	}
 	if !body.Tmdb_configured {
 		t.Errorf("tmdb_configured = false")

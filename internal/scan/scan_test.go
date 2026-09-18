@@ -38,7 +38,10 @@ func new_test_store(t *testing.T) *database.Store {
 
 func new_test_scanner(t *testing.T, store *database.Store, dir string) *Scanner {
 	t.Helper()
-	s := New(store, Options{Directories: []string{dir}})
+	if err := store.Ensure_library(context.Background(), "Media", dir, false); err != nil {
+		t.Fatalf("register library: %v", err)
+	}
+	s := New(store, Options{})
 	s.probe = fake_probe
 	s.hash = no_hash
 	return s
@@ -203,6 +206,94 @@ func Test_run_marks_missing(t *testing.T) {
 	missing, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "missing"})
 	if len(missing) != 1 {
 		t.Fatalf("missing entries = %+v", missing)
+	}
+}
+
+func Test_run_libraries_scans_only_named_library(t *testing.T) {
+	dir_a := t.TempDir()
+	dir_b := t.TempDir()
+	write_file(t, dir_a, "Film.A.mkv", 1000)
+	write_file(t, dir_b, "Film.B.mkv", 1000)
+
+	store := new_test_store(t)
+	ctx := context.Background()
+	s := new_test_scanner(t, store, dir_a)
+	if err := store.Ensure_library(ctx, "B", dir_b, false); err != nil {
+		t.Fatalf("register B: %v", err)
+	}
+
+	result, err := s.Run_libraries(ctx, []string{"B"}, nil)
+	if err != nil {
+		t.Fatalf("run B: %v", err)
+	}
+	if result.Found != 1 || result.New != 1 {
+		t.Fatalf("result = %+v, want only B scanned", result)
+	}
+	entries, _ := store.List_catalog_entries(ctx, database.Catalog_filter{})
+	if len(entries) != 1 || entries[0].Title != "Film B" {
+		t.Fatalf("entries = %+v", entries)
+	}
+
+	libraries, _ := store.List_libraries(ctx)
+	var lib_a database.Library
+	for _, library := range libraries {
+		if library.Name == "A" {
+			lib_a = library
+		}
+	}
+	if ref, found, err := store.Find_version_in_library(ctx, lib_a.Id, "Film.A.mkv"); err != nil || found {
+		t.Fatalf("library A must not have been scanned: found=%v err=%v ref=%+v", found, err, ref)
+	}
+
+	if _, err := s.Run_libraries(ctx, []string{"Nope"}, nil); err == nil {
+		t.Fatal("expected error for unknown library")
+	}
+}
+
+func Test_run_unknown_library_only_errors(t *testing.T) {
+	store := new_test_store(t)
+	s := New(store, Options{})
+	if _, err := s.Run_libraries(context.Background(), []string{"Nope"}, nil); err == nil {
+		t.Fatal("expected error for unknown library")
+	}
+}
+
+func Test_run_normalizes_legacy_absolute_version(t *testing.T) {
+	dir := t.TempDir()
+	path := write_file(t, dir, "Old.Movie.mkv", 1000)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	store := new_test_store(t)
+	ctx := context.Background()
+	entry, _ := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Old Movie", Status: "needs_lookup",
+	})
+	// A pre-library row: absolute path, no library.
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry, File_path: path, Size_bytes: info.Size(),
+		Mtime: format_mtime(info.ModTime()),
+	}); err != nil {
+		t.Fatalf("legacy save: %v", err)
+	}
+
+	scanner := new_test_scanner(t, store, dir)
+	result, err := scanner.Run(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 0 || result.Skipped != 1 {
+		t.Fatalf("result = %+v, want the legacy file skipped, not re-inserted", result)
+	}
+	libraries, _ := store.List_libraries(ctx)
+	versions, _ := store.List_versions_for_entry(ctx, entry)
+	if len(versions) != 1 {
+		t.Fatalf("versions = %+v", versions)
+	}
+	if versions[0].Library_id != libraries[0].Id || versions[0].File_path != "Old.Movie.mkv" {
+		t.Fatalf("version not normalized: %+v (library %+v)", versions[0], libraries[0])
 	}
 }
 

@@ -9,6 +9,7 @@ package scan
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,7 +26,6 @@ import (
 
 // Options configures a Scanner.
 type Options struct {
-	Directories      []string
 	Exclude_patterns []string
 	Min_size_bytes   int64
 	// Poster_dir, when set, receives generated frame posters for entries that
@@ -91,46 +91,71 @@ func New(store *database.Store, opts Options) *Scanner {
 	}
 }
 
-// Run executes one full scan of the configured directories.
+// Run executes one full scan of every registered library.
 func (s *Scanner) Run(ctx context.Context) (*Result, error) {
-	return s.Run_paths(ctx, nil, nil)
+	return s.Run_libraries(ctx, nil, s.opts.Progress)
 }
 
-// Run_with_progress behaves like Run but reports progress to the supplied
-// callback for this invocation only.
-func (s *Scanner) Run_with_progress(ctx context.Context, progress func(Progress)) (*Result, error) {
-	return s.Run_paths(ctx, nil, progress)
-}
-
-// Run_paths runs a scan, optionally scanning directories instead of the
-// configured ones (used by folder watching) and reporting progress. Scans are
-// serialized: a call blocks until any in-flight scan on this Scanner finishes.
-func (s *Scanner) Run_paths(ctx context.Context, directories []string, progress func(Progress)) (*Result, error) {
+// Run_libraries runs a scan. When names is non-empty only those libraries are
+// scanned (used by the web UI's per-library refresh and folder watching);
+// otherwise every registered library is scanned. The progress callback applies
+// to this invocation only. Scans are serialized: a call blocks until any
+// in-flight scan on this Scanner finishes.
+func (s *Scanner) Run_libraries(ctx context.Context, names []string, progress func(Progress)) (*Result, error) {
 	s.run_mu.Lock()
 	defer s.run_mu.Unlock()
 
-	previous_dirs := s.opts.Directories
 	previous_progress := s.opts.Progress
-	if directories != nil {
-		s.opts.Directories = directories
-	}
 	if progress != nil {
 		s.opts.Progress = progress
 	}
 	defer func() {
-		s.opts.Directories = previous_dirs
 		s.opts.Progress = previous_progress
 	}()
-	return s.run(ctx)
+	return s.run(ctx, names)
 }
 
-func (s *Scanner) run(ctx context.Context) (*Result, error) {
+func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
 	result := &Result{}
+
+	libraries, err := s.store.List_libraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries: %w", err)
+	}
+	if len(names) > 0 {
+		selected := make(map[string]bool, len(names))
+		for _, name := range names {
+			selected[name] = true
+		}
+		filtered := libraries[:0]
+		for _, library := range libraries {
+			if selected[library.Name] {
+				filtered = append(filtered, library)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("no such library: %s", strings.Join(names, ", "))
+		}
+		libraries = filtered
+	}
+	if len(libraries) == 0 {
+		result.Errors = append(result.Errors, "no libraries configured")
+		return result, nil
+	}
+
+	roots := make([]string, 0, len(libraries))
+	lib_by_id := make(map[int64]database.Library, len(libraries))
 	seen := make(map[string]bool)
 
-	roots := make([]string, 0, len(s.opts.Directories))
-	for _, dir := range s.opts.Directories {
-		abs, err := filepath.Abs(dir)
+	for _, library := range libraries {
+		lib_by_id[library.Id] = library
+		// Convert absolute-path rows left over from pre-library installs so
+		// this library's relative paths resume working.
+		if _, err := s.store.Normalize_library_versions(ctx, library); err != nil {
+			result.Errors = append(result.Errors, library.Name+": normalize: "+err.Error())
+		}
+
+		abs, err := filepath.Abs(library.Path)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			continue
@@ -146,15 +171,15 @@ func (s *Scanner) run(ctx context.Context) (*Result, error) {
 			result.Errors = append(result.Errors, err.Error())
 		}
 		result.Found += len(files)
-		s.report(Progress{Phase: "discover", Files_found: result.Found})
+		s.report(Progress{Phase: "discover", Path: library.Name, Files_found: result.Found})
 
 		for _, file := range files {
 			seen[file.Path] = true
-			s.process_file(ctx, file, result)
+			s.process_file(ctx, library, abs, file, result)
 		}
 	}
 
-	if err := s.mark_missing(ctx, roots, seen, result); err != nil {
+	if err := s.mark_missing(ctx, roots, lib_by_id, seen, result); err != nil {
 		result.Errors = append(result.Errors, "mark missing: "+err.Error())
 	}
 	s.report(Progress{
@@ -167,10 +192,15 @@ func (s *Scanner) run(ctx context.Context) (*Result, error) {
 	return result, nil
 }
 
-func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, result *Result) {
+func (s *Scanner) process_file(ctx context.Context, library database.Library, root string, file scanner.Found_file, result *Result) {
 	mtime := format_mtime(file.Mtime)
+	relative, err := filepath.Rel(root, file.Path)
+	if err != nil {
+		s.add_error(result, file.Path, err)
+		return
+	}
 
-	if ref, found, err := s.store.Find_version_by_path(ctx, file.Path); err != nil {
+	if ref, found, err := s.store.Find_version_in_library(ctx, library.Id, relative); err != nil {
 		s.add_error(result, file.Path, err)
 	} else if found && ref.Size_bytes == file.Size_bytes && ref.Mtime == mtime {
 		result.Skipped++
@@ -194,7 +224,7 @@ func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, res
 		return
 	}
 
-	if err := s.persist(ctx, file, info, hash); err != nil {
+	if err := s.persist(ctx, library, root, file, info, hash); err != nil {
 		s.add_error(result, file.Path, err)
 		s.report_file(result, file.Path)
 		return
@@ -222,6 +252,7 @@ func (s *Scanner) report(progress Progress) {
 	}
 }
 
+// add_error records a per-file failure without aborting the scan.
 func (s *Scanner) add_error(result *Result, path string, err error) {
 	result.Errors = append(result.Errors, path+": "+err.Error())
 	s.opts.Logger.Warn("scan: file failed", "path", path, "error", err)
@@ -229,35 +260,42 @@ func (s *Scanner) add_error(result *Result, path string, err error) {
 
 // mark_missing flags entries and episodes under the scanned roots whose files
 // were not seen during this scan. A catalog entry is only flagged missing when
-// none of its versions remain present.
-func (s *Scanner) mark_missing(ctx context.Context, roots []string, seen map[string]bool, result *Result) error {
+// none of its versions remain present. Entries that still have versions in a
+// library that was not part of this scan (or in legacy absolute-path rows) are
+// never flagged, so a partial library refresh cannot hide files elsewhere.
+func (s *Scanner) mark_missing(ctx context.Context, roots []string, lib_by_id map[int64]database.Library, seen map[string]bool, result *Result) error {
 	refs, err := s.store.List_version_refs(ctx)
 	if err != nil {
 		return err
 	}
 	entries := make(map[int64]bool)
 	present := make(map[int64]bool)
+	excluded := make(map[int64]bool)
 	for _, ref := range refs {
-		if !under_any_root(ref.File_path, roots) {
+		path := existing_version_path(ref, lib_by_id)
+		in_scope := under_any_root(path, roots)
+		if ref.Catalog_entry_id > 0 {
+			if in_scope {
+				entries[ref.Catalog_entry_id] = true
+				if seen[path] {
+					present[ref.Catalog_entry_id] = true
+				}
+			} else {
+				excluded[ref.Catalog_entry_id] = true
+			}
+		}
+		if !in_scope {
 			continue
 		}
-		if ref.Episode_id > 0 {
-			if !seen[ref.File_path] {
-				if err := s.store.Set_episode_status(ctx, ref.Episode_id, "missing"); err != nil {
-					return err
-				}
-				result.Missing++
+		if ref.Episode_id > 0 && !seen[path] {
+			if err := s.store.Set_episode_status(ctx, ref.Episode_id, "missing"); err != nil {
+				return err
 			}
-		}
-		if ref.Catalog_entry_id > 0 {
-			entries[ref.Catalog_entry_id] = true
-			if seen[ref.File_path] {
-				present[ref.Catalog_entry_id] = true
-			}
+			result.Missing++
 		}
 	}
 	for entry_id := range entries {
-		if present[entry_id] {
+		if excluded[entry_id] || present[entry_id] {
 			continue
 		}
 		if err := s.store.Set_catalog_status(ctx, entry_id, "missing"); err != nil {
@@ -266,6 +304,19 @@ func (s *Scanner) mark_missing(ctx context.Context, roots []string, seen map[str
 		result.Missing++
 	}
 	return nil
+}
+
+// existing_version_path reconstructs the filesystem path of a version row.
+// Library-relative rows are joined against their library's root; rows with no
+// library (legacy absolute paths, or libraries outside this scan) pass through
+// unchanged.
+func existing_version_path(ref database.Version_ref, lib_by_id map[int64]database.Library) string {
+	if ref.Library_id > 0 {
+		if library, ok := lib_by_id[ref.Library_id]; ok && library.Path != "" {
+			return filepath.Join(library.Path, ref.File_path)
+		}
+	}
+	return ref.File_path
 }
 
 func under_any_root(path string, roots []string) bool {

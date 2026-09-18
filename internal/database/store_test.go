@@ -134,9 +134,16 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M", Status: "matched"})
+	if err := store.Upsert_library(ctx, "Media", "/media", true); err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	libraries, _ := store.List_libraries(ctx)
+	if len(libraries) != 1 {
+		t.Fatalf("libraries = %+v", libraries)
+	}
 
 	version_id, err := store.Save_version(ctx, Version{
-		Catalog_entry_id: entry, File_path: "/media/m.mkv", Size_bytes: 100,
+		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "m.mkv", Size_bytes: 100,
 		Mtime: "2026-01-01T00:00:00Z", Resolution_label: "1080p",
 		Audio:     []Audio_track{{Language: "eng", Codec: "aac", Channels: 2}},
 		Subtitles: []Subtitle_track{{Language: "eng", Format: "subrip"}},
@@ -145,14 +152,14 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	if _, err := store.Save_version(ctx, Version{
-		Catalog_entry_id: entry, File_path: "/media/m.mkv", Size_bytes: 100,
+		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "m.mkv", Size_bytes: 100,
 		Mtime: "2026-01-01T00:00:00Z", Resolution_label: "4K",
 		Audio: []Audio_track{{Language: "fre", Codec: "dts", Channels: 6}},
 	}); err != nil {
 		t.Fatalf("resave: %v", err)
 	}
 
-	ref, found, err := store.Find_version_by_path(ctx, "/media/m.mkv")
+	ref, found, err := store.Find_version_in_library(ctx, libraries[0].Id, "m.mkv")
 	if err != nil || !found {
 		t.Fatalf("find: %v found=%v", err, found)
 	}
@@ -256,28 +263,106 @@ func Test_config_store(t *testing.T) {
 	}
 }
 
-func Test_watch_folders(t *testing.T) {
+func Test_libraries(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
-	if err := store.Set_watch_folder(ctx, "/media/movies", true); err != nil {
-		t.Fatalf("set: %v", err)
+	if err := store.Upsert_library(ctx, "Movies", "/media/movies", true); err != nil {
+		t.Fatalf("upsert: %v", err)
 	}
-	if err := store.Set_watch_folder(ctx, "/media/shows", false); err != nil {
-		t.Fatalf("set: %v", err)
+	if err := store.Upsert_library(ctx, "Shows", "/media/shows", false); err != nil {
+		t.Fatalf("upsert: %v", err)
 	}
-	enabled, _ := store.Enabled_watch_folders(ctx)
-	if len(enabled) != 1 || enabled[0].Path != "/media/movies" {
+	enabled, _ := store.Enabled_libraries(ctx)
+	if len(enabled) != 1 || enabled[0].Name != "Movies" {
 		t.Fatalf("enabled = %+v", enabled)
 	}
-	if err := store.Touch_watch_folder(ctx, "/media/movies", "2026-01-01T00:00:00Z"); err != nil {
+	if err := store.Touch_library(ctx, "Movies", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
-	all, _ := store.List_watch_folders(ctx)
-	if len(all) != 2 {
+	all, _ := store.List_libraries(ctx)
+	if len(all) != 2 || all[0].Name != "Movies" || all[1].Name != "Shows" {
 		t.Fatalf("all = %+v", all)
 	}
 	if all[0].Last_scan == "" {
 		t.Errorf("last_scan not recorded: %+v", all[0])
+	}
+	if all[1].Enabled {
+		t.Errorf("Shows should stay disabled: %+v", all[1])
+	}
+}
+
+func Test_ensure_library_renames_for_path(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	if err := store.Ensure_library(ctx, "movies", "/media/movies", true); err != nil {
+		t.Fatalf("ensure first: %v", err)
+	}
+	enabled_before := func() Library {
+		list, _ := store.List_libraries(ctx)
+		return list[0]
+	}
+	before := enabled_before()
+	if !before.Enabled {
+		t.Fatalf("library not enabled: %+v", before)
+	}
+	if err := store.Ensure_library(ctx, "Movies", "/media/movies", false); err != nil {
+		t.Fatalf("ensure rename: %v", err)
+	}
+	list, _ := store.List_libraries(ctx)
+	if len(list) != 1 || list[0].Name != "Movies" {
+		t.Fatalf("libraries after rename = %+v", list)
+	}
+	if !list[0].Enabled {
+		t.Errorf("rename must preserve enabled state: %+v", list[0])
+	}
+}
+
+func Test_normalize_library_versions(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	if err := store.Ensure_library(ctx, "Media", "/media", true); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	libraries, _ := store.List_libraries(ctx)
+	lib := libraries[0]
+
+	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M", Status: "matched"})
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: entry, File_path: "/media/sub/movie.mkv", Size_bytes: 100,
+	}); err != nil {
+		t.Fatalf("legacy save: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: entry, File_path: "/elsewhere/other.mkv", Size_bytes: 200,
+	}); err != nil {
+		t.Fatalf("outside save: %v", err)
+	}
+
+	rewritten, err := store.Normalize_library_versions(ctx, lib)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if rewritten != 1 {
+		t.Fatalf("rewritten = %d, want 1", rewritten)
+	}
+
+	if ref, found, err := store.Find_version_in_library(ctx, lib.Id, "sub/movie.mkv"); err != nil || !found {
+		t.Fatalf("normalized path not found: %v found=%v", err, found)
+	} else if ref.Id != 0 && ref.File_path != "sub/movie.mkv" {
+		t.Fatalf("ref = %+v", ref)
+	}
+	if ref, found, _ := store.Find_version_in_library(ctx, 0, "/media/sub/movie.mkv"); found {
+		t.Fatalf("legacy absolute row still present: %+v", ref)
+	}
+	// The row outside the library keeps its absolute path.
+	outside, found, err := store.Find_version_in_library(ctx, 0, "/elsewhere/other.mkv")
+	if err != nil || !found {
+		t.Fatalf("outside row lost: %v found=%v", err, found)
+	}
+	if outside.File_path != "/elsewhere/other.mkv" {
+		t.Errorf("outside path = %q", outside.File_path)
 	}
 }

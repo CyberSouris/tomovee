@@ -12,10 +12,16 @@ import (
 )
 
 // persist groups the file under a catalog entry, creates the episode row when
-// applicable, and writes the version with its stored hash. Matching is a
-// separate, later step, so entries are persisted as "needs_lookup"; entries
-// that are already matched keep their richer metadata untouched.
-func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *metadata.File_info, hash string) error {
+// applicable, and writes the version with its stored hash. File paths are
+// stored relative to the library's root. Matching is a separate, later step,
+// so entries are persisted as "needs_lookup"; entries that are already matched
+// keep their richer metadata untouched.
+func (s *Scanner) persist(ctx context.Context, library database.Library, root string, file scanner.Found_file, info *metadata.File_info, hash string) error {
+	relative, err := filepath.Rel(root, file.Path)
+	if err != nil {
+		return err
+	}
+
 	media_type := media_type_string(file.Media_type)
 	entry := catalog_entry_from(file, media_type)
 
@@ -26,6 +32,8 @@ func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *me
 
 	version := version_from(file, info)
 	version.Hash = hash
+	version.Library_id = library.Id
+	version.File_path = relative
 	if media_type == "series" && file.Episode != nil {
 		episode_id, err := s.store.Upsert_episode(ctx, episode_from(entry_id, file))
 		if err != nil {

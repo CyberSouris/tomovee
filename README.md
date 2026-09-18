@@ -18,9 +18,9 @@ and serves a browsable web UI plus a JSON API.
   disappeared files are flagged `missing`.
 - **Manual re-matching** — resolve unmatched entries by TMDB or IMDb id.
 - **Web UI + REST API** — browse, search, filter, inspect versions and tracks,
-  trigger scans and background matching with live progress, and manage watch
-  folders.
-- **Folder watching** — optional polling of enabled folders picks up new files
+  trigger per-library scans and background matching with live progress, and
+  manage per-library watching.
+- **Folder watching** — optional polling of enabled libraries picks up new files
   automatically.
 - **Local poster cache** — posters are downloaded and served from disk.
 - **Frame fallback** — items without online artwork get a still frame extracted
@@ -60,9 +60,9 @@ Pass `--config PATH` to override. See `config.example.yaml` for every option.
 Minimal example:
 
 ```yaml
-scan_directories:
-  - ~/Media/Movies
-  - ~/Media/TV
+libraries:
+  Movies: ~/Media/Movies
+  TV: ~/Media/TV
 api:
   tmdb_key: "your-tmdb-api-key"
 ```

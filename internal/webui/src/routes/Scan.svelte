@@ -7,6 +7,7 @@
   let running = false;
   let error = '';
   let source = null;
+  let libraries = [];
 
   async function refresh() {
     try {
@@ -21,11 +22,20 @@
     }
   }
 
-  async function start() {
+  async function load_libraries() {
+    try {
+      const data = await api_get('/api/v1/settings');
+      libraries = data.libraries || [];
+    } catch (err) {
+      error = err.message;
+    }
+  }
+
+  async function start(library) {
     error = '';
     result = null;
     try {
-      await api_send('/api/v1/scan', 'POST', {});
+      await api_send('/api/v1/scan', 'POST', library ? { libraries: [library] } : {});
       running = true;
     } catch (err) {
       error = err.message;
@@ -34,6 +44,7 @@
 
   onMount(() => {
     refresh();
+    load_libraries();
     source = new EventSource('/api/v1/scan/stream');
     source.addEventListener('status', (event) => {
       const data = JSON.parse(event.data);
@@ -66,7 +77,15 @@
 </script>
 
 <section>
-  <button on:click={start} disabled={running}>{running ? 'Scanning…' : 'Start scan'}</button>
+  <button on:click={() => start(null)} disabled={running}>{running ? 'Scanning…' : 'Scan all'}</button>
+  {#each libraries as library}
+    <button class="secondary" on:click={() => start(library.name)} disabled={running}>
+      {library.name}
+    </button>
+  {/each}
+  {#if !libraries.length && !error}
+    <p class="muted">No libraries configured.</p>
+  {/if}
   {#if error}<p class="error">{error}</p>{/if}
 
   {#if progress}
@@ -113,6 +132,11 @@
     color: var(--bad);
   }
 
+  .errors {
+    color: var(--bad);
+    font-size: 0.85rem;
+  }
+
   .counters {
     display: flex;
     gap: 1.5rem;
@@ -138,10 +162,5 @@
   .path {
     font-size: 0.85rem;
     word-break: break-all;
-  }
-
-  .errors {
-    color: var(--bad);
-    font-size: 0.85rem;
   }
 </style>

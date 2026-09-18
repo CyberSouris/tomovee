@@ -100,21 +100,21 @@ then `./config.yaml`. Sample:
 database_path: ~/.local/share/tomovee/tomovee.db
 poster_cache_dir: ~/.local/share/tomovee/posters
 listen: "127.0.0.1:8080"
-scan_directories:
-  - /mnt/media/movies
-  - /mnt/media/shows
+libraries:
+  movies: /mnt/media/movies
+  shows: /mnt/media/shows
 api:
   tmdb_key: ""
   opensubtitles_username: ""
   opensubtitles_password: ""
   opensubtitles_user_agent: "Tomovee/0.1 by Cyber Souris"
-watch_enabled: false        # global default; per-folder toggle in UI persists to DB
+watch_enabled: false        # global default; per-library toggle in UI persists to DB
 scan:
   quality_subdir_min_size: 2  # not used yet — placeholder for future tidy suggestions
 ```
 
 Validation rules:
-- At least one `scan_directories` entry OR an active watch must be possible.
+- At least one `libraries` entry OR an active watch must be possible.
 - API keys may be empty; matching falls back gracefully (filename parsing /
   manual match), but a warning is logged.
 
@@ -122,7 +122,10 @@ Validation rules:
 
 ### 6.1 File discovery
 
-- Walk each configured directory **recursively**.
+- Walk each library's root directory **recursively**. Libraries are a named
+  map (`libraries: <name>: <path>`); file paths are stored relative to each
+  library's root. A scan can target one or more named libraries (web UI
+  buttons, `--library`, the watch loop) or all of them.
 - Accepted extensions (case-insensitive): the broad set of video containers —
   `.mkv`, `.mp4`, `.avi`, `.mov`, `.webm`, `.ts`, `.m2ts`, `.mts`, `.wmv`,
   `.flv`, `.m4v`, `.mpg`, `.mpeg`, `.vob`, `.ogv`, `.divx`.
@@ -243,18 +246,21 @@ Tables (names in `snake_case`; expand during migration work):
   - `id`, `catalog_entry_id`, `season_number`, `episode_number`, `title`,
     `overview`, `airdate`, `is_special`
 - `version`
-  - `id`, `catalog_entry_id` OR `episode_id`, `file_path`, `size_bytes`,
-    `mtime`, `duration_seconds`, `container`, `resolution` (w × h + label),
+  - `id`, `catalog_entry_id` OR `episode_id`, `library_id`, `file_path`
+    (relative to the library root), `size_bytes`, `mtime`,
+    `duration_seconds`, `container`, `resolution` (w × h + label),
     `video_codec`, `hdr`, `frame_rate`, `bit_depth`
   - track data may be augmented from sidecar files; provenance is tracked
     (`ffprobe` | `sidecar`) so conflicts can be reviewed
 - `audio_track` (`version_id`, `language`, `codec`, `channels`, `source`)
 - `subtitle_track` (`version_id`, `language`, `format`, `source`)
 - `lookup_cache` (`kind`, `key`, `payload`, `created_at`) — cached external API results
-- `watch_folder` (`path`, `enabled`, `last_scan`)
+- `library` (`name`, `path`, `enabled`, `last_scan`)
 
 Mappings: movies→versions via `catalog_entry_id`; episodes→versions via
-`episode_id`. Unique constraints protect against duplicate file paths.
+`episode_id`. Unique constraints protect against duplicate file paths within a
+library. Absence of `library_id` marks a legacy absolute-path row; such rows
+are rewritten to `library_id` + relative path on the next scan of that library.
 
 ## 8. Runtime modes
 
@@ -262,15 +268,16 @@ Mappings: movies→versions via `catalog_entry_id`; episodes→versions via
 
 - Loads config + DB, starts the HTTP server, serves API + SPA on `listen`.
 - Provides scan triggers, job progress reporting, watch loops.
-- **Folder watching**: off by default. A user can enable watching per folder in
-  the UI; the daemon then polls (e.g. every 5 min) or watches file events and
-  only scans new/changed files. State persisted in `watch_folder` table.
+- **Folder watching**: off by default. A user can enable watching per library in
+  the UI; the daemon then polls (e.g. every 5 min) and scans new/changed files.
+  State persisted in `library` table.
 
 ### 8.2 One-shot CLI (`tomovee scan`)
 
-- Runs the full scanning pipeline once against configured directories, writes
-  results to the DB, then exits. Prints a summary (n found, n new, n matched,
-  n unmatched, errors).
+- Runs the full scanning pipeline once against all configured libraries, or
+  against the named ones given via repeated `--library NAME`, writes results to
+  the DB, then exits. Prints a summary (n found, n new, n skipped, n missing,
+  errors).
 - `--help` and `version` subcommands.
 
 ## 9. Web UI (Svelte SPA)

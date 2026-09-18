@@ -14,13 +14,19 @@ import (
 // Config is the top-level application configuration. It is the merged result
 // of built-in defaults, an optional YAML file, and any applied overrides.
 type Config struct {
-	Database_path    string      `yaml:"database_path"`
-	Poster_cache_dir string      `yaml:"poster_cache_dir"`
-	Listen           string      `yaml:"listen"`
-	Scan_directories []string    `yaml:"scan_directories"`
-	Api              Api_config  `yaml:"api"`
-	Watch_enabled    bool        `yaml:"watch_enabled"`
-	Scan             Scan_config `yaml:"scan"`
+	Database_path    string `yaml:"database_path"`
+	Poster_cache_dir string `yaml:"poster_cache_dir"`
+	Listen           string `yaml:"listen"`
+	// Libraries names the media folders to scan, keyed by a human-readable
+	// name. Each entry is a library: stored file paths are relative to its
+	// root and a single library can be re-scanned independently.
+	Libraries map[string]string `yaml:"libraries"`
+	Api       Api_config        `yaml:"api"`
+	// Watch_enabled is the default for newly registered libraries and the
+	// master switch for the folder watcher. Individual libraries persist their
+	// own enabled state to the database and can be changed from the web UI.
+	Watch_enabled bool        `yaml:"watch_enabled"`
+	Scan          Scan_config `yaml:"scan"`
 	// Imdb_datasets_path optionally points at a directory holding IMDb dataset
 	// exports (title.basics.tsv.gz with optional title.akas.tsv.gz,
 	// title.episode.tsv.gz, and title.ratings.tsv.gz) used for offline,
@@ -111,16 +117,20 @@ func (c *Config) Normalize() error {
 	if c.Imdb_datasets_path != "" {
 		c.Imdb_datasets_path = normalize_path(c.Imdb_datasets_path)
 	}
-	dirs := make([]string, 0, len(c.Scan_directories))
-	for i, dir := range c.Scan_directories {
-		norm := normalize_path(dir)
-		if norm == "" {
-			errs = append(errs, fmt.Sprintf("scan_directories[%d] is empty", i))
+	libraries := make(map[string]string, len(c.Libraries))
+	for name, dir := range c.Libraries {
+		if strings.TrimSpace(name) == "" {
+			errs = append(errs, "libraries: library name must not be empty")
 			continue
 		}
-		dirs = append(dirs, norm)
+		norm := normalize_path(dir)
+		if norm == "" {
+			errs = append(errs, fmt.Sprintf("libraries: %q path is empty", name))
+			continue
+		}
+		libraries[strings.TrimSpace(name)] = norm
 	}
-	c.Scan_directories = dirs
+	c.Libraries = libraries
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}
@@ -139,8 +149,8 @@ func (c *Config) Validate() error {
 	if c.Listen == "" {
 		errs = append(errs, "listen must not be empty")
 	}
-	if len(c.Scan_directories) == 0 && !c.Watch_enabled {
-		errs = append(errs, "at least one scan_directories entry is required (or enable folder watching)")
+	if len(c.Libraries) == 0 && !c.Watch_enabled {
+		errs = append(errs, "at least one library is required (or enable folder watching)")
 	}
 	if c.Scan.Min_file_size_mb < 0 {
 		errs = append(errs, "scan.min_file_size_mb must not be negative")

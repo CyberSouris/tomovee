@@ -14,7 +14,7 @@ func Test_open_in_memory_applies_migrations(t *testing.T) {
 	}
 	defer d.Close()
 
-	want := []int{1, 2}
+	want := []int{1, 2, 3}
 	if got, err := d.Migrations_applied(); err != nil {
 		t.Fatalf("migrations applied: %v", err)
 	} else if !reflect.DeepEqual(got, want) {
@@ -45,7 +45,7 @@ func Test_open_creates_all_tables(t *testing.T) {
 	want := []string{
 		"schema_migrations", "config", "catalog_entry", "genre",
 		"catalog_entry_genre", "series_metadata", "episode", "version",
-		"audio_track", "subtitle_track", "lookup_cache", "watch_folder",
+		"audio_track", "subtitle_track", "lookup_cache", "library",
 	}
 	rows, err := d.Sql().Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
 	if err != nil {
@@ -86,7 +86,7 @@ func Test_open_is_idempotent_across_reopen(t *testing.T) {
 	}
 	defer d2.Close()
 
-	want := []int{1, 2}
+	want := []int{1, 2, 3}
 	if got, err := d2.Migrations_applied(); err != nil {
 		t.Fatalf("migrations applied: %v", err)
 	} else if !reflect.DeepEqual(got, want) {

@@ -5,30 +5,31 @@ import (
 	"net/http"
 )
 
-type watch_folder_item struct {
+type library_item struct {
+	Name      string `json:"name"`
 	Path      string `json:"path"`
 	Enabled   bool   `json:"enabled"`
 	Last_scan string `json:"last_scan,omitempty"`
 }
 
 type settings_response struct {
-	Listen                   string              `json:"listen"`
-	Database_path            string              `json:"database_path"`
-	Poster_cache_dir         string              `json:"poster_cache_dir"`
-	Scan_directories         []string            `json:"scan_directories"`
-	Imdb_datasets_path       string              `json:"imdb_datasets_path,omitempty"`
-	Watch_enabled            bool                `json:"watch_enabled"`
-	Tmdb_configured          bool                `json:"tmdb_configured"`
-	Opensubtitles_configured bool                `json:"opensubtitles_configured"`
-	Watch_folders            []watch_folder_item `json:"watch_folders"`
+	Listen                   string         `json:"listen"`
+	Database_path            string         `json:"database_path"`
+	Poster_cache_dir         string         `json:"poster_cache_dir"`
+	Imdb_datasets_path       string         `json:"imdb_datasets_path,omitempty"`
+	Watch_enabled            bool           `json:"watch_enabled"`
+	Tmdb_configured          bool           `json:"tmdb_configured"`
+	Opensubtitles_configured bool           `json:"opensubtitles_configured"`
+	Libraries                []library_item `json:"libraries"`
 }
 
 type settings_update struct {
 	Watch_enabled *bool `json:"watch_enabled"`
-	Folders       []struct {
+	Libraries     []struct {
+		Name    string `json:"name"`
 		Path    string `json:"path"`
 		Enabled bool   `json:"enabled"`
-	} `json:"folders"`
+	} `json:"libraries"`
 }
 
 func (s *Server) handle_settings_get(w http.ResponseWriter, r *http.Request) {
@@ -56,11 +57,11 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for _, folder := range update.Folders {
-		if folder.Path == "" {
+	for _, library := range update.Libraries {
+		if library.Name == "" {
 			continue
 		}
-		if err := s.store.Set_watch_folder(r.Context(), folder.Path, folder.Enabled); err != nil {
+		if err := s.store.Upsert_library(r.Context(), library.Name, library.Path, library.Enabled); err != nil {
 			write_error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -74,33 +75,29 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) settings(r *http.Request) (settings_response, error) {
-	scan_directories := s.cfg.Scan_directories
-	if scan_directories == nil {
-		scan_directories = []string{}
-	}
 	response := settings_response{
 		Listen:                   s.cfg.Listen,
 		Database_path:            s.cfg.Database_path,
 		Poster_cache_dir:         s.cfg.Poster_cache_dir,
-		Scan_directories:         scan_directories,
 		Imdb_datasets_path:       s.cfg.Imdb_datasets_path,
 		Watch_enabled:            s.cfg.Watch_enabled,
 		Tmdb_configured:          s.cfg.Api.Tmdb_key != "",
 		Opensubtitles_configured: s.cfg.Api.Opensubtitles_api_key != "",
-		Watch_folders:            []watch_folder_item{},
+		Libraries:                []library_item{},
 	}
 	if value, ok, err := s.store.Config_get(r.Context(), "watch_enabled"); err != nil {
 		return response, err
 	} else if ok {
 		response.Watch_enabled = value == "true"
 	}
-	folders, err := s.store.List_watch_folders(r.Context())
+	libraries, err := s.store.List_libraries(r.Context())
 	if err != nil {
 		return response, err
 	}
-	for _, folder := range folders {
-		response.Watch_folders = append(response.Watch_folders, watch_folder_item{
-			Path: folder.Path, Enabled: folder.Enabled, Last_scan: folder.Last_scan,
+	for _, library := range libraries {
+		response.Libraries = append(response.Libraries, library_item{
+			Name: library.Name, Path: library.Path,
+			Enabled: library.Enabled, Last_scan: library.Last_scan,
 		})
 	}
 	return response, nil

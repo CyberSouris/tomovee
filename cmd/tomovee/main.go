@@ -18,6 +18,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/metacache"
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
@@ -107,16 +108,17 @@ func open_database(cfg *config.Config) (*database.Database, error) {
 	return d, nil
 }
 
-// pipeline bundles the matching components so both the scanner and the web
-// API can share one configured instance.
+// pipeline bundles the matching components so both the background matching job
+// and the web API share one configured instance.
 type pipeline struct {
 	matcher  *matcher.Matcher
 	metadata matcher.Metadata_source
+	datasets *imdb_datasets.Index
 }
 
 // build_pipeline assembles the matching pipeline from the configured API keys
-// and optional offline dataset. Missing keys are warnings, not errors: the
-// pipeline degrades gracefully per the specification.
+// and the optional IMDb datasets directory or file. Missing keys are warnings,
+// not errors: the pipeline degrades gracefully per the specification.
 func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Store) (*pipeline, error) {
 	opts := matcher.Options{Logger: logger}
 
@@ -138,16 +140,18 @@ func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Sto
 		opts.Metadata = metacache.New(opts.Metadata, store, metacache.Default_ttl, logger)
 	}
 
+	var datasets *imdb_datasets.Index
 	if cfg.Imdb_datasets_path != "" {
 		index, err := imdb_datasets.Open(cfg.Imdb_datasets_path)
 		if err != nil {
 			return nil, err
 		}
+		datasets = index
 		logger.Info("imdb datasets loaded", "path", cfg.Imdb_datasets_path, "titles", index.Count())
 		opts.Offline = imdb_datasets.New_matcher_source(index)
 	}
 
-	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata}, nil
+	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata, datasets: datasets}, nil
 }
 
 func cmd_serve(logger *slog.Logger, args []string) error {
@@ -170,7 +174,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	runner := scan.New(store, pipe.matcher, scan.Options{
+	runner := scan.New(store, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Poster_dir:     cfg.Poster_cache_dir,
@@ -189,16 +193,24 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Logger:     logger,
 	})
 
+	matching_service := matching.New(store, pipe.matcher, pipe.datasets, logger)
+
 	server := webserver.New(webserver.Options{
 		Store:    store,
 		Config:   cfg,
 		Matcher:  pipe.matcher,
 		Metadata: pipe.metadata,
 		Scanner:  runner,
+		Matching: matching_service,
 		Posters:  posters,
 		Static:   webui.FS(),
 		Logger:   logger,
 	})
+
+	if matching_configured(cfg) {
+		logger.Info("starting background matching at startup")
+		server.Auto_match()
+	}
 
 	watch_ctx, stop_watch := context.WithCancel(context.Background())
 	defer stop_watch()
@@ -253,18 +265,13 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	defer db.Close()
 
 	store := database.New_store(db)
-	pipe, err := build_pipeline(logger, cfg, store)
-	if err != nil {
-		return err
-	}
 
 	progress := func(p scan.Progress) {
 		if p.Phase == "file" {
-			logger.Info("scanning", "scanned", p.Files_scanned, "matched", p.Matched,
-				"unmatched", p.Unmatched, "file", p.Path)
+			logger.Info("scanning", "scanned", p.Files_scanned, "new", p.New_files, "file", p.Path)
 		}
 	}
-	runner := scan.New(store, pipe.matcher, scan.Options{
+	runner := scan.New(store, scan.Options{
 		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Poster_dir:     cfg.Poster_cache_dir,
@@ -277,10 +284,16 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 		return err
 	}
 
-	fmt.Printf("scan complete: %d found, %d new, %d matched, %d unmatched, %d skipped, %d missing, %d error(s)\n",
-		result.Found, result.New, result.Matched, result.Unmatched, result.Skipped, result.Missing, len(result.Errors))
+	fmt.Printf("scan complete: %d found, %d new, %d skipped, %d missing, %d error(s)\n",
+		result.Found, result.New, result.Skipped, result.Missing, len(result.Errors))
 	for _, e := range result.Errors {
 		fmt.Fprintln(os.Stderr, "error:", e)
 	}
 	return nil
+}
+
+// matching_configured reports whether any source for the background matching
+// job is present.
+func matching_configured(cfg *config.Config) bool {
+	return cfg.Api.Tmdb_key != "" || cfg.Api.Opensubtitles_api_key != "" || cfg.Imdb_datasets_path != ""
 }

@@ -11,34 +11,23 @@ import (
 	"github.com/cybersouris/tomovee/internal/scanner"
 )
 
-// persist groups the file's match under a catalog entry, creates the episode
-// row when applicable, and writes the version with its tracks.
-func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *metadata.File_info, match *matcher.Result) error {
+// persist groups the file under a catalog entry, creates the episode row when
+// applicable, and writes the version with its stored hash. Matching is a
+// separate, later step, so entries are persisted as "needs_lookup"; entries
+// that are already matched keep their richer metadata untouched.
+func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *metadata.File_info, hash string) error {
 	media_type := media_type_string(file.Media_type)
-	if match.Matched {
-		media_type = media_type_string(match.Media_type)
-	}
+	entry := catalog_entry_from(file, media_type)
 
-	entry_id, err := s.store.Upsert_catalog_entry(ctx, catalog_entry_from(file, match, media_type))
+	entry_id, err := s.entry_id(ctx, entry)
 	if err != nil {
 		return err
 	}
 
-	if media_type == "series" {
-		if err := s.store.Upsert_series_metadata(ctx, database.Series_metadata{
-			Catalog_entry_id: entry_id,
-			First_air_date:   match.First_air_date,
-			Last_air_date:    match.Last_air_date,
-			Num_seasons:      match.Number_of_seasons,
-			Num_episodes:     match.Number_of_episodes,
-		}); err != nil {
-			return err
-		}
-	}
-
 	version := version_from(file, info)
+	version.Hash = hash
 	if media_type == "series" && file.Episode != nil {
-		episode_id, err := s.store.Upsert_episode(ctx, episode_from(entry_id, file, match))
+		episode_id, err := s.store.Upsert_episode(ctx, episode_from(entry_id, file))
 		if err != nil {
 			return err
 		}
@@ -54,9 +43,29 @@ func (s *Scanner) persist(ctx context.Context, file scanner.Found_file, info *me
 	return nil
 }
 
+// entry_id returns the catalog entry the file belongs to. Unmatched entries
+// (and new groups) are upserted from the parsed filename; already-matched
+// entries keep their existing row so a re-scan does not downgrade them.
+func (s *Scanner) entry_id(ctx context.Context, entry database.Catalog_entry) (int64, error) {
+	existing_id, found, err := s.store.Find_catalog_entry(ctx, entry)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		existing, err := s.store.Get_catalog_entry(ctx, existing_id)
+		if err != nil {
+			return 0, err
+		}
+		if existing != nil && existing.Status == "matched" {
+			return existing.Id, nil
+		}
+	}
+	return s.store.Upsert_catalog_entry(ctx, entry)
+}
+
 // Catalog_entry_from_match converts a matcher result into a catalog entry,
 // deriving its status from whether the match succeeded. It is exported for the
-// web API's manual re-matching.
+// web API's matching pipeline.
 func Catalog_entry_from_match(match *matcher.Result) database.Catalog_entry {
 	status := "needs_lookup"
 	if match.Matched {
@@ -79,26 +88,29 @@ func Catalog_entry_from_match(match *matcher.Result) database.Catalog_entry {
 	}
 }
 
-func catalog_entry_from(file scanner.Found_file, match *matcher.Result, media_type string) database.Catalog_entry {
-	entry := Catalog_entry_from_match(match)
-	entry.Media_type = media_type
-	if entry.Title == "" {
-		entry.Title = strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
+// catalog_entry_from derives the entry stored during an offline scan from the
+// parsed file name. The media type is taken from the scanner's classification.
+func catalog_entry_from(file scanner.Found_file, media_type string) database.Catalog_entry {
+	hint := matcher.Parse_filename(file.Name)
+	title := hint.Title
+	if title == "" {
+		title = strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
 	}
-	return entry
+	return database.Catalog_entry{
+		Media_type:   media_type,
+		Title:        title,
+		Release_year: hint.Year,
+		Status:       "needs_lookup",
+	}
 }
 
-func episode_from(entry_id int64, file scanner.Found_file, match *matcher.Result) database.Episode {
-	status := "needs_lookup"
-	if match.Matched {
-		status = "matched"
-	}
+func episode_from(entry_id int64, file scanner.Found_file) database.Episode {
 	return database.Episode{
 		Catalog_entry_id: entry_id,
 		Season_number:    file.Episode.Season,
 		Episode_number:   file.Episode.Episode,
 		Is_special:       file.Is_special,
-		Status:           status,
+		Status:           "needs_lookup",
 	}
 }
 

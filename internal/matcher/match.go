@@ -135,6 +135,12 @@ func New(opts Options) *Matcher {
 	}
 }
 
+// Has_sources reports whether at least one metadata source is configured, so
+// callers can refuse to start a background job that could never match anything.
+func (m *Matcher) Has_sources() bool {
+	return m.metadata != nil || m.subtitles != nil || m.offline != nil
+}
+
 // Match identifies a file, always returning a result. A result with
 // Matched == false carries the parsed title/year and any candidates for manual
 // matching.

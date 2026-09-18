@@ -13,6 +13,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
 )
@@ -24,23 +25,27 @@ type Options struct {
 	Matcher  *matcher.Matcher
 	Metadata matcher.Metadata_source
 	Scanner  *scan.Scanner
+	// Matching, when set, backs the background matching job and its endpoints.
+	Matching *matching.Matching
 	Posters  *poster_cache.Cache
 	Static   fs.FS
 	Logger   *slog.Logger
 }
 
-// Server holds the HTTP handlers and background scan state.
+// Server holds the HTTP handlers and background job state.
 type Server struct {
 	store    *database.Store
 	cfg      *config.Config
 	matcher  *matcher.Matcher
 	metadata matcher.Metadata_source
 	scanner  *scan.Scanner
+	matching *matching.Matching
 	posters  *poster_cache.Cache
 	static   fs.FS
 	logger   *slog.Logger
 	mux      *http.ServeMux
-	jobs     *Job_manager
+	jobs     *job_manager[scan.Progress, scan.Result]
+	matches  *job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.
@@ -55,11 +60,13 @@ func New(opts Options) *Server {
 		matcher:  opts.Matcher,
 		metadata: opts.Metadata,
 		scanner:  opts.Scanner,
+		matching: opts.Matching,
 		posters:  opts.Posters,
 		static:   opts.Static,
 		logger:   logger,
 		mux:      http.NewServeMux(),
-		jobs:     new_job_manager(logger),
+		jobs:     new_job_manager[scan.Progress, scan.Result](logger),
+		matches:  new_job_manager[matching.Progress, matching.Result](logger),
 	}
 	s.routes()
 	return s
@@ -78,6 +85,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/scan", s.handle_scan_start)
 	s.mux.HandleFunc("GET /api/v1/scan/status", s.handle_scan_status)
 	s.mux.HandleFunc("GET /api/v1/scan/stream", s.handle_scan_stream)
+	s.mux.HandleFunc("POST /api/v1/match", s.handle_match_start)
+	s.mux.HandleFunc("GET /api/v1/match/status", s.handle_match_status)
+	s.mux.HandleFunc("GET /api/v1/match/stream", s.handle_match_stream)
 	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)
 	s.mux.HandleFunc("PUT /api/v1/settings", s.handle_settings_put)
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)

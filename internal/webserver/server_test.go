@@ -16,8 +16,10 @@ import (
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
+	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
+	"github.com/cybersouris/tomovee/internal/scanner"
 	"github.com/cybersouris/tomovee/internal/thumbnail"
 	"github.com/cybersouris/tomovee/internal/tmdb"
 	"github.com/cybersouris/tomovee/internal/webui"
@@ -54,6 +56,16 @@ func (f fake_metadata) Find_by_imdb(context.Context, string) (*tmdb.Find_result,
 	return &tmdb.Find_result{}, nil
 }
 
+// fake_offline supplies a canned offline candidate so the background matching
+// job can auto-match without network access.
+type fake_offline struct{}
+
+func (fake_offline) Search(_ context.Context, _ string, _ int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	return []matcher.Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}, nil
+}
+
 func new_test_server(t *testing.T) (*Server, *database.Store) {
 	t.Helper()
 	d, err := database.Open(":memory:")
@@ -75,8 +87,9 @@ func new_test_server(t *testing.T) (*Server, *database.Store) {
 		},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := matcher.New(matcher.Options{Metadata: metadata, Logger: logger})
-	runner := scan.New(store, m, scan.Options{Logger: logger})
+	m := matcher.New(matcher.Options{Metadata: metadata, Offline: fake_offline{}, Logger: logger})
+	runner := scan.New(store, scan.Options{Logger: logger})
+	matching_service := matching.New(store, m, nil, logger)
 	cfg := &config.Config{
 		Listen:           "127.0.0.1:0",
 		Database_path:    ":memory:",
@@ -85,7 +98,7 @@ func new_test_server(t *testing.T) (*Server, *database.Store) {
 	}
 	server := New(Options{
 		Store: store, Config: cfg, Matcher: m, Metadata: metadata,
-		Scanner: runner, Static: webui.FS(), Logger: logger,
+		Scanner: runner, Matching: matching_service, Static: webui.FS(), Logger: logger,
 	})
 	return server, store
 }
@@ -314,4 +327,79 @@ func Test_scan_job_runs(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("scan job did not finish in time")
+}
+
+func unmatched_entry_with_version(t *testing.T, store *database.Store) int64 {
+	t.Helper()
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv",
+		Size_bytes: 9000, Hash: "hash-1",
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	return id
+}
+
+func wait_for_match_job(t *testing.T, server *Server, want_matched int) *match_job_response {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+		body := decode[struct {
+			Job *match_job_response `json:"job"`
+		}](t, status)
+		if body.Job != nil && !body.Job.Running {
+			if body.Job.Result == nil {
+				t.Fatalf("finished match job has no result")
+			}
+			if body.Job.Result.Matched != want_matched {
+				t.Fatalf("matched = %d, want %d (result %+v)",
+					body.Job.Result.Matched, want_matched, body.Job.Result)
+			}
+			return body.Job
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("match job did not finish in time")
+	return nil
+}
+
+func Test_match_job_matches_offline(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	id := unmatched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_job(t, server, 1)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" || entry.Title != "The Matrix" {
+		t.Fatalf("entry = %+v, want matched matrix", entry)
+	}
+}
+
+func Test_auto_match_runs_nonblocking(t *testing.T) {
+	server, _ := new_test_server(t)
+	unmatched_entry_with_version(t, server.store)
+
+	server.Auto_match()
+
+	status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+	if status.Code != http.StatusOK {
+		t.Fatalf("status immediately after auto-match = %d", status.Code)
+	}
+	wait_for_match_job(t, server, 1)
 }

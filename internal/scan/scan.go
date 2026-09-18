@@ -1,8 +1,9 @@
-// Package scan orchestrates the end-to-end scanning pipeline: discovery,
-// re-scan detection, hashing, ffprobe metadata extraction, matching, and
-// persistence (including version grouping). It lives apart from the scanner
-// package because the matcher already depends on scanner's classification
-// types; orchestrating both here keeps the dependency graph acyclic.
+// Package scan orchestrates the scanning pipeline: discovery, re-scan
+// detection, hashing, ffprobe metadata extraction, and persistence (including
+// version grouping). It lives apart from the scanner package because the
+// matcher already depends on scanner's classification types; orchestrating both
+// here keeps the dependency graph acyclic. Scanning is fully offline: matching
+// runs separately (internal/matching) and streams its own progress.
 package scan
 
 import (
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cybersouris/tomovee/internal/database"
-	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/metadata"
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/scanner"
@@ -37,36 +37,32 @@ type Options struct {
 	Progress func(Progress)
 }
 
-// Progress is a point-in-time report of scanning activity.
+// Progress is a point-in-time report of scanning activity. Match counts are
+// deliberately absent: matching now runs as a separate background job.
 type Progress struct {
 	Phase         string
 	Path          string
 	Files_found   int
 	Files_scanned int
 	New_files     int
-	Matched       int
-	Unmatched     int
 	Skipped       int
 	Errors        int
 }
 
 // Result summarizes a completed scan.
 type Result struct {
-	Found     int
-	Scanned   int
-	New       int
-	Matched   int
-	Unmatched int
-	Skipped   int
-	Missing   int
-	Errors    []string
+	Found   int
+	Scanned int
+	New     int
+	Skipped int
+	Missing int
+	Errors  []string
 }
 
-// Scanner runs the scanning pipeline against the persisted catalog.
+// Scanner runs the offline scanning pipeline against the persisted catalog.
 type Scanner struct {
-	store   *database.Store
-	matcher *matcher.Matcher
-	opts    Options
+	store *database.Store
+	opts  Options
 
 	run_mu sync.Mutex
 
@@ -80,7 +76,7 @@ type Scanner struct {
 }
 
 // New builds a Scanner.
-func New(store *database.Store, m *matcher.Matcher, opts Options) *Scanner {
+func New(store *database.Store, opts Options) *Scanner {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -88,7 +84,6 @@ func New(store *database.Store, m *matcher.Matcher, opts Options) *Scanner {
 	opts.Logger = logger
 	return &Scanner{
 		store:   store,
-		matcher: m,
 		opts:    opts,
 		probe:   metadata.Probe,
 		hash:    opensubtitles.Compute_hash,
@@ -166,8 +161,6 @@ func (s *Scanner) run(ctx context.Context) (*Result, error) {
 		Phase:       "done",
 		Files_found: result.Found,
 		New_files:   result.New,
-		Matched:     result.Matched,
-		Unmatched:   result.Unmatched,
 		Skipped:     result.Skipped,
 		Errors:      len(result.Errors),
 	})
@@ -179,7 +172,7 @@ func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, res
 
 	if ref, found, err := s.store.Find_version_by_path(ctx, file.Path); err != nil {
 		s.add_error(result, file.Path, err)
-	} else if found && ref.Size_bytes == file.Size_bytes && ref.Mtime == mtime && ref.Status == "matched" {
+	} else if found && ref.Size_bytes == file.Size_bytes && ref.Mtime == mtime {
 		result.Skipped++
 		s.report_file(result, file.Path)
 		return
@@ -201,25 +194,13 @@ func (s *Scanner) process_file(ctx context.Context, file scanner.Found_file, res
 		return
 	}
 
-	match := s.matcher.Match(ctx, matcher.Input{
-		Path:      file.Path,
-		File_name: file.Name,
-		Hash:      hash,
-		Kind:      file.Media_type,
-	})
-
-	if err := s.persist(ctx, file, info, match); err != nil {
+	if err := s.persist(ctx, file, info, hash); err != nil {
 		s.add_error(result, file.Path, err)
 		s.report_file(result, file.Path)
 		return
 	}
 
 	result.New++
-	if match.Matched {
-		result.Matched++
-	} else {
-		result.Unmatched++
-	}
 	s.report_file(result, file.Path)
 }
 
@@ -230,8 +211,6 @@ func (s *Scanner) report_file(result *Result, path string) {
 		Files_found:   result.Found,
 		Files_scanned: result.Scanned,
 		New_files:     result.New,
-		Matched:       result.Matched,
-		Unmatched:     result.Unmatched,
 		Skipped:       result.Skipped,
 		Errors:        len(result.Errors),
 	})

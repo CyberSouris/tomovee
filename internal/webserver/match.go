@@ -78,6 +78,12 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if result.Matched && s.matching != nil {
+		if err := s.matching.Enrich_episodes(r.Context(), id, result); err != nil {
+			write_error(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	fresh, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil || fresh == nil {
 		write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")

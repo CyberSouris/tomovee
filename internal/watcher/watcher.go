@@ -107,7 +107,7 @@ func (w *Watcher) Scan_once(ctx context.Context) error {
 		}
 	}
 	w.logger.Info("watch scan complete",
-		"new", result.New, "matched", result.Matched, "unmatched", result.Unmatched, "errors", len(result.Errors))
+		"new", result.New, "skipped", result.Skipped, "errors", len(result.Errors))
 	if w.on_scan != nil {
 		w.on_scan(*result)
 	}

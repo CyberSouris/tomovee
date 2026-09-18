@@ -7,47 +7,9 @@ import (
 	"testing"
 
 	"github.com/cybersouris/tomovee/internal/database"
-	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/metadata"
 	"github.com/cybersouris/tomovee/internal/thumbnail"
-	"github.com/cybersouris/tomovee/internal/tmdb"
 )
-
-// fake_metadata is a scripted matcher.Metadata_source.
-type fake_metadata struct{}
-
-func (fake_metadata) Search_movie(_ context.Context, _ string, _ int) ([]tmdb.Movie_search_result, error) {
-	return []tmdb.Movie_search_result{{
-		Id: 603, Title: "The Matrix", Release_date: "1999-03-31",
-	}}, nil
-}
-
-func (fake_metadata) Search_tv(_ context.Context, _ string, _ int) ([]tmdb.Tv_search_result, error) {
-	return []tmdb.Tv_search_result{{
-		Id: 1396, Name: "Breaking Bad", First_air_date: "2008-01-20",
-	}}, nil
-}
-
-func (fake_metadata) Movie_details(_ context.Context, id int) (*tmdb.Movie_details, error) {
-	return &tmdb.Movie_details{
-		Id: id, Imdb_id: "tt0133093", Title: "The Matrix", Original_title: "The Matrix",
-		Release_date: "1999-03-31", Overview: "Sci-fi", Runtime: 136,
-		Genres: []tmdb.Genre{{Id: 28, Name: "Action"}},
-	}, nil
-}
-
-func (fake_metadata) Tv_details(_ context.Context, id int) (*tmdb.Tv_details, error) {
-	return &tmdb.Tv_details{
-		Id: id, Imdb_id: "tt0903747", Name: "Breaking Bad", Original_name: "Breaking Bad",
-		First_air_date: "2008-01-20", Last_air_date: "2013-09-29",
-		Number_of_seasons: 5, Number_of_episodes: 62,
-		Genres: []tmdb.Genre{{Id: 18, Name: "Drama"}},
-	}, nil
-}
-
-func (fake_metadata) Find_by_imdb(_ context.Context, _ string) (*tmdb.Find_result, error) {
-	return &tmdb.Find_result{}, nil
-}
 
 func fake_probe(_ context.Context, path string) (*metadata.File_info, error) {
 	return &metadata.File_info{
@@ -74,9 +36,9 @@ func new_test_store(t *testing.T) *database.Store {
 	return database.New_store(d)
 }
 
-func new_test_scanner(t *testing.T, store *database.Store, m *matcher.Matcher, dir string) *Scanner {
+func new_test_scanner(t *testing.T, store *database.Store, dir string) *Scanner {
 	t.Helper()
-	s := New(store, m, Options{Directories: []string{dir}})
+	s := New(store, Options{Directories: []string{dir}})
 	s.probe = fake_probe
 	s.hash = no_hash
 	return s
@@ -97,13 +59,13 @@ func Test_run_groups_versions(t *testing.T) {
 	write_file(t, dir, "The.Matrix.1999.2160p.mkv", 2000)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{Metadata: fake_metadata{}}), dir)
+	s := new_test_scanner(t, store, dir)
 
 	result, err := s.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Found != 2 || result.New != 2 || result.Matched != 2 {
+	if result.Found != 2 || result.New != 2 {
 		t.Fatalf("result = %+v", result)
 	}
 
@@ -129,7 +91,7 @@ func Test_run_rescan_skips_unchanged(t *testing.T) {
 	write_file(t, dir, "The.Matrix.1999.2160p.mkv", 2000)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{Metadata: fake_metadata{}}), dir)
+	s := new_test_scanner(t, store, dir)
 
 	if _, err := s.Run(context.Background()); err != nil {
 		t.Fatalf("first run: %v", err)
@@ -143,18 +105,73 @@ func Test_run_rescan_skips_unchanged(t *testing.T) {
 	}
 }
 
+func Test_run_stores_hash_offline(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "Mystery.Film.mkv", 1000)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+	s.hash = func(string) (string, error) { return "abc-hash-123", nil }
+
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{})
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	versions, _ := store.List_versions_for_entry(context.Background(), entries[0].Id)
+	if len(versions) != 1 || versions[0].Hash != "abc-hash-123" {
+		t.Fatalf("versions = %+v, want stored hash", versions)
+	}
+}
+
+func Test_run_keeps_matched_entries_untouched(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "The.Matrix.1999.1080p.mkv", 1000)
+
+	store := new_test_store(t)
+	ctx := context.Background()
+	matched_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Original_title: "The Matrix",
+		Release_year: 1999, Imdb_id: "tt0133093", Tmdb_id: 603,
+		Overview: "A hacker learns the truth.", Rating: 8.2,
+		Status: "matched", Genres: []string{"Action"},
+	})
+	if err != nil {
+		t.Fatalf("upsert matched entry: %v", err)
+	}
+
+	s := new_test_scanner(t, store, dir)
+	if _, err := s.Run(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	entry, err := store.Get_catalog_entry(ctx, matched_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" || entry.Overview != "A hacker learns the truth." {
+		t.Fatalf("matched entry was degraded: %+v", entry)
+	}
+	versions, _ := store.List_versions_for_entry(ctx, matched_id)
+	if len(versions) != 1 {
+		t.Fatalf("versions = %d, want the new file attached", len(versions))
+	}
+}
+
 func Test_run_unmatched_entries(t *testing.T) {
 	dir := t.TempDir()
 	write_file(t, dir, "Mystery.Film.mkv", 1000)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{}), dir)
+	s := new_test_scanner(t, store, dir)
 
 	result, err := s.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Unmatched != 1 || result.Matched != 0 {
+	if result.New != 1 {
 		t.Fatalf("result = %+v", result)
 	}
 	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "needs_lookup"})
@@ -168,7 +185,7 @@ func Test_run_marks_missing(t *testing.T) {
 	path := write_file(t, dir, "Old.Movie.2001.mkv", 1000)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{Metadata: fake_metadata{}}), dir)
+	s := new_test_scanner(t, store, dir)
 	if _, err := s.Run(context.Background()); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -194,7 +211,7 @@ func Test_run_extracts_frame_poster(t *testing.T) {
 	write_file(t, dir, "Mystery.Film.mkv", 1000)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{}), dir)
+	s := new_test_scanner(t, store, dir)
 	poster_dir := t.TempDir()
 	s.opts.Poster_dir = poster_dir
 	s.extract = func(_ context.Context, _ string, _ float64, out string) error {
@@ -224,22 +241,28 @@ func Test_run_series_episodes(t *testing.T) {
 	write_file(t, dir, "Breaking.Bad.S01E02.mkv", 1100)
 
 	store := new_test_store(t)
-	s := new_test_scanner(t, store, matcher.New(matcher.Options{Metadata: fake_metadata{}}), dir)
+	s := new_test_scanner(t, store, dir)
 
 	result, err := s.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Matched != 2 {
+	if result.New != 2 {
 		t.Fatalf("result = %+v", result)
 	}
 	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
 	if len(entries) != 1 || entries[0].Title != "Breaking Bad" {
 		t.Fatalf("entries = %+v", entries)
 	}
+	if entries[0].Status != "needs_lookup" {
+		t.Fatalf("entry status = %q, want needs_lookup", entries[0].Status)
+	}
 	episodes, _ := store.List_episodes(context.Background(), entries[0].Id)
 	if len(episodes) != 2 || episodes[0].Episode_number != 1 || episodes[1].Episode_number != 2 {
 		t.Fatalf("episodes = %+v", episodes)
+	}
+	if episodes[0].Status != "needs_lookup" {
+		t.Fatalf("episode status = %q, want needs_lookup", episodes[0].Status)
 	}
 	versions, _ := store.List_versions_for_episode(context.Background(), episodes[0].Id)
 	if len(versions) != 1 {

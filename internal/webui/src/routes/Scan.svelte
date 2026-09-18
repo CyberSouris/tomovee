@@ -60,8 +60,6 @@
     ['files_found', 'Found'],
     ['files_scanned', 'Scanned'],
     ['new_files', 'New'],
-    ['matched', 'Matched'],
-    ['unmatched', 'Unmatched'],
     ['skipped', 'Skipped'],
     ['errors', 'Errors'],
   ];
@@ -89,8 +87,8 @@
   {#if result}
     <h2>Result</h2>
     <p>
-      {result.found} found, {result.new} new, {result.matched} matched,
-      {result.unmatched} unmatched, {result.skipped} skipped, {result.missing} missing.
+      {result.found} found, {result.new} new, {result.skipped} skipped,
+      {result.missing} missing.
     </p>
     {#if result.errors && result.errors.length}
       <ul class="errors">

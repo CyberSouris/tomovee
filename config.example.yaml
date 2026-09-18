@@ -34,6 +34,8 @@ scan:
   # Files smaller than this are ignored during discovery.
   min_file_size_mb: 50
 
-# Optional path to an IMDb title.basics.tsv(.gz) export used for offline,
-# network-free matching when the online APIs are unavailable.
+# Optional path to a directory holding IMDb dataset exports (title.basics.tsv.gz
+# plus optional title.akas.tsv.gz, title.episode.tsv.gz, and title.ratings.tsv.gz)
+# used for offline, network-free matching. A single title.basics.tsv(.gz) file
+# is also accepted.
 imdb_datasets_path: ""

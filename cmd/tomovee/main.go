@@ -274,7 +274,11 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	stop_watch()
 	shutdown_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return http_server.Shutdown(shutdown_ctx)
+	shutdown_err := http_server.Shutdown(shutdown_ctx)
+	if pipe.datasets != nil {
+		_ = pipe.datasets.Close()
+	}
+	return shutdown_err
 }
 
 func cmd_scan(logger *slog.Logger, args []string) error {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cybersouris/tomovee/internal/scanner"
 )
@@ -301,6 +302,67 @@ func Test_search_empty(t *testing.T) {
 	}
 	if got := index.Search("Nonexistent Film", 0, scanner.Movie); len(got) != 0 {
 		t.Errorf("unknown query = %+v", got)
+	}
+}
+
+func Test_open_reuses_and_rebuilds_index(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "title.basics.tsv"), []byte(test_tsv), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	index, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if index.Count() != 7 {
+		t.Fatalf("count = %d, want 7", index.Count())
+	}
+	if err := index.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	index, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got := index.Search("The Matrix", 0, scanner.Movie); len(got) != 1 || got[0].Id != "tt0133093" {
+		t.Errorf("search after reopen = %+v", got)
+	}
+	_ = index.Close()
+
+	// A dataset newer than the index triggers a rebuild.
+	now := time.Now()
+	if err := os.Chtimes(filepath.Join(dir, "title.basics.tsv"), now.Add(time.Minute), now.Add(time.Minute)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	index, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen after touch: %v", err)
+	}
+	defer index.Close()
+	if index.Count() != 7 {
+		t.Errorf("count after rebuild = %d, want 7", index.Count())
+	}
+}
+
+func Test_open_single_file_builds_sidecar_index(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "title.basics.tsv")
+	if err := os.WriteFile(path, []byte(test_tsv), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	index, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer index.Close()
+	if index.Count() != 7 {
+		t.Errorf("count = %d, want 7", index.Count())
+	}
+	if _, err := os.Stat(filepath.Join(dir, index_db_name)); err != nil {
+		t.Errorf("sidecar index not created: %v", err)
 	}
 }
 

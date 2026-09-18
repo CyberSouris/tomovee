@@ -1,4 +1,4 @@
-// Package watcher periodically scans enabled watch folders so newly added or
+// Package watcher periodically scans enabled libraries so newly added or
 // changed files are picked up without a manual scan.
 package watcher
 
@@ -18,7 +18,7 @@ const Default_interval = 5 * time.Minute
 // Runner is the scanning behavior the watcher depends on. *scan.Scanner
 // satisfies it.
 type Runner interface {
-	Run_paths(ctx context.Context, directories []string, progress func(scan.Progress)) (*scan.Result, error)
+	Run_libraries(ctx context.Context, names []string, progress func(scan.Progress)) (*scan.Result, error)
 }
 
 // Options configures a Watcher.
@@ -79,30 +79,30 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// Scan_once scans all enabled watch folders a single time, if watching is on.
+// Scan_once scans all enabled libraries a single time, if watching is on.
 func (w *Watcher) Scan_once(ctx context.Context) error {
 	if !w.enabled(ctx) {
 		return nil
 	}
-	folders, err := w.store.Enabled_watch_folders(ctx)
+	libraries, err := w.store.Enabled_libraries(ctx)
 	if err != nil {
 		return err
 	}
-	if len(folders) == 0 {
+	if len(libraries) == 0 {
 		return nil
 	}
-	directories := make([]string, 0, len(folders))
-	for _, folder := range folders {
-		directories = append(directories, folder.Path)
+	names := make([]string, 0, len(libraries))
+	for _, library := range libraries {
+		names = append(names, library.Name)
 	}
-	w.logger.Info("watch scan starting", "folders", len(directories))
-	result, err := w.runner.Run_paths(ctx, directories, nil)
+	w.logger.Info("watch scan starting", "libraries", len(names))
+	result, err := w.runner.Run_libraries(ctx, names, nil)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	for _, folder := range folders {
-		if err := w.store.Touch_watch_folder(ctx, folder.Path, now); err != nil {
+	for _, library := range libraries {
+		if err := w.store.Touch_library(ctx, library.Name, now); err != nil {
 			return err
 		}
 	}

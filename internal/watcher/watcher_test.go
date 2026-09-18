@@ -14,8 +14,8 @@ type fake_runner struct {
 	calls [][]string
 }
 
-func (f *fake_runner) Run_paths(_ context.Context, directories []string, _ func(scan.Progress)) (*scan.Result, error) {
-	f.calls = append(f.calls, append([]string(nil), directories...))
+func (f *fake_runner) Run_libraries(_ context.Context, names []string, _ func(scan.Progress)) (*scan.Result, error) {
+	f.calls = append(f.calls, append([]string(nil), names...))
 	return &scan.Result{}, nil
 }
 
@@ -49,16 +49,16 @@ func Test_scan_once_skips_when_disabled(t *testing.T) {
 	}
 }
 
-func Test_scan_once_scans_enabled_folders(t *testing.T) {
+func Test_scan_once_scans_enabled_libraries(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	if err := store.Config_set(ctx, "watch_enabled", "true"); err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	if err := store.Set_watch_folder(ctx, "/media/enabled", true); err != nil {
+	if err := store.Upsert_library(ctx, "enabled", "/media/enabled", true); err != nil {
 		t.Fatalf("set enabled: %v", err)
 	}
-	if err := store.Set_watch_folder(ctx, "/media/disabled", false); err != nil {
+	if err := store.Upsert_library(ctx, "disabled", "/media/disabled", false); err != nil {
 		t.Fatalf("set disabled: %v", err)
 	}
 
@@ -70,20 +70,20 @@ func Test_scan_once_scans_enabled_folders(t *testing.T) {
 	if len(runner.calls) != 1 {
 		t.Fatalf("runner calls = %d, want 1", len(runner.calls))
 	}
-	if len(runner.calls[0]) != 1 || runner.calls[0][0] != "/media/enabled" {
-		t.Fatalf("directories = %v", runner.calls[0])
+	if len(runner.calls[0]) != 1 || runner.calls[0][0] != "enabled" {
+		t.Fatalf("names = %v", runner.calls[0])
 	}
 
-	folders, err := store.List_watch_folders(ctx)
+	libraries, err := store.List_libraries(ctx)
 	if err != nil {
-		t.Fatalf("list folders: %v", err)
+		t.Fatalf("list libraries: %v", err)
 	}
-	for _, folder := range folders {
-		if folder.Path == "/media/enabled" && folder.Last_scan == "" {
-			t.Errorf("last_scan not recorded for enabled folder")
+	for _, library := range libraries {
+		if library.Name == "enabled" && library.Last_scan == "" {
+			t.Errorf("last_scan not recorded for enabled library")
 		}
-		if folder.Path == "/media/disabled" && folder.Last_scan != "" {
-			t.Errorf("last_scan recorded for disabled folder")
+		if library.Name == "disabled" && library.Last_scan != "" {
+			t.Errorf("last_scan recorded for disabled library")
 		}
 	}
 }
@@ -91,8 +91,8 @@ func Test_scan_once_scans_enabled_folders(t *testing.T) {
 func Test_scan_once_uses_default_when_unset(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
-	if err := store.Set_watch_folder(ctx, "/media/movies", true); err != nil {
-		t.Fatalf("set folder: %v", err)
+	if err := store.Upsert_library(ctx, "media", "/media/movies", true); err != nil {
+		t.Fatalf("set library: %v", err)
 	}
 
 	runner := &fake_runner{}

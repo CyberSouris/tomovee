@@ -17,8 +17,7 @@
   }
 
   function normalize(data) {
-    data.scan_directories = data.scan_directories || [];
-    data.watch_folders = data.watch_folders || [];
+    data.libraries = data.libraries || [];
     return data;
   }
 
@@ -41,9 +40,10 @@
       settings = normalize(
         await api_send('/api/v1/settings', 'PUT', {
           watch_enabled: settings.watch_enabled,
-          folders: settings.watch_folders.map((folder) => ({
-            path: folder.path,
-            enabled: folder.enabled,
+          libraries: settings.libraries.map((library) => ({
+            name: library.name,
+            path: library.path,
+            enabled: library.enabled,
           })),
         }),
       );
@@ -69,18 +69,6 @@
         <tr><th>Database</th><td>{settings.database_path}</td></tr>
         <tr><th>Poster cache</th><td>{settings.poster_cache_dir}</td></tr>
         <tr><th>Listen</th><td>{settings.listen}</td></tr>
-        <tr>
-          <th>Scan directories</th>
-          <td>
-            {#if settings.scan_directories.length}
-              {#each settings.scan_directories as dir}
-                <div>{dir}</div>
-              {/each}
-            {:else}
-              <span class="muted">none configured</span>
-            {/if}
-          </td>
-        </tr>
         <tr>
           <th>IMDb datasets</th>
           <td>
@@ -126,24 +114,28 @@
       Enable folder watching
     </label>
 
-    {#if settings.watch_folders.length}
+    {#if settings.libraries.length}
       <table>
         <thead>
-          <tr><th>Folder</th><th>Enabled</th><th>Last scan</th></tr>
+          <tr><th>Name</th><th>Path</th><th>Enabled</th><th>Last scan</th></tr>
         </thead>
         <tbody>
-          {#each settings.watch_folders as folder}
+          {#each settings.libraries as library}
             <tr>
-              <td>{folder.path}</td>
-              <td><input type="checkbox" bind:checked={folder.enabled} /></td>
-              <td class="muted">{folder.last_scan || '—'}</td>
+              <td>{library.name}</td>
+              <td>{library.path}</td>
+              <td><input type="checkbox" bind:checked={library.enabled} /></td>
+              <td class="muted">{library.last_scan || '—'}</td>
             </tr>
           {/each}
         </tbody>
       </table>
+      <p class="muted help">
+        Libraries and their paths come from the <code>libraries</code> config map.
+      </p>
     {:else}
       <p class="muted">
-        No watch folders yet. They are registered when a scan discovers files.
+        No libraries yet. Add a <code>libraries</code> map to the config file.
       </p>
     {/if}
 

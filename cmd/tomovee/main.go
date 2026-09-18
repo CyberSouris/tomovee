@@ -61,18 +61,33 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `tomovee %s — movie and TV database
 
 Usage:
-  tomovee serve [--config PATH]   run the daemon (REST API + web UI)
-  tomovee scan  [--config PATH]   run a one-shot scan and exit
-  tomovee version                 print the version
-  tomovee help                    show this help
+  tomovee serve [--config PATH]              run the daemon (REST API + web UI)
+  tomovee scan  [--config PATH] [--library NAME...]  run a one-shot scan and exit
+  tomovee version                            print the version
+  tomovee help                               show this help
 
-  --config PATH   config file (default: %s)
+  --config PATH    config file (default: %s)
+  --library NAME   scan only the named library (repeatable; default: all)
 `, version, config.Default_config_path())
 }
 
-func load_config(args []string) (*config.Config, error) {
+// string_list is a repeatable command-line flag.
+type string_list []string
+
+func (s *string_list) String() string { return strings.Join(*s, ",") }
+func (s *string_list) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
+// load_config parses the command line, reads the config file, and validates
+// it. extra_flags may register additional flags for the invoking command.
+func load_config(args []string, extra_flags ...func(*flag.FlagSet)) (*config.Config, error) {
 	fs := flag.NewFlagSet("tomovee", flag.ContinueOnError)
 	config_path := fs.String("config", "", "path to the YAML config file")
+	for _, extra := range extra_flags {
+		extra(fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -92,6 +107,18 @@ func load_config(args []string) (*config.Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// register_libraries mirrors the config's libraries into the database so the
+// scanner, watcher, and web UI all see the same set. Existing rows keep their
+// enabled state and scan timestamps.
+func register_libraries(ctx context.Context, store *database.Store, cfg *config.Config, default_enabled bool) error {
+	for name, dir := range cfg.Libraries {
+		if err := store.Ensure_library(ctx, name, dir, default_enabled); err != nil {
+			return fmt.Errorf("register library %q: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func open_database(cfg *config.Config) (*database.Database, error) {
@@ -175,16 +202,13 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		return err
 	}
 	runner := scan.New(store, scan.Options{
-		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Poster_dir:     cfg.Poster_cache_dir,
 		Logger:         logger,
 	})
 
-	for _, dir := range cfg.Scan_directories {
-		if err := store.Ensure_watch_folder(context.Background(), dir, cfg.Watch_enabled); err != nil {
-			return err
-		}
+	if err := register_libraries(context.Background(), store, cfg, cfg.Watch_enabled); err != nil {
+		return err
 	}
 
 	posters := poster_cache.New(poster_cache.Options{
@@ -254,7 +278,10 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 }
 
 func cmd_scan(logger *slog.Logger, args []string) error {
-	cfg, err := load_config(args)
+	var libraries string_list
+	cfg, err := load_config(args, func(fs *flag.FlagSet) {
+		fs.Var(&libraries, "library", "scan only the named library (repeatable)")
+	})
 	if err != nil {
 		return err
 	}
@@ -265,6 +292,9 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	defer db.Close()
 
 	store := database.New_store(db)
+	if err := register_libraries(context.Background(), store, cfg, cfg.Watch_enabled); err != nil {
+		return err
+	}
 
 	progress := func(p scan.Progress) {
 		if p.Phase == "file" {
@@ -272,14 +302,13 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 		}
 	}
 	runner := scan.New(store, scan.Options{
-		Directories:    cfg.Scan_directories,
 		Min_size_bytes: int64(cfg.Scan.Min_file_size_mb) * 1024 * 1024,
 		Poster_dir:     cfg.Poster_cache_dir,
 		Logger:         logger,
 		Progress:       progress,
 	})
 
-	result, err := runner.Run(context.Background())
+	result, err := runner.Run_libraries(context.Background(), []string(libraries), nil)
 	if err != nil {
 		return err
 	}

@@ -77,6 +77,10 @@ type Version struct {
 	Id               int64
 	Catalog_entry_id int64
 	Episode_id       int64
+	// Library_id is the library whose root File_path is relative to. Versions
+	// scanned before libraries existed keep an absolute File_path and a zero
+	// Library_id; they are normalized the next time their library is scanned.
+	Library_id       int64
 	File_path        string
 	Size_bytes       int64
 	Mtime            string
@@ -101,6 +105,7 @@ type Version_ref struct {
 	Id               int64
 	Catalog_entry_id int64
 	Episode_id       int64
+	Library_id       int64
 	File_path        string
 	Size_bytes       int64
 	Mtime            string

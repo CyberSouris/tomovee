@@ -10,10 +10,13 @@ poster_cache_dir: ~/.local/share/tomovee/posters
 # HTTP listen address for `tomovee serve`.
 listen: 127.0.0.1:8080
 
-# Folders scanned for media files. Required unless watch_enabled is true.
-scan_directories:
-  - ~/Media/Movies
-  - ~/Media/TV
+# Named media libraries scanned for files. Each entry maps a name to its root
+# directory; the name identifies the library for per-library scans. Stored file
+# paths are relative to each library's root. At least one library is required
+# unless watch_enabled is true.
+libraries:
+  movies: ~/Media/Movies
+  tv: ~/Media/TV
 
 # External API credentials. All are optional; matching degrades gracefully.
 api:
@@ -23,8 +26,9 @@ api:
   opensubtitles_password: ""
   opensubtitles_user_agent: "Tomovee/0.1 by Cyber Souris"
 
-# Global default for folder watching; per-folder toggles persist to the
-# database and can be changed from the web UI.
+# Default for newly registered libraries' watching state, and the master switch
+# for folder watching. Per-library toggles persist to the database and can be
+# changed from the web UI.
 watch_enabled: false
 
 scan:

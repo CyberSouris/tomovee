@@ -35,9 +35,9 @@ func Test_load_full_config(t *testing.T) {
 database_path: /tmp/library.db
 poster_cache_dir: /tmp/posters
 listen: 0.0.0.0:9090
-scan_directories:
-  - /mnt/media/movies
-  - /mnt/media/shows
+libraries:
+  movies: /mnt/media/movies
+  shows: /mnt/media/shows
 api:
   tmdb_key: abc123
   opensubtitles_api_key: os-key
@@ -60,8 +60,8 @@ scan:
 	if cfg.Api.Opensubtitles_api_key != "os-key" {
 		t.Errorf("opensubtitles_api_key = %q, want os-key", cfg.Api.Opensubtitles_api_key)
 	}
-	if len(cfg.Scan_directories) != 2 {
-		t.Fatalf("scan_directories = %v, want 2 entries", cfg.Scan_directories)
+	if len(cfg.Libraries) != 2 || cfg.Libraries["movies"] != "/mnt/media/movies" {
+		t.Fatalf("libraries = %v, want movies and shows", cfg.Libraries)
 	}
 	if cfg.Scan.Min_file_size_mb != 120 {
 		t.Errorf("min_file_size_mb = %d, want 120", cfg.Scan.Min_file_size_mb)
@@ -95,30 +95,51 @@ func Test_normalize_expands_tilde(t *testing.T) {
 	}
 	cfg := Defaults()
 	cfg.Database_path = "~/library.db"
-	cfg.Scan_directories = []string{"~/movies", "/absolute/path"}
+	cfg.Libraries = map[string]string{"movies": "~/movies", "other": "/absolute/path"}
 	if err := cfg.Normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if cfg.Database_path != filepath.Join(home, "library.db") {
 		t.Errorf("database_path = %q, want %q", cfg.Database_path, filepath.Join(home, "library.db"))
 	}
-	if cfg.Scan_directories[0] != filepath.Join(home, "movies") {
-		t.Errorf("scan dir 0 = %q, want %q", cfg.Scan_directories[0], filepath.Join(home, "movies"))
+	if cfg.Libraries["movies"] != filepath.Join(home, "movies") {
+		t.Errorf("library movies = %q, want %q", cfg.Libraries["movies"], filepath.Join(home, "movies"))
+	}
+	if cfg.Libraries["other"] != "/absolute/path" {
+		t.Errorf("library other = %q, want /absolute/path", cfg.Libraries["other"])
 	}
 }
 
-func Test_validate_requires_scan_dir_or_watch(t *testing.T) {
+func Test_normalize_rejects_empty_library(t *testing.T) {
 	cfg := Defaults()
-	cfg.Scan_directories = nil
+	cfg.Libraries = map[string]string{"empty": "   ", "good": "/media"}
+	err := cfg.Normalize()
+	if err == nil {
+		t.Fatal("expected error for empty library path")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention the bad library, got: %v", err)
+	}
+}
+
+func Test_validate_requires_library_or_watch(t *testing.T) {
+	cfg := Defaults()
+	cfg.Libraries = nil
 	cfg.Watch_enabled = false
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error when no scan dirs and no watch")
+		t.Fatal("expected error when no libraries and no watch")
 	}
-	if !strings.Contains(err.Error(), "scan_directories") {
-		t.Errorf("error should mention scan_directories, got: %v", err)
+	if !strings.Contains(err.Error(), "library") {
+		t.Errorf("error should mention library, got: %v", err)
 	}
 
+	cfg.Libraries = map[string]string{"movies": "/media/movies"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("no error expected with a library, got: %v", err)
+	}
+
+	cfg.Libraries = nil
 	cfg.Watch_enabled = true
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("no error expected with watch enabled, got: %v", err)

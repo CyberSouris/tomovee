@@ -99,11 +99,13 @@ func last_year(s string) (int, []int) {
 }
 
 // clean_title removes bracketed groups, separator noise, leading-dash release
-// tags, and known scene tags from a raw title fragment.
+// tags, known scene tags, apostrophes, and trailing junk tokens from a raw
+// title fragment.
 func clean_title(raw string) string {
 	raw = bracket_re.ReplaceAllString(raw, " ")
 	raw = strings.NewReplacer(
 		".", " ", "_", " ",
+		"'", "", // "Dont Breathe" must match "Don't Breathe"
 		"(", " ", ")", " ", "[", " ", "]", " ", "{", " ", "}", " ",
 	).Replace(raw)
 
@@ -118,6 +120,26 @@ func clean_title(raw string) string {
 		}
 		kept = append(kept, field)
 	}
+	// Drop trailing junk that is not part of a title, e.g. a bare release-group
+	// acronym ("… FGT") or leftover quality token, unless a single token is the
+	// whole title (the Pixar movie "UP").
+	for len(kept) > 1 && is_junk_suffix(kept[len(kept)-1]) {
+		kept = kept[:len(kept)-1]
+	}
 	out := strings.Trim(strings.Join(kept, " "), " -")
 	return strings.Join(strings.Fields(out), " ")
+}
+
+// is_junk_suffix reports whether a trailing token looks like a release-group
+// acronym or a leftover quality/container marker rather than a title word.
+func is_junk_suffix(token string) bool {
+	if len(token) < 2 || len(token) > 5 {
+		return false
+	}
+	for _, r := range token {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }

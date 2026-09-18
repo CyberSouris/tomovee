@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/imdb_datasets"
@@ -41,17 +42,31 @@ type Result struct {
 type Matching struct {
 	store    *database.Store
 	matcher  *matcher.Matcher
-	datasets *imdb_datasets.Index
+	datasets atomic.Pointer[imdb_datasets.Index]
 	logger   *slog.Logger
 }
 
 // New builds a Matching service. datasets may be nil when no offline dataset
-// is loaded; matcher must not be nil for matching to do anything useful.
+// is loaded yet; matcher must not be nil for matching to do anything useful.
 func New(store *database.Store, m *matcher.Matcher, datasets *imdb_datasets.Index, logger *slog.Logger) *Matching {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Matching{store: store, matcher: m, datasets: datasets, logger: logger}
+	service := &Matching{store: store, matcher: m, logger: logger}
+	service.Set_datasets(datasets)
+	return service
+}
+
+// Set_datasets attaches or replaces the offline dataset used to fill episode
+// titles. A nil source disables it. It is safe to call while matching jobs are
+// running, so a dataset that finished loading in the background can activate
+// without restarting the service.
+func (m *Matching) Set_datasets(index *imdb_datasets.Index) {
+	if index == nil {
+		m.datasets.Store(nil)
+		return
+	}
+	m.datasets.Store(index)
 }
 
 // Run matches every catalog entry that is waiting for a lookup and reports
@@ -192,7 +207,8 @@ func (m *Matching) enrich_series(ctx context.Context, entry_id int64, match *mat
 	if err != nil {
 		return err
 	}
-	if m.datasets == nil {
+	datasets := m.datasets.Load()
+	if datasets == nil {
 		return nil
 	}
 	parent := match.Imdb_id
@@ -201,8 +217,8 @@ func (m *Matching) enrich_series(ctx context.Context, entry_id int64, match *mat
 	}
 	for _, episode := range episodes {
 		episode.Status = "matched"
-		if ref, ok := m.datasets.Episode_lookup(parent, episode.Season_number, episode.Episode_number); ok {
-			if title, ok := m.datasets.Lookup(ref.Id); ok {
+		if ref, ok := datasets.Episode_lookup(parent, episode.Season_number, episode.Episode_number); ok {
+			if title, ok := datasets.Lookup(ref.Id); ok {
 				episode.Title = title.Primary_title
 				if title.Start_year > 0 {
 					episode.Airdate = fmt.Sprintf("%04d", title.Start_year)

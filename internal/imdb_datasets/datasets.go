@@ -229,6 +229,15 @@ func column_getter(column map[string]int) func([]string, string) string {
 // datasets in memory. Rebuilding happens automatically when an export is
 // newer than the index.
 func Open(path string) (*Index, error) {
+	return Open_with_progress(path, nil)
+}
+
+// Open_with_progress is Open, additionally reporting index build events
+// (importing datasets, rows processed) through on_progress. on_progress may be
+// nil to keep the plain behaviour. Because building a fresh index can take a
+// long time, callers that must serve immediately should run this in the
+// background and report it to the user.
+func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
@@ -239,9 +248,17 @@ func Open(path string) (*Index, error) {
 	}
 	db_path := filepath.Join(dir, index_db_name)
 	if !index_db_fresh(path, db_path) {
-		if err := build_index_db(path, db_path); err != nil {
+		if on_progress != nil {
+			on_progress(Build_progress{Step: Build_stale})
+		}
+		if err := build_index_db(path, db_path, on_progress); err != nil {
 			return nil, err
 		}
+		if on_progress != nil {
+			on_progress(Build_progress{Step: Build_ready})
+		}
+	} else if on_progress != nil {
+		on_progress(Build_progress{Step: Build_reuse})
 	}
 	db, err := open_file_db(db_path)
 	if err != nil {

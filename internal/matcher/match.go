@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync/atomic"
 
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
 	"github.com/cybersouris/tomovee/internal/scanner"
@@ -105,13 +106,19 @@ type Options struct {
 	Logger         *slog.Logger
 }
 
+// offline_ref boxes an Offline_source so it can be swapped atomically without
+// races against matching jobs already running.
+type offline_ref struct {
+	src Offline_source
+}
+
 // Matcher runs the matching pipeline: OpenSubtitles hash first, then a TMDB
 // title search, then the offline IMDb dataset, leaving unmatched files for
 // manual review.
 type Matcher struct {
 	subtitles      Subtitles_source
 	metadata       Metadata_source
-	offline        Offline_source
+	offline        atomic.Pointer[offline_ref]
 	min_confidence float64
 	logger         *slog.Logger
 }
@@ -126,19 +133,32 @@ func New(opts Options) *Matcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Matcher{
+	m := &Matcher{
 		subtitles:      opts.Subtitles,
 		metadata:       opts.Metadata,
-		offline:        opts.Offline,
 		min_confidence: min_confidence,
 		logger:         logger,
 	}
+	m.Set_offline(opts.Offline)
+	return m
+}
+
+// Set_offline attaches or replaces the offline dataset source used as the
+// final matching layer. A nil source disables the offline layer. It is safe to
+// call while matching jobs are running, letting a dataset that finished
+// loading in the background activate without restarting the pipeline.
+func (m *Matcher) Set_offline(src Offline_source) {
+	if src == nil {
+		m.offline.Store(nil)
+		return
+	}
+	m.offline.Store(&offline_ref{src: src})
 }
 
 // Has_sources reports whether at least one metadata source is configured, so
 // callers can refuse to start a background job that could never match anything.
 func (m *Matcher) Has_sources() bool {
-	return m.metadata != nil || m.subtitles != nil || m.offline != nil
+	return m.metadata != nil || m.subtitles != nil || m.offline.Load() != nil
 }
 
 // Match identifies a file, always returning a result. A result with
@@ -165,10 +185,10 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 		}
 		result = search_result
 	}
-	if m.offline != nil {
-		m.match_offline(ctx, input, hint, result)
+	if ref := m.offline.Load(); ref != nil {
+		m.match_offline(ctx, input, hint, result, ref.src)
 	}
-	if !result.Matched && len(result.Warnings) == 0 && m.metadata == nil && m.offline == nil {
+	if !result.Matched && len(result.Warnings) == 0 && m.metadata == nil && m.offline.Load() == nil {
 		result.Warnings = append(result.Warnings, "no metadata source configured")
 	}
 	return result
@@ -297,11 +317,11 @@ func (m *Matcher) finish_search(ctx context.Context, result *Result, scored []Ca
 // match_offline queries the offline dataset for candidates. It never discards
 // a TMDB match; when TMDB was inconclusive it appends offline candidates and
 // auto-accepts an unambiguous, confident one.
-func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_hint, result *Result) {
+func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_hint, result *Result, offline Offline_source) {
 	if hint.Title == "" {
 		return
 	}
-	candidates, err := m.offline.Search(ctx, hint.Title, hint.Year, input.Kind)
+	candidates, err := offline.Search(ctx, hint.Title, hint.Year, input.Kind)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "imdb datasets lookup: "+err.Error())
 		return

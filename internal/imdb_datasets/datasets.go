@@ -218,95 +218,36 @@ func column_getter(column map[string]int) func([]string, string) string {
 	}
 }
 
-// Open loads datasets from a path that is either a directory holding the IMDb
-// export files (title.basics.tsv(.gz) plus the optional title.akas/episode/
-// ratings files) or a single title.basics file. When a single file is given,
-// sibling dataset files in the same directory are still picked up if present.
-// Gzip is transparently decompressed by file suffix. It returns a searchable
-// Index.
+// Open makes the IMDb datasets at path queryable. path is either a directory
+// holding the export files (title.basics.tsv(.gz) plus the optional
+// title.akas/episode/ratings files) or a single title.basics file; when a
+// single file is given, sibling dataset files in the same directory are still
+// picked up if present.
+//
+// The exports are parsed once into an indexed SQLite database written next to
+// them, then queried lazily; opening an already built index does not hold the
+// datasets in memory. Rebuilding happens automatically when an export is
+// newer than the index.
 func Open(path string) (*Index, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
 	}
-	if info.IsDir() {
-		return Open_dir(path)
+	dir := path
+	if !info.IsDir() {
+		dir = filepath.Dir(path)
 	}
-	index, err := open_file_index(path)
+	db_path := filepath.Join(dir, index_db_name)
+	if !index_db_fresh(path, db_path) {
+		if err := build_index_db(path, db_path); err != nil {
+			return nil, err
+		}
+	}
+	db, err := open_file_db(db_path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("imdb_datasets: open index: %w", err)
 	}
-	dir := filepath.Dir(path)
-	// Backward compatibility: a single title.basics path still picks up its
-	// sibling dataset files when they live next to it.
-	for _, companion := range []string{"title.akas", "title.episode", "title.ratings"} {
-		if data, err := read_dataset_file(dir, companion); err == nil {
-			load_companion(index, companion, data)
-			_ = data.Close()
-		}
-	}
-	return index, nil
-}
-
-// Open_dir loads all IMDb datasets present in a directory. title.basics is
-// required; the akas, episode, and ratings files are loaded when present.
-func Open_dir(dir string) (*Index, error) {
-	basics, err := read_dataset_file(dir, "title.basics")
-	if err != nil {
-		return nil, fmt.Errorf("imdb_datasets: %w", err)
-	}
-	defer basics.Close()
-	titles, err := Parse_titles(basics)
-	if err != nil {
-		return nil, err
-	}
-	index := New_index(titles)
-	for _, name := range []string{"title.akas", "title.episode", "title.ratings"} {
-		if data, err := read_dataset_file(dir, name); err == nil {
-			load_companion(index, name, data)
-			_ = data.Close()
-		}
-	}
-	return index, nil
-}
-
-func open_file_index(path string) (*Index, error) {
-	data, err := read_file(path)
-	if err != nil {
-		return nil, fmt.Errorf("imdb_datasets: %w", err)
-	}
-	defer data.Close()
-	titles, err := Parse_titles(data)
-	if err != nil {
-		return nil, err
-	}
-	return New_index(titles), nil
-}
-
-func load_companion(index *Index, name string, data io.Reader) {
-	switch name {
-	case "title.akas":
-		if akas, err := Parse_akas(data); err == nil {
-			index.Index_akas(akas)
-		}
-	case "title.episode":
-		if episodes, err := Parse_episodes(data); err == nil {
-			index.Index_episodes(episodes)
-		}
-	case "title.ratings":
-		if ratings, err := Parse_ratings(data); err == nil {
-			index.Index_ratings(ratings)
-		}
-	}
-}
-
-func read_dataset_file(dir, stem string) (io.ReadCloser, error) {
-	for _, suffix := range []string{".tsv.gz", ".tsv"} {
-		if data, err := read_file(filepath.Join(dir, stem+suffix)); err == nil {
-			return data, nil
-		}
-	}
-	return nil, fmt.Errorf("dataset %s not found in %s", stem, dir)
+	return &Index{db: db}, nil
 }
 
 func read_file(path string) (io.ReadCloser, error) {

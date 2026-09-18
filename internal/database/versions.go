@@ -19,14 +19,15 @@ func (s *Store) Save_version(ctx context.Context, v Version) (int64, error) {
 				INSERT INTO version
 					(catalog_entry_id, episode_id, file_path, size_bytes, mtime, duration_seconds,
 					 container, resolution_width, resolution_height, resolution_label,
-					 video_codec, hdr, frame_rate, bit_depth)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 video_codec, hdr, frame_rate, bit_depth, hash)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				nullable_int(int(v.Catalog_entry_id)), nullable_int(int(v.Episode_id)), v.File_path,
 				v.Size_bytes, nullable_string(v.Mtime), nullable_float(v.Duration_seconds),
 				nullable_string(v.Container), nullable_int(v.Resolution_width),
 				nullable_int(v.Resolution_height), nullable_string(v.Resolution_label),
 				nullable_string(v.Video_codec), bool_to_int(v.Hdr),
-				nullable_float(v.Frame_rate), nullable_int(v.Bit_depth))
+				nullable_float(v.Frame_rate), nullable_int(v.Bit_depth),
+				nullable_string(v.Hash))
 			if err != nil {
 				return fmt.Errorf("insert version: %w", err)
 			}
@@ -50,6 +51,11 @@ func (s *Store) Save_version(ctx context.Context, v Version) (int64, error) {
 				nullable_string(v.Video_codec), bool_to_int(v.Hdr),
 				nullable_float(v.Frame_rate), nullable_int(v.Bit_depth), id); err != nil {
 				return fmt.Errorf("update version %d: %w", id, err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE version SET hash = ? WHERE id = ? AND hash IS NULL",
+				nullable_string(v.Hash), id); err != nil {
+				return err
 			}
 		}
 
@@ -107,6 +113,7 @@ func (s *Store) Find_version_by_path(ctx context.Context, path string) (Version_
 	row := s.db.db.QueryRowContext(ctx, `
 		SELECT v.id, COALESCE(v.catalog_entry_id, 0), COALESCE(v.episode_id, 0),
 		       v.file_path, COALESCE(v.size_bytes, 0), COALESCE(v.mtime, ''),
+		       COALESCE(v.hash, ''),
 		       COALESCE(ce.status, ep.status, 'needs_lookup')
 		FROM version v
 		LEFT JOIN catalog_entry ce ON ce.id = v.catalog_entry_id
@@ -114,7 +121,7 @@ func (s *Store) Find_version_by_path(ctx context.Context, path string) (Version_
 		WHERE v.file_path = ?`, path)
 	var ref Version_ref
 	if err := row.Scan(&ref.Id, &ref.Catalog_entry_id, &ref.Episode_id,
-		&ref.File_path, &ref.Size_bytes, &ref.Mtime, &ref.Status); err != nil {
+		&ref.File_path, &ref.Size_bytes, &ref.Mtime, &ref.Hash, &ref.Status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Version_ref{}, false, nil
 		}
@@ -129,6 +136,7 @@ func (s *Store) List_version_refs(ctx context.Context) ([]Version_ref, error) {
 	rows, err := s.db.db.QueryContext(ctx, `
 		SELECT v.id, COALESCE(v.catalog_entry_id, 0), COALESCE(v.episode_id, 0),
 		       v.file_path, COALESCE(v.size_bytes, 0), COALESCE(v.mtime, ''),
+		       COALESCE(v.hash, ''),
 		       COALESCE(ce.status, ep.status, 'needs_lookup')
 		FROM version v
 		LEFT JOIN catalog_entry ce ON ce.id = v.catalog_entry_id
@@ -141,7 +149,7 @@ func (s *Store) List_version_refs(ctx context.Context) ([]Version_ref, error) {
 	for rows.Next() {
 		var ref Version_ref
 		if err := rows.Scan(&ref.Id, &ref.Catalog_entry_id, &ref.Episode_id,
-			&ref.File_path, &ref.Size_bytes, &ref.Mtime, &ref.Status); err != nil {
+			&ref.File_path, &ref.Size_bytes, &ref.Mtime, &ref.Hash, &ref.Status); err != nil {
 			return nil, err
 		}
 		out = append(out, ref)

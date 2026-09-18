@@ -40,6 +40,26 @@ func (s *Store) Upsert_catalog_entry(ctx context.Context, entry Catalog_entry) (
 	return id, err
 }
 
+// Find_catalog_entry returns the id of the existing catalog entry that a new
+// or updated entry would group under (IMDb id, then TMDB id, then media type +
+// title + year), mirroring the upsert grouping logic. The second return is
+// false when no such entry exists.
+func (s *Store) Find_catalog_entry(ctx context.Context, entry Catalog_entry) (int64, bool, error) {
+	var id int64
+	err := s.with_tx(ctx, func(tx *sql.Tx) error {
+		found, err := find_entry_tx(ctx, tx, entry)
+		if err != nil {
+			return err
+		}
+		id = found
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return id, id > 0, nil
+}
+
 func find_entry_tx(ctx context.Context, tx *sql.Tx, entry Catalog_entry) (int64, error) {
 	if entry.Imdb_id != "" {
 		if id, ok, err := query_id_tx(ctx, tx, "SELECT id FROM catalog_entry WHERE imdb_id = ? LIMIT 1", entry.Imdb_id); err != nil || ok {

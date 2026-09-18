@@ -18,6 +18,9 @@ func Test_parse_filename_movies(t *testing.T) {
 		{"2001.A.Space.Odyssey.mkv", "2001 A Space Odyssey", 0},
 		{"No.Year.Movie.mkv", "No Year Movie", 0},
 		{"Amelie.2001.720p.mkv", "Amelie", 2001},
+		{"Dont.Breathe.2016.1080p.BluRay.x264.mkv", "Dont Breathe", 2016},
+		{"The.Humans.1080p.BluRay.FGT.mkv", "The Humans", 0},
+		{"UP.2009.1080p.BluRay.x264.mkv", "UP", 2009},
 	}
 	for _, c := range cases {
 		got := Parse_filename(c.name)

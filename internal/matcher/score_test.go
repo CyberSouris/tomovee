@@ -12,6 +12,7 @@ func Test_normalize_title(t *testing.T) {
 		"À Bientôt":             "à bientôt",
 		"PI 3.14":               "pi 3 14",
 		"Star Wars: A New Hope": "star wars a new hope",
+		"Don't Breathe":         "dont breathe",
 	}
 	for in, want := range cases {
 		if got := normalize_title(in); got != want {
@@ -32,6 +33,7 @@ func Test_similarity(t *testing.T) {
 		{"Interstellar", "Interstellar 2014", 0},
 		{"The Matrix", "The Matrix Reloaded", 0},
 		{"Breaking Bad", "Breaking Bad", 1},
+		{"Dont Breathe", "Don't Breathe", 1},
 	}
 	for _, c := range cases {
 		got := similarity(c.a, c.b)
@@ -60,6 +62,33 @@ func Test_similarity_partial(t *testing.T) {
 	}
 	if got >= exact {
 		t.Errorf("partial similarity %v should be below exact %v", got, exact)
+	}
+}
+
+func Test_similarity_suffix_boost(t *testing.T) {
+	// A file name that drops a leading article or credit still scores a
+	// confident match against the official title.
+	for _, c := range []struct{ a, b string }{
+		{"Shawshank Redemption", "The Shawshank Redemption"},
+		{"In the Mouth of Madness", "John Carpenter's In the Mouth of Madness"},
+	} {
+		got := similarity(c.a, c.b)
+		if got < 0.85 || got >= 1 {
+			t.Errorf("similarity(%q, %q) = %v, want in [0.85, 1)", c.a, c.b, got)
+		}
+	}
+	// Sequels and shows whose extra words trail the title must not be boosted.
+	for _, c := range []struct{ a, b string }{
+		{"The Matrix", "The Matrix Reloaded"},
+		{"The Great", "The Great British Bake Off"},
+	} {
+		if got := similarity(c.a, c.b); got >= 0.85 {
+			t.Errorf("similarity(%q, %q) = %v, want < 0.85", c.a, c.b, got)
+		}
+	}
+	// A short query that is a tiny suffix of a longer title stays un-boosted.
+	if got := similarity("Madness", "John Carpenter's In the Mouth of Madness"); got >= 0.85 {
+		t.Errorf("similarity(short suffix) = %v, want < 0.85", got)
 	}
 }
 

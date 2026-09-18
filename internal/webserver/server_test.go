@@ -26,16 +26,18 @@ import (
 )
 
 type fake_metadata struct {
-	movies map[int]*tmdb.Movie_details
-	tv     map[int]*tmdb.Tv_details
+	movies        map[int]*tmdb.Movie_details
+	tv            map[int]*tmdb.Tv_details
+	search_movies []tmdb.Movie_search_result
+	search_tv     []tmdb.Tv_search_result
 }
 
-func (f fake_metadata) Search_movie(context.Context, string, int) ([]tmdb.Movie_search_result, error) {
-	return nil, nil
+func (f fake_metadata) Search_movie(_ context.Context, _ string, _ int) ([]tmdb.Movie_search_result, error) {
+	return f.search_movies, nil
 }
 
-func (f fake_metadata) Search_tv(context.Context, string, int) ([]tmdb.Tv_search_result, error) {
-	return nil, nil
+func (f fake_metadata) Search_tv(_ context.Context, _ string, _ int) ([]tmdb.Tv_search_result, error) {
+	return f.search_tv, nil
 }
 
 func (f fake_metadata) Movie_details(_ context.Context, id int) (*tmdb.Movie_details, error) {
@@ -246,6 +248,64 @@ func Test_unmatched_and_manual_match(t *testing.T) {
 	}
 	if match_body.Entry.Tmdb_id != 603 {
 		t.Errorf("tmdb id = %d", match_body.Entry.Tmdb_id)
+	}
+}
+
+func Test_search_autocomplete(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	movie := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix&media_type=movie", "")
+	body := decode[struct {
+		Results []search_item `json:"results"`
+	}](t, movie)
+	if movie.Code != http.StatusOK || len(body.Results) != 0 {
+		t.Fatalf("movie search = %d: %s", movie.Code, movie.Body)
+	}
+
+	server.metadata = fake_metadata{
+		search_movies: []tmdb.Movie_search_result{
+			{Id: 603, Title: "The Matrix", Release_date: "1999-03-31", Overview: "A hacker.", Poster_path: "/matrix.jpg", Vote_average: 8.2},
+			{Id: 624860, Title: "The Matrix Resurrections", Release_date: "2021-12-22", Overview: "Third sequel.", Vote_average: 6.5},
+			{Id: 605, Title: "The Matrix Reloaded", Release_date: "2003-05-15", Overview: "Second.", Vote_average: 7.2},
+		},
+		search_tv: []tmdb.Tv_search_result{
+			{Id: 160, Name: "Lost", First_air_date: "2004-09-22", Overview: "Island.", Vote_average: 8.5},
+		},
+	}
+
+	found := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix&media_type=movie", "")
+	found_body := decode[struct {
+		Results []search_item `json:"results"`
+	}](t, found)
+	if found.Code != http.StatusOK {
+		t.Fatalf("search status = %d: %s", found.Code, found.Body)
+	}
+	if len(found_body.Results) != 3 {
+		t.Fatalf("results = %d, want 3", len(found_body.Results))
+	}
+	first := found_body.Results[0]
+	if first.Tmdb_id != 603 || first.Title != "The Matrix" || first.Year != 1999 ||
+		first.Media_type != "movie" || first.Poster_url != "https://image.tmdb.org/t/p/w92/matrix.jpg" || first.Vote_average != 8.2 {
+		t.Fatalf("unexpected first result: %+v", first)
+	}
+
+	tv := do_request(t, server, http.MethodGet, "/api/v1/search?q=lost&media_type=series&year=2004", "")
+	tv_body := decode[struct {
+		Results []search_item `json:"results"`
+	}](t, tv)
+	if len(tv_body.Results) != 1 || tv_body.Results[0].Tmdb_id != 160 || tv_body.Results[0].Year != 2004 {
+		t.Fatalf("unexpected tv results: %+v", tv_body.Results)
+	}
+
+	empty := do_request(t, server, http.MethodGet, "/api/v1/search?media_type=movie", "")
+	if empty.Code != http.StatusBadRequest {
+		t.Errorf("empty query status = %d, want 400", empty.Code)
+	}
+
+	server.metadata = nil
+	unconfigured := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix", "")
+	if unconfigured.Code != http.StatusServiceUnavailable {
+		t.Errorf("unconfigured status = %d, want 503", unconfigured.Code)
 	}
 }
 

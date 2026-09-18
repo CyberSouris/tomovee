@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api_get, api_send } from '../api.js';
+  import TitleSearch from '../TitleSearch.svelte';
 
   const PAGE = 100;
 
@@ -33,14 +34,9 @@
     }
   }
 
-  async function match(entry) {
-    const value = (inputs[entry.id] || '').trim();
-    if (!value) return;
+  async function submit_match(entry, body) {
     busy = entry.id;
     row_error = '';
-    const body = value.startsWith('tt')
-      ? { imdb_id: value, media_type: entry.media_type }
-      : { tmdb_id: Number(value), media_type: entry.media_type };
     try {
       await api_send('/api/v1/catalog/' + entry.id + '/match', 'POST', body);
       await load(true);
@@ -51,13 +47,31 @@
     }
   }
 
+  function match(entry) {
+    const value = (inputs[entry.id] || '').trim();
+    if (!value || busy === entry.id) return;
+    submit_match(entry, value.startsWith('tt')
+      ? { imdb_id: value, media_type: entry.media_type }
+      : { tmdb_id: Number(value), media_type: entry.media_type });
+  }
+
+  function match_candidate(entry, event) {
+    const candidate = event.detail;
+    const body = candidate.tmdb_id
+      ? { tmdb_id: candidate.tmdb_id, media_type: candidate.media_type }
+      : candidate.imdb_id
+        ? { imdb_id: candidate.imdb_id, media_type: candidate.media_type }
+        : null;
+    if (body) submit_match(entry, body);
+  }
+
   onMount(() => load(true));
 </script>
 
 <section>
   <p class="muted">
-    {total} unmatched title{total === 1 ? '' : 's'}. Enter a TMDB id or an IMDb id
-    (tt…) and confirm to attach full metadata.
+    {total} unmatched title{total === 1 ? '' : 's'}. Search by title and pick a
+    suggestion, or enter a TMDB id / IMDb id (tt…) and confirm.
   </p>
 
   {#if error}<p class="error">{error}</p>{/if}
@@ -73,7 +87,7 @@
           <th>Title</th>
           <th>Type</th>
           <th>Year</th>
-          <th>TMDB / IMDb id</th>
+          <th>Search / id</th>
           <th></th>
         </tr>
       </thead>
@@ -84,10 +98,12 @@
             <td>{entry.media_type}</td>
             <td>{entry.release_year || '—'}</td>
             <td>
-              <input
-                placeholder="603 or tt0133093"
-                bind:value={inputs[entry.id]}
-                on:keydown={(event) => event.key === 'Enter' && match(entry)}
+              <TitleSearch
+                bind:query={inputs[entry.id]}
+                year={entry.release_year || ''}
+                media_type={entry.media_type}
+                placeholder="Search title…"
+                on:select={(event) => match_candidate(entry, event)}
               />
             </td>
             <td>

@@ -1,12 +1,18 @@
 <script>
   import { onMount } from 'svelte';
-  import { api_get, format_bytes, format_duration } from '../api.js';
+  import { api_get, api_send, format_bytes, format_duration } from '../api.js';
+  import TitleSearch from '../TitleSearch.svelte';
 
   export let id;
 
   let data = null;
   let error = '';
   let loading = true;
+  let search_query = '';
+  let manual_id = '';
+  let busy = false;
+  let manual_error = '';
+  let manual_ok = '';
 
   async function load() {
     loading = true;
@@ -34,6 +40,44 @@
   function tracks_label(tracks) {
     if (!tracks || tracks.length === 0) return '—';
     return [...new Set(tracks.map((track) => track.language || '?'))].join(', ');
+  }
+
+  async function match_body(body) {
+    busy = true;
+    manual_error = '';
+    manual_ok = '';
+    try {
+      await api_send('/api/v1/catalog/' + data.entry.id + '/match', 'POST', body);
+      manual_ok = 'Matched.';
+      await load();
+    } catch (err) {
+      manual_error = err.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  function match_manual() {
+    const value = manual_id.trim();
+    if (!value || busy) return;
+    const body = value.startsWith('tt')
+      ? { imdb_id: value, media_type: data.entry.media_type }
+      : { tmdb_id: Number(value), media_type: data.entry.media_type };
+    match_body(body);
+  }
+
+  function on_candidate(event) {
+    const candidate = event.detail;
+    const body = candidate.tmdb_id
+      ? { tmdb_id: candidate.tmdb_id, media_type: candidate.media_type }
+      : candidate.imdb_id
+        ? { imdb_id: candidate.imdb_id, media_type: candidate.media_type }
+        : null;
+    if (body) match_body(body);
+  }
+
+  function enter_match(event) {
+    if (event.key === 'Enter') match_manual();
   }
 
   onMount(load);
@@ -86,6 +130,36 @@
       {/if}
     </div>
   </article>
+
+  <section class="manual">
+    <h2>{data.entry.status === 'matched' ? 'Wrong match? Re-match' : 'Match manually'}</h2>
+    <p class="muted">
+      {data.entry.status === 'matched'
+        ? 'Automatic matching picked this title but it looks wrong? Search by title and pick a suggestion, or enter a TMDB / IMDb id directly.'
+        : 'Automatic matching did not attach metadata to this title. Search by title and pick a suggestion, or enter a TMDB / IMDb id directly.'}
+    </p>
+    <TitleSearch
+      bind:query={search_query}
+      year={data.entry.release_year || ''}
+      media_type={data.entry.media_type}
+      placeholder="Search by title…"
+      on:select={on_candidate}
+    />
+    <p class="divider">or enter a TMDB id (603) or IMDb id (tt0133093)</p>
+    <div class="idrow">
+      <input
+        placeholder="603 or tt0133093"
+        bind:value={manual_id}
+        disabled={busy}
+        on:keydown={enter_match}
+      />
+      <button on:click={match_manual} disabled={busy || !manual_id.trim()}>
+        {busy ? 'Matching…' : 'Match'}
+      </button>
+    </div>
+    {#if manual_error}<p class="result error">{manual_error}</p>{/if}
+    {#if manual_ok}<p class="result ok">{manual_ok}</p>{/if}
+  </section>
 
   {#if data.entry.media_type === 'series'}
     <h2>Episodes ({data.episodes.length})</h2>
@@ -163,6 +237,47 @@
 
   .error {
     color: var(--bad);
+  }
+
+  .manual {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 2rem;
+  }
+
+  .manual h2 {
+    margin: 0 0 0.3rem;
+  }
+
+  .manual h2 + .muted {
+    margin: 0;
+  }
+
+  .manual .divider {
+    margin: 0.9rem 0 0.4rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  .manual .idrow {
+    display: flex;
+    gap: 0.6rem;
+  }
+
+  .manual .idrow input {
+    flex: 1;
+    max-width: 16rem;
+  }
+
+  .result {
+    margin: 0.6rem 0 0;
+    font-size: 0.85rem;
+  }
+
+  .ok {
+    color: var(--good);
   }
 
   .badges {

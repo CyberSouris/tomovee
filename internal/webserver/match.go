@@ -22,6 +22,10 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusServiceUnavailable, "matcher is not configured")
 		return
 	}
+	if s.metadata == nil {
+		write_error(w, http.StatusServiceUnavailable, "manual matching unavailable: no TMDB API key configured")
+		return
+	}
 	id, ok := path_id(r)
 	if !ok {
 		write_error(w, http.StatusBadRequest, "invalid catalog id")

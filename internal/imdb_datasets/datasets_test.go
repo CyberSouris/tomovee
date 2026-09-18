@@ -63,6 +63,154 @@ func Test_parse_titles_missing_column(t *testing.T) {
 	}
 }
 
+func Test_parse_akas(t *testing.T) {
+	tsv := `titleId	ordering	title	region	language	types	attributes	isOriginalTitle
+tt0133093	1	The Matrix	US	en	original		1
+tt0133093	2	Matrix	NA	\N	title	in Latin alphabet	0
+tt0133093	3	マトリックス	JP	ja	\N	\N	0
+tt0903747	1	Breaking Bad	US	en	original		0
+`
+	akas, err := Parse_akas(strings.NewReader(tsv))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(akas) != 4 {
+		t.Fatalf("akas = %d, want 4", len(akas))
+	}
+	if akas[1].Title != "Matrix" || !akas[0].Is_original {
+		t.Errorf("akas[0] = %+v, akas[1] = %+v", akas[0], akas[1])
+	}
+}
+
+func Test_parse_episodes(t *testing.T) {
+	tsv := `tconst	parentTconst	seasonNumber	episodeNumber
+tt1586952	tt0903747	1	1
+tt1586954	tt0903747	1	2
+tt3322312	tt0903747	1	99
+`
+	episodes, err := Parse_episodes(strings.NewReader(tsv))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(episodes) != 3 || episodes[0].Parent_id != "tt0903747" || episodes[0].Season != 1 {
+		t.Fatalf("episodes = %+v", episodes)
+	}
+}
+
+func Test_parse_ratings(t *testing.T) {
+	tsv := `tconst	averageRating	numVotes
+tt0133093	8.7	2500000
+tt0903747	9.5	2300000
+`
+	ratings, err := Parse_ratings(strings.NewReader(tsv))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(ratings) != 2 {
+		t.Fatalf("ratings = %d, want 2", len(ratings))
+	}
+	if ratings[0].Average_rating != 8.7 || ratings[0].Num_votes != 2500000 {
+		t.Errorf("ratings[0] = %+v", ratings[0])
+	}
+}
+
+func Test_index_episodes_ratings(t *testing.T) {
+	index := must_index(t)
+	episodes, err := Parse_episodes(strings.NewReader(
+		"tconst\tparentTconst\tseasonNumber\tepisodeNumber\n" +
+			"tt1586952\ttt0903747\t1\t1\n" +
+			"tt0000007\ttt0903747\t0\t1\n"))
+	if err != nil {
+		t.Fatalf("parse episodes: %v", err)
+	}
+	index.Index_episodes(episodes)
+
+	episode, ok := index.Episode_lookup("tt0903747", 1, 1)
+	if !ok || episode.Id != "tt1586952" {
+		t.Errorf("episode lookup = %+v, ok=%v", episode, ok)
+	}
+	if _, ok := index.Episode_lookup("tt0903747", 2, 1); ok {
+		t.Error("unexpected episode hit")
+	}
+	all := index.Episodes("tt0903747")
+	if len(all) != 2 {
+		t.Fatalf("episodes = %+v, want 2", all)
+	}
+	if !all[1].Is_special {
+		t.Errorf("season 0 row should be marked special: %+v", all[1])
+	}
+
+	ratings, err := Parse_ratings(strings.NewReader("tconst\taverageRating\tnumVotes\ntt0133093\t8.7\t2500000\n"))
+	if err != nil {
+		t.Fatalf("parse ratings: %v", err)
+	}
+	index.Index_ratings(ratings)
+	got := index.Search("The Matrix", 0, scanner.Movie)
+	if len(got) != 1 || got[0].Rating != 8.7 || got[0].Votes != 2500000 {
+		t.Errorf("search with rating = %+v", got)
+	}
+}
+
+func Test_search_by_akas(t *testing.T) {
+	index := must_index(t)
+	akas, err := Parse_akas(strings.NewReader(
+		"titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle\n" +
+			"tt0133093\t1\tMatrix\tNA\t\\N\ttitle\t\t0\n" +
+			"tt0133093\t2\tThe Matrix\tUS\ten\toriginal\t\t1\n"))
+	if err != nil {
+		t.Fatalf("parse akas: %v", err)
+	}
+	index.Index_akas(akas)
+
+	got := index.Search("Matrix", 0, scanner.Movie)
+	if len(got) != 1 || got[0].Id != "tt0133093" {
+		t.Fatalf("aka search = %+v, want single matrix entry", got)
+	}
+}
+
+func Test_open_directory_loads_optional_datasets(t *testing.T) {
+	dir := t.TempDir()
+	write_gz := func(name string, data string) {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		gz := gzip.NewWriter(file)
+		if _, err := gz.Write([]byte(data)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatalf("gz close: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	write_gz("title.basics.tsv.gz", test_tsv)
+	write_gz("title.akas.tsv.gz",
+		"titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle\n"+
+			"tt0133093\t1\tMatrix\tNA\t\\N\ttitle\t\tfalse\n")
+	write_gz("title.episode.tsv.gz",
+		"tconst\tparentTconst\tseasonNumber\tepisodeNumber\n"+
+			"tt1586952\ttt0903747\t1\t1\n")
+
+	index, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open directory: %v", err)
+	}
+	if index.Count() != 7 {
+		t.Errorf("count = %d, want 7", index.Count())
+	}
+	if got := index.Search("Matrix", 0, scanner.Movie); len(got) != 1 || got[0].Id != "tt0133093" {
+		t.Errorf("aka search = %+v", got)
+	}
+	if got := index.Search("The Matrix", 0, scanner.Movie); len(got) != 1 {
+		t.Errorf("primary search = %+v", got)
+	}
+}
+
 func Test_open_gzip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "title.basics.tsv.gz")

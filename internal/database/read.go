@@ -76,6 +76,15 @@ func (s *Store) List_catalog_entries(ctx context.Context, filter Catalog_filter)
 	return entries, nil
 }
 
+// Count_catalog_entries returns how many entries match filter, ignoring any
+// limit or offset. It is the pagination total for List_catalog_entries.
+func (s *Store) Count_catalog_entries(ctx context.Context, filter Catalog_filter) (int, error) {
+	where, args := catalog_where(filter)
+	var n int
+	err := s.db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM catalog_entry ce"+where, args...).Scan(&n)
+	return n, err
+}
+
 // List_episodes returns the episodes of a series entry in broadcast order.
 func (s *Store) List_episodes(ctx context.Context, catalog_entry_id int64) ([]Episode, error) {
 	rows, err := s.db.db.QueryContext(ctx, `

@@ -2,19 +2,30 @@
   import { onMount } from 'svelte';
   import { api_get, api_send } from '../api.js';
 
+  const PAGE = 100;
+
   let entries = [];
+  let total = 0;
+  let offset = 0;
   let error = '';
   let loading = true;
   let busy = 0;
   let row_error = '';
   let inputs = {};
 
-  async function load() {
+  async function load(reset = false) {
+    if (reset) {
+      offset = 0;
+      entries = [];
+    }
     loading = true;
     error = '';
     try {
-      const data = await api_get('/api/v1/unmatched');
-      entries = data.entries || [];
+      const data = await api_get('/api/v1/unmatched?limit=' + PAGE + '&offset=' + offset);
+      const page = data.entries || [];
+      entries = entries.concat(page);
+      total = data.total || 0;
+      offset += page.length;
     } catch (err) {
       error = err.message;
     } finally {
@@ -32,7 +43,7 @@
       : { tmdb_id: Number(value), media_type: entry.media_type };
     try {
       await api_send('/api/v1/catalog/' + entry.id + '/match', 'POST', body);
-      await load();
+      await load(true);
     } catch (err) {
       row_error = entry.title + ': ' + err.message;
     } finally {
@@ -40,18 +51,18 @@
     }
   }
 
-  onMount(load);
+  onMount(() => load(true));
 </script>
 
 <section>
   <p class="muted">
-    These titles could not be matched automatically. Enter a TMDB id or an IMDb id
+    {total} unmatched title{total === 1 ? '' : 's'}. Enter a TMDB id or an IMDb id
     (tt…) and confirm to attach full metadata.
   </p>
 
   {#if error}<p class="error">{error}</p>{/if}
   {#if row_error}<p class="error">{row_error}</p>{/if}
-  {#if loading}
+  {#if loading && entries.length === 0}
     <p>Loading…</p>
   {:else if entries.length === 0}
     <p>Nothing to review.</p>
@@ -86,6 +97,11 @@
         {/each}
       </tbody>
     </table>
+    {#if entries.length < total}
+      <p class="more">
+        <button on:click={() => load(false)} disabled={loading}>Load more</button>
+      </p>
+    {/if}
   {/if}
 </section>
 

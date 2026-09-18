@@ -21,8 +21,11 @@ type Config struct {
 	Api              Api_config  `yaml:"api"`
 	Watch_enabled    bool        `yaml:"watch_enabled"`
 	Scan             Scan_config `yaml:"scan"`
-	// Imdb_datasets_path optionally points at an IMDb title.basics.tsv(.gz)
-	// export used for offline, network-free enrichment when APIs are down.
+	// Imdb_datasets_path optionally points at a directory holding IMDb dataset
+	// exports (title.basics.tsv.gz with optional title.akas.tsv.gz,
+	// title.episode.tsv.gz, and title.ratings.tsv.gz) used for offline,
+	// network-free matching. A single title.basics.tsv(.gz) file is also
+	// accepted.
 	Imdb_datasets_path string `yaml:"imdb_datasets_path"`
 }
 

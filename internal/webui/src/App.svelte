@@ -4,6 +4,7 @@
   import Detail from './routes/Detail.svelte';
   import Unmatched from './routes/Unmatched.svelte';
   import Scan from './routes/Scan.svelte';
+  import Match from './routes/Match.svelte';
   import Settings from './routes/Settings.svelte';
 
   function parse_hash() {
@@ -29,6 +30,7 @@
     ['browse', 'Browse'],
     ['unmatched', 'Unmatched'],
     ['scan', 'Scan'],
+    ['match', 'Match'],
     ['settings', 'Settings'],
   ];
 </script>
@@ -53,6 +55,8 @@
     <Unmatched />
   {:else if route.name === 'scan'}
     <Scan />
+  {:else if route.name === 'match'}
+    <Match />
   {:else if route.name === 'settings'}
     <Settings />
   {:else}

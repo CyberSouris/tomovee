@@ -10,7 +10,7 @@
 
   async function refresh() {
     try {
-      const data = await api_get('/api/v1/scan/status');
+      const data = await api_get('/api/v1/match/status');
       if (data.job) {
         progress = data.job.progress;
         running = data.job.running;
@@ -25,7 +25,7 @@
     error = '';
     result = null;
     try {
-      await api_send('/api/v1/scan', 'POST', {});
+      await api_send('/api/v1/match', 'POST', {});
       running = true;
     } catch (err) {
       error = err.message;
@@ -34,7 +34,7 @@
 
   onMount(() => {
     refresh();
-    source = new EventSource('/api/v1/scan/stream');
+    source = new EventSource('/api/v1/match/stream');
     source.addEventListener('status', (event) => {
       const data = JSON.parse(event.data);
       if (data.job) {
@@ -57,19 +57,19 @@
   onDestroy(() => source && source.close());
 
   const counters = [
-    ['files_found', 'Found'],
-    ['files_scanned', 'Scanned'],
-    ['new_files', 'New'],
-    ['skipped', 'Skipped'],
+    ['total', 'Entries'],
+    ['done', 'Processed'],
+    ['matched', 'Matched'],
+    ['unmatched', 'Unmatched'],
     ['errors', 'Errors'],
   ];
 </script>
 
 <section>
-  <button on:click={start} disabled={running}>{running ? 'Scanning…' : 'Start scan'}</button>
+  <button on:click={start} disabled={running}>{running ? 'Matching…' : 'Run match'}</button>
   {#if error}<p class="error">{error}</p>{/if}
 
-  {#if progress}
+  {#if progress && progress.total > 0}
     <p class="phase">Phase: <strong>{progress.phase}</strong></p>
     <div class="counters">
       {#each counters as [key, label]}
@@ -79,16 +79,15 @@
         </div>
       {/each}
     </div>
-    {#if progress.path}
-      <p class="path muted">{progress.path}</p>
+    {#if progress.title}
+      <p class="title muted">{progress.done} / {progress.total} — {progress.title}</p>
     {/if}
   {/if}
 
   {#if result}
     <h2>Result</h2>
     <p>
-      {result.found} found, {result.new} new, {result.skipped} skipped,
-      {result.missing} missing.
+      {result.total} entries, {result.matched} matched, {result.unmatched} unmatched.
     </p>
     {#if result.errors && result.errors.length}
       <ul class="errors">
@@ -135,7 +134,7 @@
     font-weight: 600;
   }
 
-  .path {
+  .title {
     font-size: 0.85rem;
     word-break: break-all;
   }

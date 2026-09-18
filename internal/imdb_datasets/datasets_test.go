@@ -366,6 +366,60 @@ func Test_open_single_file_builds_sidecar_index(t *testing.T) {
 	}
 }
 
+func Test_open_with_progress_reports_build_stages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "title.basics.tsv"), []byte(test_tsv), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var events []Build_progress
+	index, err := Open_with_progress(dir, func(p Build_progress) {
+		events = append(events, p)
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var got_stale, got_import, got_ready, got_basics_done bool
+	for _, p := range events {
+		switch p.Step {
+		case Build_stale:
+			got_stale = true
+		case Build_import:
+			if p.Dataset == "title.basics" {
+				got_import = true
+				if p.Done && p.Rows != 9 {
+					t.Errorf("basics done rows = %d, want 9", p.Rows)
+				}
+			}
+			if p.Dataset == "title.basics" && p.Done {
+				got_basics_done = true
+			}
+		case Build_ready:
+			got_ready = true
+		}
+	}
+	if !got_stale || !got_import || !got_basics_done || !got_ready {
+		t.Errorf("events = %+v, want stale/import/ready with basics done", events)
+	}
+
+	_ = index.Close()
+
+	var reuse *Build_progress
+	index, err = Open_with_progress(dir, func(p Build_progress) {
+		if p.Step == Build_reuse {
+			reuse = &p
+		}
+	})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer index.Close()
+	if reuse == nil {
+		t.Error("expected a reuse event when reopening a fresh index")
+	}
+}
+
 func Test_lookup(t *testing.T) {
 	index := must_index(t)
 	title, ok := index.Lookup("tt0133093")

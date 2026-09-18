@@ -342,6 +342,36 @@ func Test_top_candidates(t *testing.T) {
 	}
 }
 
+func Test_set_offline_activates_layer(t *testing.T) {
+	m := New(Options{})
+	if m.Has_sources() {
+		t.Fatal("matcher without sources reports configured")
+	}
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}}
+	m.Set_offline(offline)
+	if !m.Has_sources() {
+		t.Fatal("matcher does not report sources after Set_offline")
+	}
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if !result.Matched || result.Source != "imdb-datasets" || result.Imdb_id != "tt0133093" {
+		t.Fatalf("expected offline match after Set_offline, got %+v", result)
+	}
+	m.Set_offline(nil)
+	if m.Has_sources() {
+		t.Fatal("matcher still reports sources after Set_offline(nil)")
+	}
+	result = m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if len(result.Candidates) != 0 {
+		t.Errorf("offline consulted after Set_offline(nil): %+v", result.Candidates)
+	}
+}
+
 func Test_match_offline_single_candidate(t *testing.T) {
 	offline := &fake_offline{candidates: []Offline_candidate{{
 		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,

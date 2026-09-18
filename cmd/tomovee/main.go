@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -140,12 +141,66 @@ func open_database(cfg *config.Config) (*database.Database, error) {
 type pipeline struct {
 	matcher  *matcher.Matcher
 	metadata matcher.Metadata_source
-	datasets *imdb_datasets.Index
+	datasets atomic.Pointer[imdb_datasets.Index]
+}
+
+// attach_datasets makes a freshly loaded offline datasets index part of the
+// pipeline: the matcher's offline layer is activated immediately and the index
+// is kept for shutdown cleanup.
+func (p *pipeline) attach_datasets(index *imdb_datasets.Index) {
+	p.datasets.Store(index)
+	p.matcher.Set_offline(imdb_datasets.New_matcher_source(index))
+}
+
+// load_datasets opens the IMDb datasets in the background so the web service
+// can start serving immediately. The offline matching layer and the episode
+// enrichment service are attached once the index is ready; startup matching is
+// then kicked off so it does not contend with the build for CPU during the
+// index construction.
+func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matching.Matching, on_ready func()) {
+	progress := func(step imdb_datasets.Build_progress) {
+		switch step.Step {
+		case imdb_datasets.Build_stale:
+			logger.Info("imdb datasets: export is newer than the index, rebuilding", "path", path)
+		case imdb_datasets.Build_reuse:
+			logger.Info("imdb datasets: index is up to date, reopening", "path", path)
+		case imdb_datasets.Build_import:
+			if step.Done {
+				logger.Info("imdb datasets: imported", "dataset", step.Dataset, "rows", step.Rows)
+			} else if step.Rows > 0 {
+				logger.Info("imdb datasets: importing", "dataset", step.Dataset, "rows", step.Rows)
+			} else {
+				logger.Info("imdb datasets: importing dataset", "dataset", step.Dataset)
+			}
+		case imdb_datasets.Build_ready:
+			logger.Info("imdb datasets: index rebuilt")
+		}
+	}
+	go func() {
+		index, err := imdb_datasets.Open_with_progress(path, progress)
+		if err != nil {
+			logger.Error("imdb datasets: not available for offline matching", "path", path, "error", err)
+			if on_ready != nil {
+				on_ready()
+			}
+			return
+		}
+		p.attach_datasets(index)
+		service.Set_datasets(index)
+		logger.Info("imdb datasets: ready for offline matching", "path", path, "titles", index.Count())
+		if on_ready != nil {
+			on_ready()
+		}
+	}()
 }
 
 // build_pipeline assembles the matching pipeline from the configured API keys
 // and the optional IMDb datasets directory or file. Missing keys are warnings,
 // not errors: the pipeline degrades gracefully per the specification.
+//
+// The IMDb datasets are deliberately left out here: building their index can
+// take a long time, so cmd_serve loads them in the background and attaches
+// them with pipeline.load_datasets once they are ready.
 func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Store) (*pipeline, error) {
 	opts := matcher.Options{Logger: logger}
 
@@ -167,18 +222,7 @@ func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Sto
 		opts.Metadata = metacache.New(opts.Metadata, store, metacache.Default_ttl, logger)
 	}
 
-	var datasets *imdb_datasets.Index
-	if cfg.Imdb_datasets_path != "" {
-		index, err := imdb_datasets.Open(cfg.Imdb_datasets_path)
-		if err != nil {
-			return nil, err
-		}
-		datasets = index
-		logger.Info("imdb datasets loaded", "path", cfg.Imdb_datasets_path, "titles", index.Count())
-		opts.Offline = imdb_datasets.New_matcher_source(index)
-	}
-
-	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata, datasets: datasets}, nil
+	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata}, nil
 }
 
 func cmd_serve(logger *slog.Logger, args []string) error {
@@ -217,7 +261,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Logger:     logger,
 	})
 
-	matching_service := matching.New(store, pipe.matcher, pipe.datasets, logger)
+	matching_service := matching.New(store, pipe.matcher, nil, logger)
 
 	server := webserver.New(webserver.Options{
 		Store:    store,
@@ -230,11 +274,6 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Static:   webui.FS(),
 		Logger:   logger,
 	})
-
-	if matching_configured(cfg) {
-		logger.Info("starting background matching at startup")
-		server.Auto_match()
-	}
 
 	watch_ctx, stop_watch := context.WithCancel(context.Background())
 	defer stop_watch()
@@ -262,6 +301,22 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		}
 	}()
 
+	// Building an imdb datasets index can take minutes and peg a core, so it
+	// must not delay the web service. Load it in the background and start the
+	// startup matching run only once it (or the online sources) are ready.
+	start_matching := func() {
+		if matching_configured(cfg) {
+			logger.Info("starting background matching at startup")
+			server.Auto_match()
+		}
+	}
+	if cfg.Imdb_datasets_path != "" {
+		logger.Info("loading imdb datasets in the background", "path", cfg.Imdb_datasets_path)
+		pipe.load_datasets(logger, cfg.Imdb_datasets_path, matching_service, start_matching)
+	} else {
+		start_matching()
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {
@@ -275,8 +330,8 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	shutdown_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	shutdown_err := http_server.Shutdown(shutdown_ctx)
-	if pipe.datasets != nil {
-		_ = pipe.datasets.Close()
+	if index := pipe.datasets.Load(); index != nil {
+		_ = index.Close()
 	}
 	return shutdown_err
 }

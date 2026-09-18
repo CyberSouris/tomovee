@@ -42,15 +42,8 @@ func (fake_metadata) Find_by_imdb(context.Context, string) (*tmdb.Find_result, e
 	return &tmdb.Find_result{}, nil
 }
 
-func new_test_service(t *testing.T) (*matching.Matching, *database.Store) {
+func new_test_index(t *testing.T) *imdb_datasets.Index {
 	t.Helper()
-	d, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open database: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	store := database.New_store(d)
-
 	titles, err := imdb_datasets.Parse_titles(strings.NewReader(
 		"tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n" +
 			"tt0903747\ttvSeries\tBreaking Bad\tBreaking Bad\t0\t2008\t2013\t49\tCrime,Drama\n" +
@@ -68,10 +61,21 @@ func new_test_service(t *testing.T) (*matching.Matching, *database.Store) {
 		t.Fatalf("parse episodes: %v", err)
 	}
 	index.Index_episodes(episodes)
+	return index
+}
+
+func new_test_service(t *testing.T) (*matching.Matching, *database.Store) {
+	t.Helper()
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := database.New_store(d)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := matcher.New(matcher.Options{Metadata: fake_metadata{}, Logger: logger})
-	return matching.New(store, m, index, logger), store
+	return matching.New(store, m, new_test_index(t), logger), store
 }
 
 func add_series(t *testing.T, store *database.Store) (int64, int64, int64) {
@@ -154,6 +158,50 @@ func Test_run_matches_and_enriches_series(t *testing.T) {
 	}
 	ep2 := by_number[2]
 	if ep2.Status != "matched" || ep2.Title != "Cat's in the Bag..." {
+		t.Errorf("episode 2 = %+v, want matched with offline title", ep2)
+	}
+}
+
+func Test_set_datasets_after_construction_enriches(t *testing.T) {
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := database.New_store(d)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := matcher.New(matcher.Options{Metadata: fake_metadata{}, Logger: logger})
+
+	// Built without a dataset, like the daemon before the background load
+	// finishes; the offline index is attached afterwards.
+	service := matching.New(store, m, nil, logger)
+	service.Set_datasets(new_test_index(t))
+
+	ctx := context.Background()
+	entry_id, _, _ := add_series(t, store)
+	result, err := service.Run(ctx, nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Total != 1 || result.Matched != 1 {
+		t.Fatalf("result = %+v, want one matched", result)
+	}
+
+	episodes, err := store.List_episodes(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("list episodes: %v", err)
+	}
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %d, want 2", len(episodes))
+	}
+	by_number := map[int]database.Episode{}
+	for _, episode := range episodes {
+		by_number[episode.Episode_number] = episode
+	}
+	if ep1 := by_number[1]; ep1.Status != "matched" || ep1.Title != "Pilot" || ep1.Airdate != "2008" {
+		t.Errorf("episode 1 = %+v, want matched pilot airdate 2008", ep1)
+	}
+	if ep2 := by_number[2]; ep2.Status != "matched" || ep2.Title != "Cat's in the Bag..." {
 		t.Errorf("episode 2 = %+v, want matched with offline title", ep2)
 	}
 }

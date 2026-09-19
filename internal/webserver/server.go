@@ -3,7 +3,6 @@
 package webserver
 
 import (
-	"context"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
@@ -33,17 +32,15 @@ type Options struct {
 	// Datasets reports the offline IMDb index build state, when configured.
 	// Nil tracks nothing.
 	Datasets *imdb_datasets.Tracker
-	// Download_datasets, when set, is used by POST /api/v1/datasets to fetch
-	// the IMDb datasets into dir before importing them. When nil, the default
-	// downloader (https://datasets.imdbws.com) is used.
-	Download_datasets func(ctx context.Context, dir string, on_progress func(imdb_datasets.Build_progress)) error
-	// Load_datasets, when set, starts a background load and import of the IMDb
-	// datasets at dir. cmd_serve wires this to its pipeline so the Settings
-	// page's download+import button can build the index at runtime. When nil,
-	// POST /api/v1/datasets reports the feature as unavailable.
-	Load_datasets func(dir string)
-	Static        fs.FS
-	Logger        *slog.Logger
+	// Stream_datasets, when set, streams the IMDb datasets over the network
+	// straight into a new index at index_db_path (decompressing on the fly,
+	// never saving the originals to disk) and reports progress through the
+	// Datasets tracker. cmd_serve wires this to its pipeline so the Settings
+	// page's import button can build the index at runtime. When nil, POST
+	// /api/v1/datasets reports the feature as unavailable.
+	Stream_datasets func(index_db_path string)
+	Static          fs.FS
+	Logger          *slog.Logger
 }
 
 // Server holds the HTTP handlers and background job state.
@@ -56,14 +53,13 @@ type Server struct {
 	matching *matching.Matching
 	posters  *poster_cache.Cache
 	datasets *imdb_datasets.Tracker
-	// download_datasets and load_datasets mirror the Options fields; see there.
-	download_datasets func(ctx context.Context, dir string, on_progress func(imdb_datasets.Build_progress)) error
-	load_datasets     func(dir string)
-	static            fs.FS
-	logger            *slog.Logger
-	mux               *http.ServeMux
-	jobs              *job_manager[scan.Progress, scan.Result]
-	matches           *job_manager[matching.Progress, matching.Result]
+	// stream_datasets mirrors the Options field; see there.
+	stream_datasets func(index_db_path string)
+	static          fs.FS
+	logger          *slog.Logger
+	mux             *http.ServeMux
+	jobs            *job_manager[scan.Progress, scan.Result]
+	matches         *job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.
@@ -73,21 +69,20 @@ func New(opts Options) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		store:             opts.Store,
-		cfg:               opts.Config,
-		matcher:           opts.Matcher,
-		metadata:          opts.Metadata,
-		scanner:           opts.Scanner,
-		matching:          opts.Matching,
-		posters:           opts.Posters,
-		datasets:          opts.Datasets,
-		download_datasets: opts.Download_datasets,
-		load_datasets:     opts.Load_datasets,
-		static:            opts.Static,
-		logger:            logger,
-		mux:               http.NewServeMux(),
-		jobs:              new_job_manager[scan.Progress, scan.Result](logger),
-		matches:           new_job_manager[matching.Progress, matching.Result](logger),
+		store:           opts.Store,
+		cfg:             opts.Config,
+		matcher:         opts.Matcher,
+		metadata:        opts.Metadata,
+		scanner:         opts.Scanner,
+		matching:        opts.Matching,
+		posters:         opts.Posters,
+		datasets:        opts.Datasets,
+		stream_datasets: opts.Stream_datasets,
+		static:          opts.Static,
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		jobs:            new_job_manager[scan.Progress, scan.Result](logger),
+		matches:         new_job_manager[matching.Progress, matching.Result](logger),
 	}
 	s.routes()
 	return s

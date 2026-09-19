@@ -198,6 +198,49 @@ func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matc
 	}()
 }
 
+// stream_datasets downloads the IMDb datasets over the network straight into a
+// new index at index_db_path (decompressing each export as it streams, never
+// saving the originals to disk) in the background, then attaches the built
+// index to the matching services. Startup matching is deferred to on_ready so
+// it does not contend with the build for CPU during the index construction.
+func (p *pipeline) stream_datasets(logger *slog.Logger, index_db_path string, service *matching.Matching, on_ready func(), status *imdb_datasets.Tracker) {
+	status.Set_has_path(true)
+	progress := func(step imdb_datasets.Build_progress) {
+		status.Observe(step)
+		switch step.Step {
+		case imdb_datasets.Build_stale:
+			logger.Info("imdb datasets: fetching fresh exports", "index", index_db_path)
+		case imdb_datasets.Build_import:
+			if step.Done {
+				logger.Info("imdb datasets: imported", "dataset", step.Dataset, "rows", step.Rows)
+			} else if step.Rows > 0 {
+				logger.Info("imdb datasets: importing", "dataset", step.Dataset, "rows", step.Rows)
+			} else {
+				logger.Info("imdb datasets: importing dataset", "dataset", step.Dataset)
+			}
+		case imdb_datasets.Build_ready:
+			logger.Info("imdb datasets: index built")
+		}
+	}
+	go func() {
+		index, err := imdb_datasets.Open_stream(context.Background(), index_db_path, imdb_datasets.Datasets_base_url, progress)
+		if err != nil {
+			status.Fail(err.Error())
+			logger.Error("imdb datasets: import failed", "index", index_db_path, "error", err)
+			if on_ready != nil {
+				on_ready()
+			}
+			return
+		}
+		p.attach_datasets(index)
+		service.Set_datasets(index)
+		logger.Info("imdb datasets: ready for offline matching", "index", index_db_path, "titles", index.Count())
+		if on_ready != nil {
+			on_ready()
+		}
+	}()
+}
+
 // build_pipeline assembles the matching pipeline from the configured API keys
 // and the optional IMDb datasets directory or file. Missing keys are warnings,
 // not errors: the pipeline degrades gracefully per the specification.
@@ -282,7 +325,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	matching_service := matching.New(store, pipe.matcher, nil, logger)
 
 	// start_matching kicks off an automatic matching run; it is assigned after
-	// the webserver exists, but the Load_datasets hook below can be triggered
+	// the webserver exists, but the Stream_datasets hook below can be triggered
 	// from the Settings page at any later point.
 	var start_matching func()
 
@@ -297,8 +340,8 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Static:   webui.FS(),
 		Logger:   logger,
 		Datasets: pipe.status,
-		Load_datasets: func(dir string) {
-			pipe.load_datasets(logger, dir, matching_service, start_matching, pipe.status)
+		Stream_datasets: func(index_db_path string) {
+			pipe.stream_datasets(logger, index_db_path, matching_service, start_matching, pipe.status)
 		},
 	})
 

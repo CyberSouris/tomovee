@@ -12,10 +12,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// index_db_name is the suffixless-side database file written next to the
+// Index_db_name is the suffixless-side database file written next to the
 // datasets. It holds an indexed copy of the parsed exports, so opening the
 // datasets later never requires loading them into RAM.
-const index_db_name = "tomovee_imdb.db"
+const Index_db_name = "tomovee_imdb.db"
 
 // schema_version is bumped whenever the index schema changes; an existing
 // index file with an older version is rebuilt on the next open.
@@ -34,10 +34,6 @@ const (
 	// Build_import reports progress importing one export. Build_progress names
 	// the dataset and counts rows and source bytes imported so far.
 	Build_import Build_step = "import"
-	// Build_download reports progress downloading the datasets from the
-	// internet before a rebuild. Bytes are cumulative across datasets; Total
-	// is the combined size of every download measured up front.
-	Build_download Build_step = "download"
 	// Build_fts reports the full-text search index population phase.
 	Build_fts Build_step = "fts"
 	// Build_ready reports that the freshly built index is complete.
@@ -223,11 +219,44 @@ func progress_with_bytes(on_progress func(Build_progress), counter *byte_counter
 	}
 }
 
-// build_index_db parses the dataset exports in source (a directory or a single
-// title.basics file) and writes an indexed SQLite database at db_path. It
+// export_source opens one dataset's decompressed row stream for import. open
+// receives a byte counter already wired to the underlying compressed source,
+// so its byte count matches total (the compressed size) and byte-based build
+// progress is consistent between on-disk and streamed exports.
+type export_source struct {
+	open func(counter *byte_counter) (data io.ReadCloser, total int64, err error)
+}
+
+// file_exports resolves the datasets importable from source (a directory or a
+// single title.basics file) into per-stem export sources backed by the files.
+func file_exports(source string) (map[string]export_source, error) {
+	files, err := dataset_files(source)
+	if err != nil {
+		return nil, err
+	}
+	exports := make(map[string]export_source, len(files))
+	for path, stem := range files {
+		path, stem := path, stem
+		exports[stem] = export_source{open: func(counter *byte_counter) (io.ReadCloser, int64, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil, 0, err
+			}
+			data, err := read_file(path, counter)
+			if err != nil {
+				return nil, 0, err
+			}
+			return data, info.Size(), nil
+		}}
+	}
+	return exports, nil
+}
+
+// build_index_db_exports writes an indexed SQLite database at db_path from the
+// given per-stem export sources. Exports missing from the map are skipped. It
 // builds to a temporary file and renames it into place, so a partially built
 // index is never observed. on_progress, when non-nil, receives build events.
-func build_index_db(source string, db_path string, on_progress func(Build_progress)) error {
+func build_index_db_exports(db_path string, on_progress func(Build_progress), exports map[string]export_source) error {
 	tmp := db_path + ".tmp"
 	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
 		return err
@@ -242,34 +271,20 @@ func build_index_db(source string, db_path string, on_progress func(Build_progre
 		if err := create_schema(db); err != nil {
 			return err
 		}
-		files, err := dataset_files(source)
-		if err != nil {
-			return err
-		}
 		for _, name := range []string{"title.basics", "title.akas", "title.episode", "title.ratings"} {
-			path := ""
-			for candidate, stem := range files {
-				if stem == name {
-					path = candidate
-					break
-				}
-			}
-			if path == "" {
+			src, ok := exports[name]
+			if !ok {
 				continue
 			}
-			info, err := os.Stat(path)
-			if err != nil {
-				return fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
-			}
 			var counter byte_counter
-			data, err := read_file(path, &counter)
+			data, total, err := src.open(&counter)
 			if err != nil {
-				return fmt.Errorf("imdb_datasets: %w", err)
+				return fmt.Errorf("imdb_datasets: open %s: %w", name, err)
 			}
-			err = import_dataset(db, name, data, progress_with_bytes(on_progress, &counter, info.Size()))
+			import_err := import_dataset(db, name, data, progress_with_bytes(on_progress, &counter, total))
 			_ = data.Close()
-			if err != nil {
-				return err
+			if import_err != nil {
+				return import_err
 			}
 		}
 		if on_progress != nil {
@@ -296,6 +311,16 @@ func build_index_db(source string, db_path string, on_progress func(Build_progre
 		return fmt.Errorf("imdb_datasets: rename index: %w", err)
 	}
 	return nil
+}
+
+// build_index_db parses the dataset exports in source (a directory or a single
+// title.basics file) and writes an indexed SQLite database at db_path.
+func build_index_db(source string, db_path string, on_progress func(Build_progress)) error {
+	exports, err := file_exports(source)
+	if err != nil {
+		return err
+	}
+	return build_index_db_exports(db_path, on_progress, exports)
 }
 
 // dataset_files resolves the exports to import for a source (directory or
@@ -504,4 +529,15 @@ func index_db_version(db_path string) int {
 		return 0
 	}
 	return version
+}
+
+// index_reusable reports whether db_path holds a complete, current index even
+// when its source exports are unavailable, as is the case for indexes built by
+// Open_stream: the originals were streamed straight in and never saved.
+func index_reusable(db_path string) bool {
+	info, err := os.Stat(db_path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return index_db_version(db_path) == schema_version
 }

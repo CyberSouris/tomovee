@@ -246,24 +246,33 @@ func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, 
 	if !info.IsDir() {
 		dir = filepath.Dir(path)
 	}
-	db_path := filepath.Join(dir, index_db_name)
+	db_path := filepath.Join(dir, Index_db_name)
 	if !index_db_fresh(path, db_path) {
-		if on_progress != nil {
-			total := int64(0)
-			if files, err := dataset_files(path); err == nil {
-				for f, _ := range files {
-					if stat, err := os.Stat(f); err == nil {
+		if files, err := dataset_files(path); err == nil {
+			if on_progress != nil {
+				total := int64(0)
+				for file := range files {
+					if stat, err := os.Stat(file); err == nil {
 						total += stat.Size()
 					}
 				}
+				on_progress(Build_progress{Step: Build_stale, Total: total})
 			}
-			on_progress(Build_progress{Step: Build_stale, Total: total})
-		}
-		if err := build_index_db(path, db_path, on_progress); err != nil {
-			return nil, err
-		}
-		if on_progress != nil {
-			on_progress(Build_progress{Step: Build_ready})
+			if err := build_index_db(path, db_path, on_progress); err != nil {
+				return nil, err
+			}
+			if on_progress != nil {
+				on_progress(Build_progress{Step: Build_ready})
+			}
+		} else if index_reusable(db_path) {
+			// No export files are present (the index was built by streaming the
+			// exports straight from the network and the originals never saved),
+			// but a current index exists, so reuse it.
+			if on_progress != nil {
+				on_progress(Build_progress{Step: Build_reuse})
+			}
+		} else {
+			return nil, fmt.Errorf("imdb_datasets: %s: %w", path, err)
 		}
 	} else if on_progress != nil {
 		on_progress(Build_progress{Step: Build_reuse})

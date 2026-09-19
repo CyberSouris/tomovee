@@ -43,6 +43,25 @@ func (s *Store) List_libraries(ctx context.Context) ([]Library, error) {
 	return out, rows.Err()
 }
 
+// Get_library returns the library row with the given id, or nil when it does
+// not exist.
+func (s *Store) Get_library(ctx context.Context, id int64) (*Library, error) {
+	var library Library
+	var enabled int
+	err := s.db.db.QueryRowContext(ctx, `
+		SELECT id, name, path, COALESCE(enabled, 0), COALESCE(last_scan, '')
+		FROM library WHERE id = ?`, id).
+		Scan(&library.Id, &library.Name, &library.Path, &enabled, &library.Last_scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	library.Enabled = enabled == 1
+	return &library, nil
+}
+
 // Enabled_libraries returns only the libraries with watching turned on.
 func (s *Store) Enabled_libraries(ctx context.Context) ([]Library, error) {
 	all, err := s.List_libraries(ctx)

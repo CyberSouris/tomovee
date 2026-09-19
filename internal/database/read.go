@@ -139,6 +139,19 @@ func (s *Store) List_versions_for_episode(ctx context.Context, episode_id int64)
 	return s.list_versions(ctx, "v.episode_id = ?", episode_id)
 }
 
+// Get_version returns a single version row by id, or nil when it does not
+// exist.
+func (s *Store) Get_version(ctx context.Context, id int64) (*Version, error) {
+	version, err := scan_version(s.db.db.QueryRowContext(ctx, version_columns+" WHERE v.id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return version, nil
+}
+
 func (s *Store) list_versions(ctx context.Context, where string, arg any) ([]Version, error) {
 	rows, err := s.db.db.QueryContext(ctx, version_columns+" WHERE "+where+" ORDER BY v.size_bytes DESC", arg)
 	if err != nil {

@@ -93,7 +93,26 @@
       <span class:good={settings.opensubtitles_configured} class:bad={!settings.opensubtitles_configured}>
         {settings.opensubtitles_configured ? 'configured' : 'not configured'}
       </span>
+      · Matching:
+      <span class:good={settings.matching_ready} class:bad={!settings.matching_ready}>
+        {settings.matching_ready ? 'ready' : 'not ready'}
+      </span>
     </p>
+    {#if !settings.matching_ready}
+      <ul class="help">
+        {#if settings.imdb_datasets_path}
+          <li>
+            The local IMDb index is <strong>still being built in the background</strong>
+            (or failed to load — check the <code>tomovee serve</code> log). Matching becomes
+            available automatically once it finishes; no action needed.
+          </li>
+        {/if}
+        <li>
+          Matching has no sources until at least one of the above is configured
+          and <strong>ready</strong>. After changing the config file, restart <code>tomovee serve</code>.
+        </li>
+      </ul>
+    {/if}
     <ul class="help">
       <li>
         <strong>TMDB</strong> — request a key at

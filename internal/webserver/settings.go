@@ -20,6 +20,7 @@ type settings_response struct {
 	Watch_enabled            bool           `json:"watch_enabled"`
 	Tmdb_configured          bool           `json:"tmdb_configured"`
 	Opensubtitles_configured bool           `json:"opensubtitles_configured"`
+	Matching_ready           bool           `json:"matching_ready"`
 	Libraries                []library_item `json:"libraries"`
 }
 
@@ -83,6 +84,7 @@ func (s *Server) settings(r *http.Request) (settings_response, error) {
 		Watch_enabled:            s.cfg.Watch_enabled,
 		Tmdb_configured:          s.cfg.Api.Tmdb_key != "",
 		Opensubtitles_configured: s.cfg.Api.Opensubtitles_api_key != "",
+		Matching_ready:           s.matching != nil && s.matcher != nil && s.matcher.Has_sources(),
 		Libraries:                []library_item{},
 	}
 	if value, ok, err := s.store.Config_get(r.Context(), "watch_enabled"); err != nil {

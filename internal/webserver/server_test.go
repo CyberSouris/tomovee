@@ -536,3 +536,36 @@ func Test_auto_match_runs_nonblocking(t *testing.T) {
 	}
 	wait_for_match_job(t, server, 1)
 }
+
+func Test_matching_unavailable_message(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	server.cfg.Imdb_datasets_path = "/data/imdb"
+	msg := server.matching_unavailable_message()
+	if !strings.Contains(msg, "local IMDb index is still being built") {
+		t.Fatalf("datasets-but-not-ready message = %q", msg)
+	}
+
+	server.cfg.Imdb_datasets_path = ""
+	server.cfg.Api.Tmdb_key = ""
+	msg = server.matching_unavailable_message()
+	if !strings.Contains(msg, "matching is not configured") {
+		t.Fatalf("nothing-configured message = %q", msg)
+	}
+
+	server.cfg.Api.Opensubtitles_api_key = "key"
+	msg = server.matching_unavailable_message()
+	if !strings.Contains(msg, "configured but unavailable") {
+		t.Fatalf("api-not-ready message = %q", msg)
+	}
+}
+
+func Test_match_start_reports_unavailable(t *testing.T) {
+	server, _ := new_test_server(t)
+	server.matcher = matcher.New(matcher.Options{})
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if start.Code != http.StatusServiceUnavailable {
+		t.Fatalf("start status = %d, want 503: %s", start.Code, start.Body)
+	}
+}

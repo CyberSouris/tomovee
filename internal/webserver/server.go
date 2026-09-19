@@ -111,6 +111,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/datasets", s.handle_datasets_start)
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
 	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)
+	s.mux.HandleFunc("GET /api/v1/versions/{version_id}/file", s.handle_version_file)
 	s.mux.HandleFunc("/", s.handle_spa)
 }
 

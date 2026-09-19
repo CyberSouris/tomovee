@@ -13,6 +13,7 @@
   let busy = false;
   let manual_error = '';
   let manual_ok = '';
+  let playing = null;
 
   async function load() {
     loading = true;
@@ -40,6 +41,10 @@
   function tracks_label(tracks) {
     if (!tracks || tracks.length === 0) return '—';
     return [...new Set(tracks.map((track) => track.language || '?'))].join(', ');
+  }
+
+  function file_name(version) {
+    return (version.file_path || 'video').split('/').pop();
   }
 
   async function match_body(body) {
@@ -183,6 +188,21 @@
   {/if}
 
   {#if data.versions.length > 0}
+    {#if playing}
+      <section class="player">
+        <div class="player-head">
+          <strong>{file_name(playing)}</strong>
+          <button class="secondary" on:click={() => (playing = null)}>Close</button>
+        </div>
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video controls autoplay src={playing.file_url}></video>
+        <p class="muted player-note">
+          Played in the browser only if the container and codecs are supported
+          (MP4/H.264 works in every browser; MKV usually needs either an
+          H.264/HEVC+ACC stream or a player like VLC). Otherwise use Download.
+        </p>
+      </section>
+    {/if}
     <table>
       <thead>
         <tr>
@@ -193,12 +213,13 @@
           <th>Duration</th>
           <th>Audio</th>
           <th>Subtitles</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
         {#each data.versions as version (version.id)}
           <tr>
-            <td class="path" title={version.file_path}>{version.file_path.split('/').pop()}</td>
+            <td class="path" title={version.file_path}>{file_name(version)}</td>
             <td>
               {version.resolution_label || ''}
               {#if version.hdr}<span class="badge">HDR</span>{/if}
@@ -208,6 +229,12 @@
             <td>{format_duration(version.duration_seconds)}</td>
             <td>{tracks_label(version.audio)}</td>
             <td>{tracks_label(version.subtitles)}</td>
+            <td class="actions">
+              <button class="secondary" on:click={() => (playing = playing === version ? null : version)}>
+                {playing === version ? 'Playing…' : 'Play'}
+              </button>
+              <a class="download" href={version.file_url} download={file_name(version)}>Download</a>
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -323,5 +350,41 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .player {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .player-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.6rem;
+  }
+
+  .player video {
+    width: 100%;
+    max-height: 70vh;
+    background: #000;
+    border-radius: 6px;
+  }
+
+  .player-note {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+  }
+
+  .actions {
+    white-space: nowrap;
+  }
+
+  .actions .download {
+    margin-left: 0.7rem;
+    font-size: 0.85rem;
   }
 </style>

@@ -41,6 +41,7 @@ type subtitle_item struct {
 type version_item struct {
 	Id                int64           `json:"id"`
 	File_path         string          `json:"file_path"`
+	File_url          string          `json:"file_url"`
 	Size_bytes        int64           `json:"size_bytes"`
 	Duration_seconds  float64         `json:"duration_seconds"`
 	Container         string          `json:"container"`
@@ -219,7 +220,8 @@ func (s *Server) version_items(ctx context.Context, versions []database.Version)
 			display_path = filepath.Join(root, display_path)
 		}
 		item := version_item{
-			Id: version.Id, File_path: display_path, Size_bytes: version.Size_bytes,
+			Id: version.Id, File_path: display_path, File_url: "/api/v1/versions/" + itoa(version.Id) + "/file",
+			Size_bytes:       version.Size_bytes,
 			Duration_seconds: version.Duration_seconds, Container: version.Container,
 			Resolution_width: version.Resolution_width, Resolution_height: version.Resolution_height,
 			Resolution_label: version.Resolution_label, Video_codec: version.Video_codec,

@@ -48,15 +48,31 @@
     ['settings', 'Settings'],
   ];
 
-  const busy = () =>
-    background &&
-    ((background.scan && background.scan.running) ||
-      (background.match && background.match.running) ||
-      (background.datasets && background.datasets.state === 'building'));
-
-  $: active_task = background && tasks(background).find((t) => t.active);
+  $: active_tasks = background ? tasks(background).filter((t) => t.active) : [];
+  $: active_task = active_tasks[0] || null;
   $: active_percent = active_task ? active_task.percent() : 0;
   $: active_label = active_task ? active_task.label : '';
+  $: extra_tasks = active_tasks.length - 1;
+  $: on_own_page = active_task != null && route.name === active_task.page.slice(1);
+
+  // A dismissed notification stays hidden while the same set of tasks runs, but
+  // reappears whenever a background task starts or finishes so a fresh task is
+  // never missed.
+  let dismissed = false;
+  let dismissed_key = '';
+  $: task_key = active_tasks
+    .map((t) => t.name)
+    .sort()
+    .join(',');
+  $: if (task_key !== dismissed_key) {
+    dismissed = false;
+    dismissed_key = task_key;
+  }
+
+  function go_task(task) {
+    if (!task) return;
+    window.location.hash = '#' + task.page;
+  }
 
   function tasks(bg) {
     const items = [];
@@ -64,6 +80,7 @@
       const p = bg.scan.progress || {};
       items.push({
         name: 'scan',
+        page: '/scan',
         active: true,
         get label() {
           return `Scanning — ${p.phase || 'scanning'}`;
@@ -75,6 +92,7 @@
       const p = bg.match.progress || {};
       items.push({
         name: 'match',
+        page: '/match',
         active: true,
         get label() {
           return p.title ? `Matching — ${p.title}` : 'Matching…';
@@ -86,12 +104,12 @@
       const d = bg.datasets;
       items.push({
         name: 'datasets',
+        page: '/settings',
         active: true,
         get label() {
           if (d.step === 'fts') return 'Building IMDb index — full-text search';
-          if (d.dataset) return `Downloading & importing IMDb data — ${d.dataset}`;
-          if (d.step === 'stale' || d.step === 'import' || d.step === 'ready') return 'Downloading & importing IMDb data';
-          return 'Building IMDb index — importing';
+          if (d.dataset) return `Importing IMDb data — ${d.dataset}`;
+          return 'Importing IMDb data (background)';
         },
         percent: () => d.percent || 0,
       });
@@ -100,13 +118,20 @@
   }
 </script>
 
-{#if busy()}
-  <div class="activity" class:visible={true}>
-    <div class="activity-label">{active_label}</div>
-    <div class="activity-bar">
-      <div class="activity-fill" style={`width: ${active_percent}%`}></div>
-    </div>
-    <div class="activity-percent">{active_percent}%</div>
+{#if active_task && !dismissed && !on_own_page}
+  <div class="notification" role="status" aria-live="polite">
+    <button class="notif-main" on:click={() => go_task(active_task)} title={active_label}>
+      <span class="notif-dot" aria-hidden="true"></span>
+      <span class="notif-label">{active_label}</span>
+      {#if extra_tasks > 0}
+        <span class="notif-more">+{extra_tasks}</span>
+      {/if}
+      <span class="notif-percent">{active_percent}%</span>
+    </button>
+    <div class="notif-bar"><div class="notif-fill" style={`width: ${active_percent}%`}></div></div>
+    <button class="notif-close" aria-label="Dismiss notification" title="Dismiss" on:click={() => (dismissed = true)}>
+      ×
+    </button>
   </div>
 {/if}
 
@@ -140,49 +165,127 @@
 </main>
 
 <style>
-  .activity {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    padding: 0.5rem 1.5rem;
-    background: var(--panel-2);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 10;
+  .notification {
+    position: fixed;
+    right: 1.2rem;
+    bottom: 1.2rem;
+    width: min(360px, calc(100vw - 2rem));
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    z-index: 100;
+    overflow: hidden;
+    animation: notif-in 0.18s ease-out;
   }
 
-  .activity-label {
-    flex: 0 1 auto;
-    font-size: 0.85rem;
-    color: var(--muted);
+  .notif-main {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: 0;
+    border-radius: 0;
+    padding: 0.75rem 2.4rem 0.55rem 0.9rem;
+    font-size: 0.88rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .notif-main:hover {
+    background: var(--panel-2);
+  }
+
+  .notif-dot {
+    flex: 0 0 auto;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: notif-pulse 1.4s ease-in-out infinite;
+  }
+
+  .notif-label {
+    flex: 1 1 auto;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .activity-bar {
-    flex: 1 1 auto;
-    height: 0.5rem;
-    background: var(--panel);
+  .notif-more {
+    flex: 0 0 auto;
+    background: var(--panel-2);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 999px;
+    padding: 0 0.45rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  .notif-percent {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+
+  .notif-bar {
+    height: 3px;
+    background: var(--panel-2);
+    margin: 0 0.9rem 0.75rem;
+    border-radius: 2px;
     overflow: hidden;
   }
 
-  .activity-fill {
+  .notif-fill {
     height: 100%;
     width: 0;
     background: var(--accent);
     transition: width 0.4s ease;
   }
 
-  .activity-percent {
-    flex: 0 0 auto;
-    font-size: 0.85rem;
+  .notif-close {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    background: transparent;
     color: var(--muted);
-    min-width: 3rem;
-    text-align: right;
+    border: 0;
+    border-radius: 4px;
+    padding: 0.1rem 0.4rem;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .notif-close:hover {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+
+  @keyframes notif-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes notif-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.45;
+      transform: scale(0.8);
+    }
   }
 
   header {

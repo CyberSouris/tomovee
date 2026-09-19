@@ -241,6 +241,27 @@ func (p *pipeline) stream_datasets(logger *slog.Logger, index_db_path string, se
 	}()
 }
 
+// build_matcher_sources builds the online matching sources (OpenSubtitles and
+// TMDB) from cfg. TMDB is wrapped in the metadata cache when a store is
+// present so repeated lookups stay cheap.
+func build_matcher_sources(store *database.Store, cfg *config.Config, logger *slog.Logger) (matcher.Subtitles_source, matcher.Metadata_source) {
+	var subtitles matcher.Subtitles_source
+	if cfg.Api.Opensubtitles_api_key != "" {
+		subtitles = opensubtitles.New(opensubtitles.Config{
+			Api_key:    cfg.Api.Opensubtitles_api_key,
+			User_agent: cfg.Api.Opensubtitles_user_agent,
+		})
+	}
+	var metadata matcher.Metadata_source
+	if cfg.Api.Tmdb_key != "" {
+		metadata = tmdb.New(tmdb.Config{Api_key: cfg.Api.Tmdb_key})
+		if store != nil {
+			metadata = metacache.New(metadata, store, metacache.Default_ttl, logger)
+		}
+	}
+	return subtitles, metadata
+}
+
 // build_pipeline assembles the matching pipeline from the configured API keys
 // and the optional IMDb datasets directory or file. Missing keys are warnings,
 // not errors: the pipeline degrades gracefully per the specification.
@@ -250,23 +271,12 @@ func (p *pipeline) stream_datasets(logger *slog.Logger, index_db_path string, se
 // them with pipeline.load_datasets once they are ready.
 func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Store) (*pipeline, error) {
 	opts := matcher.Options{Logger: logger}
-
-	if cfg.Api.Opensubtitles_api_key != "" {
-		opts.Subtitles = opensubtitles.New(opensubtitles.Config{
-			Api_key:    cfg.Api.Opensubtitles_api_key,
-			User_agent: cfg.Api.Opensubtitles_user_agent,
-		})
-	} else {
+	opts.Subtitles, opts.Metadata = build_matcher_sources(store, cfg, logger)
+	if opts.Subtitles == nil {
 		logger.Warn("opensubtitles api key not configured; hash lookup disabled")
 	}
-
-	if cfg.Api.Tmdb_key != "" {
-		opts.Metadata = tmdb.New(tmdb.Config{Api_key: cfg.Api.Tmdb_key})
-	} else {
+	if opts.Metadata == nil {
 		logger.Warn("tmdb api key not configured; falling back to offline matching")
-	}
-	if store != nil && opts.Metadata != nil {
-		opts.Metadata = metacache.New(opts.Metadata, store, metacache.Default_ttl, logger)
 	}
 
 	return &pipeline{
@@ -274,6 +284,27 @@ func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Sto
 		metadata: opts.Metadata,
 		status:   imdb_datasets.New_tracker(),
 	}, nil
+}
+
+// reload_sources re-reads the persisted source overrides (API keys saved from
+// the web UI) from the database, merges them over the config, and swaps the
+// live online matching sources (TMDB, OpenSubtitles) onto the running matcher
+// without a restart. The offline IMDb datasets layer is unaffected.
+func (p *pipeline) reload_sources(logger *slog.Logger, store *database.Store, cfg *config.Config) error {
+	overrides, err := store.Config_all(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(overrides) > 0 {
+		config.Apply_overrides(cfg, overrides)
+	}
+	subtitles, metadata := build_matcher_sources(store, cfg, logger)
+	p.matcher.Set_sources(subtitles, metadata)
+	p.metadata = metadata
+	logger.Info("sources reloaded",
+		"tmdb", cfg.Api.Tmdb_key != "",
+		"opensubtitles", cfg.Api.Opensubtitles_api_key != "")
+	return nil
 }
 
 func cmd_serve(logger *slog.Logger, args []string) error {
@@ -342,6 +373,9 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Datasets: pipe.status,
 		Stream_datasets: func(index_db_path string) {
 			pipe.stream_datasets(logger, index_db_path, matching_service, start_matching, pipe.status)
+		},
+		Reload: func() error {
+			return pipe.reload_sources(logger, store, cfg)
 		},
 	})
 

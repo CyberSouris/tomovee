@@ -144,12 +144,18 @@ type offline_ref struct {
 	src Offline_source
 }
 
+// sources_ref boxes the online Sources so they can be swapped atomically
+// without races against matching jobs already running.
+type sources_ref struct {
+	subtitles Subtitles_source
+	metadata  Metadata_source
+}
+
 // Matcher runs the matching pipeline: OpenSubtitles hash first, then a TMDB
 // title search, then the offline IMDb dataset, leaving unmatched files for
 // manual review.
 type Matcher struct {
-	subtitles      Subtitles_source
-	metadata       Metadata_source
+	sources        atomic.Pointer[sources_ref]
 	offline        atomic.Pointer[offline_ref]
 	min_confidence float64
 	logger         *slog.Logger
@@ -166,13 +172,34 @@ func New(opts Options) *Matcher {
 		logger = slog.Default()
 	}
 	m := &Matcher{
-		subtitles:      opts.Subtitles,
-		metadata:       opts.Metadata,
 		min_confidence: min_confidence,
 		logger:         logger,
 	}
+	m.Set_sources(opts.Subtitles, opts.Metadata)
 	m.Set_offline(opts.Offline)
 	return m
+}
+
+// source returns the currently configured online sources (OpenSubtitles and
+// TMDB). It is safe to call while matching jobs are running; a nil value means
+// that layer is disabled.
+func (m *Matcher) source() (Subtitles_source, Metadata_source) {
+	ref := m.sources.Load()
+	if ref == nil {
+		return nil, nil
+	}
+	return ref.subtitles, ref.metadata
+}
+
+// Set_sources attaches or replaces the online matching sources (OpenSubtitles
+// and TMDB). It is safe to call while matching jobs are running, letting
+// credentials saved from the web UI take effect without restarting the server.
+func (m *Matcher) Set_sources(subtitles Subtitles_source, metadata Metadata_source) {
+	if subtitles == nil && metadata == nil {
+		m.sources.Store(nil)
+		return
+	}
+	m.sources.Store(&sources_ref{subtitles: subtitles, metadata: metadata})
 }
 
 // Set_offline attaches or replaces the offline dataset source used as the
@@ -190,17 +217,19 @@ func (m *Matcher) Set_offline(src Offline_source) {
 // Has_sources reports whether at least one metadata source is configured, so
 // callers can refuse to start a background job that could never match anything.
 func (m *Matcher) Has_sources() bool {
-	return m.metadata != nil || m.subtitles != nil || m.offline.Load() != nil
+	sub, meta := m.source()
+	return meta != nil || sub != nil || m.offline.Load() != nil
 }
 
 // Match identifies a file, always returning a result. A result with
 // Matched == false carries the parsed title/year and any candidates for manual
 // matching.
 func (m *Matcher) Match(ctx context.Context, input Input) *Result {
+	sub, meta := m.source()
 	hint := Parse_filename(input.File_name)
 	result := &Result{Media_type: input.Kind, Title: hint.Title, Year: hint.Year}
 
-	if input.Hash != "" && m.subtitles != nil {
+	if input.Hash != "" && sub != nil {
 		hash_result, err := m.match_by_hash(ctx, input, hint)
 		if err != nil {
 			result.Warnings = append(result.Warnings, "opensubtitles hash lookup: "+err.Error())
@@ -209,7 +238,7 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 		}
 	}
 
-	if m.metadata != nil {
+	if meta != nil {
 		search_result := m.match_by_search(ctx, input, hint)
 		search_result.Warnings = append(search_result.Warnings, result.Warnings...)
 		if search_result.Matched {
@@ -220,14 +249,15 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	if ref := m.offline.Load(); ref != nil {
 		m.match_offline(ctx, input, hint, result, ref.src)
 	}
-	if !result.Matched && len(result.Warnings) == 0 && m.metadata == nil && m.offline.Load() == nil {
+	if !result.Matched && len(result.Warnings) == 0 && meta == nil && m.offline.Load() == nil {
 		result.Warnings = append(result.Warnings, "no metadata source configured")
 	}
 	return result
 }
 
 func (m *Matcher) match_by_hash(ctx context.Context, input Input, hint Filename_hint) (*Result, error) {
-	features, err := m.subtitles.Search_by_hash(ctx, input.Hash)
+	sub, meta := m.source()
+	features, err := sub.Search_by_hash(ctx, input.Hash)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +283,7 @@ func (m *Matcher) match_by_hash(ctx context.Context, input Input, hint Filename_
 		result.Year = hint.Year
 	}
 
-	if m.metadata != nil {
+	if meta != nil {
 		if err := m.enrich(ctx, result); err != nil {
 			result.Warnings = append(result.Warnings, "tmdb enrichment: "+err.Error())
 		}
@@ -275,7 +305,8 @@ func (m *Matcher) match_by_search(ctx context.Context, input Input, hint Filenam
 }
 
 func (m *Matcher) search_movie(ctx context.Context, hint Filename_hint, result *Result) *Result {
-	results, err := m.metadata.Search_movie(ctx, hint.Title, hint.Year)
+	_, meta := m.source()
+	results, err := meta.Search_movie(ctx, hint.Title, hint.Year)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "tmdb movie search: "+err.Error())
 		return result
@@ -297,7 +328,8 @@ func (m *Matcher) search_movie(ctx context.Context, hint Filename_hint, result *
 }
 
 func (m *Matcher) search_series(ctx context.Context, hint Filename_hint, result *Result) *Result {
-	results, err := m.metadata.Search_tv(ctx, hint.Title, hint.Year)
+	_, meta := m.source()
+	results, err := meta.Search_tv(ctx, hint.Title, hint.Year)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "tmdb tv search: "+err.Error())
 		return result
@@ -433,7 +465,8 @@ func (m *Matcher) Enrich_by_tmdb(ctx context.Context, media_type scanner.Media_t
 // Enrich_by_imdb resolves an IMDb id through TMDB and builds a matched result.
 func (m *Matcher) Enrich_by_imdb(ctx context.Context, media_type scanner.Media_type, imdb_id string) (*Result, error) {
 	result := &Result{Media_type: media_type, Imdb_id: imdb_id}
-	found, err := m.metadata.Find_by_imdb(ctx, imdb_id)
+	_, meta := m.source()
+	found, err := meta.Find_by_imdb(ctx, imdb_id)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +500,8 @@ func (m *Matcher) enrich(ctx context.Context, result *Result) error {
 	if result.Imdb_id == "" {
 		return nil
 	}
-	found, err := m.metadata.Find_by_imdb(ctx, result.Imdb_id)
+	_, meta := m.source()
+	found, err := meta.Find_by_imdb(ctx, result.Imdb_id)
 	if err != nil {
 		return err
 	}
@@ -483,7 +517,8 @@ func (m *Matcher) enrich(ctx context.Context, result *Result) error {
 }
 
 func (m *Matcher) fill_from_movie_id(ctx context.Context, result *Result, id int) error {
-	details, err := m.metadata.Movie_details(ctx, id)
+	_, meta := m.source()
+	details, err := meta.Movie_details(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -505,7 +540,8 @@ func (m *Matcher) fill_from_movie_id(ctx context.Context, result *Result, id int
 }
 
 func (m *Matcher) fill_from_tv_id(ctx context.Context, result *Result, id int) error {
-	details, err := m.metadata.Tv_details(ctx, id)
+	_, meta := m.source()
+	details, err := meta.Tv_details(ctx, id)
 	if err != nil {
 		return err
 	}

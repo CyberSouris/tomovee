@@ -372,6 +372,39 @@ func Test_set_offline_activates_layer(t *testing.T) {
 	}
 }
 
+func Test_set_sources_swaps_online_layers(t *testing.T) {
+	sub := &fake_subtitles{features: []opensubtitles.Feature{{
+		Title: "The Matrix", Year: 1999, Imdb_id: "tt0133093",
+		Tmdb_id: 603, Feature_type: "movie", Download_count: 500,
+	}}}
+	meta := &fake_metadata{details: map[int]any{603: matrix_movie_details()}}
+	m := New(Options{})
+
+	m.Set_sources(sub, meta)
+	if !m.Has_sources() {
+		t.Fatal("matcher without sources after Set_sources")
+	}
+	result := m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+		Hash: "deadbeef",
+	})
+	if result.Source != "opensubtitles" {
+		t.Fatalf("expected hash match via swapped subtitles source, got %+v", result)
+	}
+
+	m.Set_sources(nil, nil)
+	if m.Has_sources() {
+		t.Fatal("matcher still reports sources after Set_sources(nil, nil)")
+	}
+	result = m.Match(context.Background(), Input{
+		Path: "/m/The.Matrix.1999.mkv", File_name: "The.Matrix.1999.mkv", Kind: scanner.Movie,
+		Hash: "deadbeef",
+	})
+	if len(result.Candidates) != 0 {
+		t.Errorf("online sources consulted after Set_sources(nil, nil): %+v", result.Candidates)
+	}
+}
+
 func Test_match_offline_single_candidate(t *testing.T) {
 	offline := &fake_offline{candidates: []Offline_candidate{{
 		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,

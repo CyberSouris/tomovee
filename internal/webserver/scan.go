@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/scan"
 )
@@ -245,6 +246,28 @@ func (s *Server) handle_scan_status(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusOK, map[string]any{"job": job_response_from(s.jobs.Snapshot())})
 }
 
+// background_status aggregates the state of every background activity (folder
+// scans, matching runs, and the offline IMDb index build) so the UI can show a
+// single global progress indicator.
+type background_status struct {
+	Scan     *job_response         `json:"scan,omitempty"`
+	Match    *match_job_response   `json:"match,omitempty"`
+	Datasets *imdb_datasets.Status `json:"datasets,omitempty"`
+}
+
+func (s *Server) handle_background_status(w http.ResponseWriter, r *http.Request) {
+	datasets := (*imdb_datasets.Status)(nil)
+	if s.datasets != nil {
+		status := s.datasets.Snapshot()
+		datasets = &status
+	}
+	write_json(w, http.StatusOK, background_status{
+		Scan:     job_response_from(s.jobs.Snapshot()),
+		Match:    match_job_response_from(s.matches.Snapshot()),
+		Datasets: datasets,
+	})
+}
+
 func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -401,12 +424,27 @@ func (s *Server) matching_unavailable_message() string {
 		open_subtitles = s.cfg.Api.Opensubtitles_api_key
 	}
 	if datasets != "" {
-		return "matching is configured but the local IMDb index is still being built in the background or failed to load; once it is ready, matching will be available. Check the tomovee log for progress."
+		percent := s.datasets_percent()
+		if s.datasets_building() {
+			return fmt.Sprintf("matching is configured but the local IMDb index is still being built in the background (%d%% done). Matching becomes available automatically once it finishes.", percent)
+		}
+		return "matching is configured but the local IMDb index failed to load. Check the tomovee log for errors."
 	}
 	if tmdb != "" || open_subtitles != "" {
 		return "matching sources are configured but unavailable. Check the tomovee log for errors."
 	}
 	return "matching is not configured: set the tmdb_key and/or opensubtitles_api_key under api, or point imdb_datasets_path at your IMDb dataset exports in the config file, then restart."
+}
+
+func (s *Server) datasets_building() bool {
+	return s.datasets != nil && s.datasets.Snapshot().State == imdb_datasets.State_building
+}
+
+func (s *Server) datasets_percent() int {
+	if s.datasets == nil {
+		return 0
+	}
+	return s.datasets.Snapshot().Percent
 }
 
 func (s *Server) handle_match_status(w http.ResponseWriter, r *http.Request) {

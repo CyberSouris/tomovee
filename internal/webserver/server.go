@@ -12,6 +12,7 @@ import (
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
@@ -28,6 +29,9 @@ type Options struct {
 	// Matching, when set, backs the background matching job and its endpoints.
 	Matching *matching.Matching
 	Posters  *poster_cache.Cache
+	// Datasets reports the offline IMDb index build state, when configured.
+	// Nil tracks nothing.
+	Datasets *imdb_datasets.Tracker
 	Static   fs.FS
 	Logger   *slog.Logger
 }
@@ -41,6 +45,7 @@ type Server struct {
 	scanner  *scan.Scanner
 	matching *matching.Matching
 	posters  *poster_cache.Cache
+	datasets *imdb_datasets.Tracker
 	static   fs.FS
 	logger   *slog.Logger
 	mux      *http.ServeMux
@@ -62,6 +67,7 @@ func New(opts Options) *Server {
 		scanner:  opts.Scanner,
 		matching: opts.Matching,
 		posters:  opts.Posters,
+		datasets: opts.Datasets,
 		static:   opts.Static,
 		logger:   logger,
 		mux:      http.NewServeMux(),
@@ -82,6 +88,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/catalog/{id}", s.handle_catalog_detail)
 	s.mux.HandleFunc("POST /api/v1/catalog/{id}/match", s.handle_manual_match)
 	s.mux.HandleFunc("GET /api/v1/unmatched", s.handle_unmatched)
+	s.mux.HandleFunc("GET /api/v1/background", s.handle_background_status)
 	s.mux.HandleFunc("GET /api/v1/search", s.handle_search)
 	s.mux.HandleFunc("POST /api/v1/scan", s.handle_scan_start)
 	s.mux.HandleFunc("GET /api/v1/scan/status", s.handle_scan_status)

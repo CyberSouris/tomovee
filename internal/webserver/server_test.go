@@ -15,6 +15,7 @@ import (
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/imdb_datasets"
 	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
@@ -541,6 +542,8 @@ func Test_matching_unavailable_message(t *testing.T) {
 	server, _ := new_test_server(t)
 
 	server.cfg.Imdb_datasets_path = "/data/imdb"
+	server.datasets = imdb_datasets.New_tracker()
+	server.datasets.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_stale})
 	msg := server.matching_unavailable_message()
 	if !strings.Contains(msg, "local IMDb index is still being built") {
 		t.Fatalf("datasets-but-not-ready message = %q", msg)
@@ -567,5 +570,37 @@ func Test_match_start_reports_unavailable(t *testing.T) {
 	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
 	if start.Code != http.StatusServiceUnavailable {
 		t.Fatalf("start status = %d, want 503: %s", start.Code, start.Body)
+	}
+}
+
+func Test_background_status_includes_datasets(t *testing.T) {
+	server, _ := new_test_server(t)
+	server.datasets = imdb_datasets.New_tracker()
+	server.datasets.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_stale, Total: 100})
+	server.datasets.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_import, Dataset: "title.basics", Bytes: 50, Total: 100})
+
+	response := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[background_status](t, response)
+	if body.Datasets == nil {
+		t.Fatal("datasets status is nil")
+	}
+	if string(body.Datasets.State) != string(imdb_datasets.State_building) || body.Datasets.Percent != 50 {
+		t.Fatalf("datasets = %+v, want building at 50%%", body.Datasets)
+	}
+}
+
+func Test_matching_unavailable_message_includes_percent(t *testing.T) {
+	server, _ := new_test_server(t)
+	server.cfg.Imdb_datasets_path = "/data/imdb"
+	server.datasets = imdb_datasets.New_tracker()
+	server.datasets.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_stale, Total: 100})
+	server.datasets.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_import, Bytes: 25, Total: 100})
+
+	msg := server.matching_unavailable_message()
+	if !strings.Contains(msg, "25%") {
+		t.Fatalf("message = %q, want percent", msg)
 	}
 }

@@ -372,8 +372,12 @@ func (s *Server) Auto_match() {
 }
 
 func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
-	if s.matching == nil || s.matcher == nil || !s.matcher.Has_sources() {
+	if s.matching == nil || s.matcher == nil {
 		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	if !s.matcher.Has_sources() {
+		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
 		return
 	}
 	job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
@@ -384,6 +388,25 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write_json(w, http.StatusAccepted, match_job_response_from(job))
+}
+
+// matching_unavailable_message explains why the background matching job cannot
+// run, so users see what to configure instead of a dead-end error.
+func (s *Server) matching_unavailable_message() string {
+	datasets := ""
+	var tmdb, open_subtitles string
+	if s.cfg != nil {
+		datasets = s.cfg.Imdb_datasets_path
+		tmdb = s.cfg.Api.Tmdb_key
+		open_subtitles = s.cfg.Api.Opensubtitles_api_key
+	}
+	if datasets != "" {
+		return "matching is configured but the local IMDb index is still being built in the background or failed to load; once it is ready, matching will be available. Check the tomovee log for progress."
+	}
+	if tmdb != "" || open_subtitles != "" {
+		return "matching sources are configured but unavailable. Check the tomovee log for errors."
+	}
+	return "matching is not configured: set the tmdb_key and/or opensubtitles_api_key under api, or point imdb_datasets_path at your IMDb dataset exports in the config file, then restart."
 }
 
 func (s *Server) handle_match_status(w http.ResponseWriter, r *http.Request) {

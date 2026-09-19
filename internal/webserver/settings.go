@@ -13,15 +13,26 @@ type library_item struct {
 }
 
 type settings_response struct {
-	Listen                   string         `json:"listen"`
-	Database_path            string         `json:"database_path"`
-	Poster_cache_dir         string         `json:"poster_cache_dir"`
-	Imdb_datasets_path       string         `json:"imdb_datasets_path,omitempty"`
-	Watch_enabled            bool           `json:"watch_enabled"`
-	Tmdb_configured          bool           `json:"tmdb_configured"`
-	Opensubtitles_configured bool           `json:"opensubtitles_configured"`
-	Matching_ready           bool           `json:"matching_ready"`
-	Libraries                []library_item `json:"libraries"`
+	Listen                   string                `json:"listen"`
+	Database_path            string                `json:"database_path"`
+	Poster_cache_dir         string                `json:"poster_cache_dir"`
+	Imdb_datasets_path       string                `json:"imdb_datasets_path,omitempty"`
+	Watch_enabled            bool                  `json:"watch_enabled"`
+	Tmdb_configured          bool                  `json:"tmdb_configured"`
+	Opensubtitles_configured bool                  `json:"opensubtitles_configured"`
+	Matching_ready           bool                  `json:"matching_ready"`
+	Datasets                 *datasets_status_json `json:"datasets,omitempty"`
+	Libraries                []library_item        `json:"libraries"`
+}
+
+// datasets_status_json is the offline index build status sent to the UI.
+type datasets_status_json struct {
+	State    string `json:"state"`
+	Percent  int    `json:"percent"`
+	Dataset  string `json:"dataset,omitempty"`
+	Step     string `json:"step,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Has_path bool   `json:"has_path"`
 }
 
 type settings_update struct {
@@ -86,6 +97,17 @@ func (s *Server) settings(r *http.Request) (settings_response, error) {
 		Opensubtitles_configured: s.cfg.Api.Opensubtitles_api_key != "",
 		Matching_ready:           s.matching != nil && s.matcher != nil && s.matcher.Has_sources(),
 		Libraries:                []library_item{},
+	}
+	if s.datasets != nil {
+		status := s.datasets.Snapshot()
+		response.Datasets = &datasets_status_json{
+			State:    string(status.State),
+			Percent:  status.Percent,
+			Dataset:  status.Dataset,
+			Step:     string(status.Step),
+			Message:  status.Message,
+			Has_path: status.Has_path,
+		}
 	}
 	if value, ok, err := s.store.Config_get(r.Context(), "watch_enabled"); err != nil {
 		return response, err

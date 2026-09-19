@@ -142,6 +142,7 @@ type pipeline struct {
 	matcher  *matcher.Matcher
 	metadata matcher.Metadata_source
 	datasets atomic.Pointer[imdb_datasets.Index]
+	status   *imdb_datasets.Tracker
 }
 
 // attach_datasets makes a freshly loaded offline datasets index part of the
@@ -157,8 +158,10 @@ func (p *pipeline) attach_datasets(index *imdb_datasets.Index) {
 // enrichment service are attached once the index is ready; startup matching is
 // then kicked off so it does not contend with the build for CPU during the
 // index construction.
-func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matching.Matching, on_ready func()) {
+func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matching.Matching, on_ready func(), status *imdb_datasets.Tracker) {
+	status.Set_has_path(path != "")
 	progress := func(step imdb_datasets.Build_progress) {
+		status.Observe(step)
 		switch step.Step {
 		case imdb_datasets.Build_stale:
 			logger.Info("imdb datasets: export is newer than the index, rebuilding", "path", path)
@@ -179,6 +182,7 @@ func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matc
 	go func() {
 		index, err := imdb_datasets.Open_with_progress(path, progress)
 		if err != nil {
+			status.Fail(err.Error())
 			logger.Error("imdb datasets: not available for offline matching", "path", path, "error", err)
 			if on_ready != nil {
 				on_ready()
@@ -222,7 +226,11 @@ func build_pipeline(logger *slog.Logger, cfg *config.Config, store *database.Sto
 		opts.Metadata = metacache.New(opts.Metadata, store, metacache.Default_ttl, logger)
 	}
 
-	return &pipeline{matcher: matcher.New(opts), metadata: opts.Metadata}, nil
+	return &pipeline{
+		matcher:  matcher.New(opts),
+		metadata: opts.Metadata,
+		status:   imdb_datasets.New_tracker(),
+	}, nil
 }
 
 func cmd_serve(logger *slog.Logger, args []string) error {
@@ -273,6 +281,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Posters:  posters,
 		Static:   webui.FS(),
 		Logger:   logger,
+		Datasets: pipe.status,
 	})
 
 	watch_ctx, stop_watch := context.WithCancel(context.Background())
@@ -312,7 +321,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	}
 	if cfg.Imdb_datasets_path != "" {
 		logger.Info("loading imdb datasets in the background", "path", cfg.Imdb_datasets_path)
-		pipe.load_datasets(logger, cfg.Imdb_datasets_path, matching_service, start_matching)
+		pipe.load_datasets(logger, cfg.Imdb_datasets_path, matching_service, start_matching, pipe.status)
 	} else {
 		start_matching()
 	}

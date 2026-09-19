@@ -100,11 +100,23 @@
     </p>
     {#if !settings.matching_ready}
       <ul class="help">
-        {#if settings.imdb_datasets_path}
+        {#if settings.datasets && settings.datasets.state === 'building'}
           <li>
-            The local IMDb index is <strong>still being built in the background</strong>
-            (or failed to load — check the <code>tomovee serve</code> log). Matching becomes
-            available automatically once it finishes; no action needed.
+            The local IMDb index is <strong>building in the background</strong>
+            <span class="progress">
+              {settings.datasets.percent}%{#if settings.datasets.dataset} — importing {settings.datasets.dataset}{/if}
+            </span>.
+            Matching becomes available automatically once it finishes; no action needed.
+          </li>
+        {:else if settings.imdb_datasets_path && settings.datasets && settings.datasets.state === 'error'}
+          <li>
+            The local IMDb index <strong>failed to load</strong>
+            ({settings.datasets.message || 'see server log'}). Check the <code>tomovee serve</code> log.
+          </li>
+        {:else if settings.imdb_datasets_path}
+          <li>
+            The local IMDb index is <strong>paused or not loaded</strong>. Matching becomes
+            available once it finishes loading; no action needed.
           </li>
         {/if}
         <li>

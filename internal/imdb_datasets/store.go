@@ -32,8 +32,10 @@ const (
 	// starts.
 	Build_stale Build_step = "stale"
 	// Build_import reports progress importing one export. Build_progress names
-	// the dataset and counts rows imported so far.
+	// the dataset and counts rows and source bytes imported so far.
 	Build_import Build_step = "import"
+	// Build_fts reports the full-text search index population phase.
+	Build_fts Build_step = "fts"
 	// Build_ready reports that the freshly built index is complete.
 	Build_ready Build_step = "ready"
 )
@@ -43,6 +45,8 @@ type Build_progress struct {
 	Step    Build_step
 	Dataset string // dataset stem (e.g. "title.basics") for Build_import steps
 	Rows    int    // rows imported so far; Done=true carries the total
+	Bytes   int64  // source bytes read so far for the current dataset (Build_import)
+	Total   int64  // total source bytes for Build_stale (whole build) or the current dataset (Build_import)
 	Done    bool   // Build_import's final event for the dataset
 }
 
@@ -199,6 +203,22 @@ func (b *sqlite_batch) Flush() error {
 	return err
 }
 
+// progress_with_bytes decorates on_progress so Build_import events carry the
+// source bytes read so far (Bytes) and the current dataset's file size (Total),
+// letting callers estimate overall build progress.
+func progress_with_bytes(on_progress func(Build_progress), counter *byte_counter, total int64) func(Build_progress) {
+	if on_progress == nil {
+		return nil
+	}
+	return func(p Build_progress) {
+		if p.Step == Build_import {
+			p.Bytes = counter.n
+			p.Total = total
+		}
+		on_progress(p)
+	}
+}
+
 // build_index_db parses the dataset exports in source (a directory or a single
 // title.basics file) and writes an indexed SQLite database at db_path. It
 // builds to a temporary file and renames it into place, so a partially built
@@ -233,15 +253,23 @@ func build_index_db(source string, db_path string, on_progress func(Build_progre
 			if path == "" {
 				continue
 			}
-			data, err := read_file(path)
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
+			}
+			var counter byte_counter
+			data, err := read_file(path, &counter)
 			if err != nil {
 				return fmt.Errorf("imdb_datasets: %w", err)
 			}
-			err = import_dataset(db, name, data, on_progress)
+			err = import_dataset(db, name, data, progress_with_bytes(on_progress, &counter, info.Size()))
 			_ = data.Close()
 			if err != nil {
 				return err
 			}
+		}
+		if on_progress != nil {
+			on_progress(Build_progress{Step: Build_fts})
 		}
 		if err := populate_fts(db); err != nil {
 			return err

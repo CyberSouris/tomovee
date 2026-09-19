@@ -249,7 +249,15 @@ func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, 
 	db_path := filepath.Join(dir, index_db_name)
 	if !index_db_fresh(path, db_path) {
 		if on_progress != nil {
-			on_progress(Build_progress{Step: Build_stale})
+			total := int64(0)
+			if files, err := dataset_files(path); err == nil {
+				for f, _ := range files {
+					if stat, err := os.Stat(f); err == nil {
+						total += stat.Size()
+					}
+				}
+			}
+			on_progress(Build_progress{Step: Build_stale, Total: total})
 		}
 		if err := build_index_db(path, db_path, on_progress); err != nil {
 			return nil, err
@@ -267,13 +275,27 @@ func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, 
 	return &Index{db: db}, nil
 }
 
-func read_file(path string) (io.ReadCloser, error) {
+// byte_counter records the number of bytes read from the wrapped reader, used
+// to report byte-based build progress against the source file size.
+type byte_counter struct {
+	r io.Reader
+	n int64
+}
+
+func (c *byte_counter) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func read_file(path string, counter *byte_counter) (io.ReadCloser, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	counter.r = file
 	if strings.HasSuffix(path, ".gz") {
-		gz, err := gzip.NewReader(file)
+		gz, err := gzip.NewReader(counter)
 		if err != nil {
 			_ = file.Close()
 			return nil, fmt.Errorf("decompress %s: %w", path, err)

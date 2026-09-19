@@ -14,6 +14,7 @@
   let manual_error = '';
   let manual_ok = '';
   let playing = null;
+  let open_episodes = new Set();
 
   async function load() {
     loading = true;
@@ -83,6 +84,20 @@
 
   function enter_match(event) {
     if (event.key === 'Enter') match_manual();
+  }
+
+  function toggle_episode(id) {
+    const next = new Set(open_episodes);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    open_episodes = next;
+  }
+
+  function episode_label(episode) {
+    return 'S' + String(episode.season_number).padStart(2, '0') + 'E' + String(episode.episode_number).padStart(2, '0');
   }
 
   onMount(load);
@@ -173,11 +188,57 @@
     {:else}
       {#each data.episodes as episode (episode.id)}
         <div class="episode">
-          <strong>S{String(episode.season_number).padStart(2, '0')}E{String(episode.episode_number).padStart(2, '0')}</strong>
-          <span>{episode.title || ''}</span>
-          <span class="muted">{episode.versions.length} version{episode.versions.length === 1 ? '' : 's'}</span>
-          {#if episode.status !== 'matched'}
-            <span class="badge warn">{episode.status}</span>
+          <button
+            class="episode-head"
+            on:click={() => toggle_episode(episode.id)}
+            disabled={episode.versions.length === 0}
+            title={episode.versions.length === 0 ? 'No versions for this episode' : 'Show files'}
+          >
+            <span class="chevron">{episode.versions.length === 0 ? '' : open_episodes.has(episode.id) ? '▾' : '▸'}</span>
+            <strong>{episode_label(episode)}</strong>
+            <span class="title">{episode.title || ''}</span>
+            <span class="muted">{episode.versions.length} version{episode.versions.length === 1 ? '' : 's'}</span>
+            {#if episode.status !== 'matched'}
+              <span class="badge warn">{episode.status}</span>
+            {/if}
+          </button>
+          {#if open_episodes.has(episode.id)}
+            <table>
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Resolution</th>
+                  <th>Video</th>
+                  <th>Size</th>
+                  <th>Duration</th>
+                  <th>Audio</th>
+                  <th>Subtitles</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each episode.versions as version (version.id)}
+                  <tr>
+                    <td class="path" title={version.file_path}>{file_name(version)}</td>
+                    <td>
+                      {version.resolution_label || ''}
+                      {#if version.hdr}<span class="badge">HDR</span>{/if}
+                    </td>
+                    <td>{version.video_codec || '—'}</td>
+                    <td>{format_bytes(version.size_bytes)}</td>
+                    <td>{format_duration(version.duration_seconds)}</td>
+                    <td>{tracks_label(version.audio)}</td>
+                    <td>{tracks_label(version.subtitles)}</td>
+                    <td class="actions">
+                      <button class="secondary" on:click={() => (playing = playing === version ? null : version)}>
+                        {playing === version ? 'Playing…' : 'Play'}
+                      </button>
+                      <a class="download" href={version.file_url} download={file_name(version)}>Download</a>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
           {/if}
         </div>
       {/each}
@@ -187,22 +248,23 @@
     <h2>Versions ({data.versions.length})</h2>
   {/if}
 
+  {#if playing}
+    <section class="player">
+      <div class="player-head">
+        <strong>{file_name(playing)}</strong>
+        <button class="secondary" on:click={() => (playing = null)}>Close</button>
+      </div>
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video controls autoplay src={playing.file_url}></video>
+      <p class="muted player-note">
+        Played in the browser only if the container and codecs are supported
+        (MP4/H.264 works in every browser; MKV usually needs either an
+        H.264/HEVC+ACC stream or a player like VLC). Otherwise use Download.
+      </p>
+    </section>
+  {/if}
+
   {#if data.versions.length > 0}
-    {#if playing}
-      <section class="player">
-        <div class="player-head">
-          <strong>{file_name(playing)}</strong>
-          <button class="secondary" on:click={() => (playing = null)}>Close</button>
-        </div>
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video controls autoplay src={playing.file_url}></video>
-        <p class="muted player-note">
-          Played in the browser only if the container and codecs are supported
-          (MP4/H.264 works in every browser; MKV usually needs either an
-          H.264/HEVC+ACC stream or a player like VLC). Otherwise use Download.
-        </p>
-      </section>
-    {/if}
     <table>
       <thead>
         <tr>
@@ -337,12 +399,45 @@
   }
 
   .episode {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    padding: 0.4rem 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .episode-head {
+    display: flex;
+    gap: 0.8rem;
+    align-items: center;
+    width: 100%;
+    padding: 0.45rem 0.25rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
     font-size: 0.9rem;
+    color: inherit;
+  }
+
+  .episode-head:disabled {
+    cursor: default;
+    color: var(--muted);
+  }
+
+  .chevron {
+    width: 0.8rem;
+    color: var(--muted);
+    flex: none;
+  }
+
+  .episode-head .title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .episode table {
+    margin: 0.2rem 0 0.8rem 1.8rem;
+    width: calc(100% - 1.8rem);
   }
 
   .path {

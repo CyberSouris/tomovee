@@ -86,6 +86,38 @@ func Test_settings_overrides_merge_over_config_file_value(t *testing.T) {
 	}
 }
 
+func Test_settings_upsert_library_from_web(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	put := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"libraries":[{"name":"movies","path":"/srv/movies","enabled":true}]}`)
+	if put.Code != http.StatusOK {
+		t.Fatalf("put status = %d: %s", put.Code, put.Body)
+	}
+	body := decode[settings_response](t, put)
+	if len(body.Libraries) != 1 || body.Libraries[0].Name != "movies" ||
+		body.Libraries[0].Path != "/srv/movies" || !body.Libraries[0].Enabled {
+		t.Fatalf("library not echoed back: %+v", body.Libraries)
+	}
+
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) != 1 || libraries[0].Path != "/srv/movies" || !libraries[0].Enabled {
+		t.Fatalf("library not persisted: %v (%+v)", err, libraries)
+	}
+
+	// Same name again just updates path and enabled state in place.
+	put2 := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"libraries":[{"name":"movies","path":"/srv/movies2","enabled":false}]}`)
+	if put2.Code != http.StatusOK {
+		t.Fatalf("put status = %d: %s", put2.Code, put2.Body)
+	}
+	libraries, err = store.List_libraries(ctx)
+	if err != nil || len(libraries) != 1 || libraries[0].Path != "/srv/movies2" || libraries[0].Enabled {
+		t.Fatalf("library not updated: %v (%+v)", err, libraries)
+	}
+}
+
 func Test_datasets_stream_and_import_roundtrip(t *testing.T) {
 	store := mem_store(t)
 	tracker := imdb_datasets.New_tracker()

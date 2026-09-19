@@ -9,6 +9,8 @@
   let downloading = false;
   let download_message = '';
   let prune_message = '';
+  let new_name = '';
+  let new_path = '';
 
   async function load() {
     try {
@@ -24,7 +26,6 @@
     data.opensubtitles_api_key = data.opensubtitles_api_key || '';
     data.opensubtitles_username = data.opensubtitles_username || '';
     data.opensubtitles_password = data.opensubtitles_password || '';
-    data.imdb_datasets_path = data.imdb_datasets_path || '';
     return data;
   }
 
@@ -56,9 +57,7 @@
     download_message = '';
     error = '';
     try {
-      const data = await api_send('/api/v1/datasets', 'POST', {
-        path: settings.imdb_datasets_path || '',
-      });
+      const data = await api_send('/api/v1/datasets', 'POST', {});
       download_message = `Import started into ${data.path}.`;
       await load();
     } catch (err) {
@@ -66,6 +65,19 @@
     } finally {
       downloading = false;
     }
+  }
+
+  function add_library() {
+    const name = new_name.trim();
+    const path = new_path.trim();
+    if (!name || !path) return;
+    settings.libraries.push({ name, path, enabled: true, last_scan: '' });
+    new_name = '';
+    new_path = '';
+  }
+
+  function enter_add(event) {
+    if (event.key === 'Enter') add_library();
   }
 
   async function save() {
@@ -80,7 +92,6 @@
           opensubtitles_api_key: settings.opensubtitles_api_key,
           opensubtitles_username: settings.opensubtitles_username,
           opensubtitles_password: settings.opensubtitles_password,
-          imdb_datasets_path: settings.imdb_datasets_path,
           libraries: settings.libraries.map((library) => ({
             name: library.name,
             path: library.path,
@@ -140,10 +151,6 @@
       <label for="os-pass">OpenSubtitles password</label>
       <input id="os-pass" type="password" bind:value={settings.opensubtitles_password} placeholder="password" />
     </div>
-    <div class="field">
-      <label for="imdb-path">IMDb datasets path</label>
-      <input id="imdb-path" type="text" bind:value={settings.imdb_datasets_path} placeholder="leave empty to import into the data directory" />
-    </div>
 
     <h2>IMDb datasets</h2>
     <p class="muted">
@@ -155,7 +162,7 @@
     <p class="muted">
       The datasets total several gigabytes even compressed (roughly 10–15 GB
       unpacked), so the first import can take a really long time. Progress is
-      shown below and in the status bar.
+      shown below and in a corner notification.
     </p>
     {#if settings.datasets && settings.datasets.state === 'building'}
       <div class="datasets-status">
@@ -171,7 +178,9 @@
       </p>
     {:else if !settings.datasets || settings.datasets.state === 'idle'}
       <p class="muted">
-        {settings.imdb_datasets_path ? 'Configured; press the button below to download and import.' : 'No IMDb index built yet.'}
+        The IMDb index is not built yet. Pressing the button below streams the
+        dataset exports from IMDb and imports them into the index in the
+        background.
       </p>
     {:else}
       <p class="good">The local IMDb index is ready.</p>
@@ -238,14 +247,22 @@
           {/each}
         </tbody>
       </table>
-      <p class="muted help">
-        Libraries and their paths come from the <code>libraries</code> config map.
-      </p>
     {:else}
-      <p class="muted">
-        No libraries yet. Add a <code>libraries</code> map to the config file.
-      </p>
+      <p class="muted">No libraries yet — add the first one below.</p>
     {/if}
+
+    <div class="add-library">
+      <input type="text" placeholder="Name" bind:value={new_name} on:keydown={enter_add} />
+      <input type="text" placeholder="/path/to/movies" bind:value={new_path} on:keydown={enter_add} />
+      <button class="secondary" on:click={add_library} disabled={!new_name.trim() || !new_path.trim()}>
+        Add library
+      </button>
+    </div>
+    <p class="muted help">
+      New libraries are enabled (watched) by default and are scanned by the
+      folder watcher. Click Save to persist; enabled libraries are picked up on
+      the next watch scan. Initial libraries from the config file stay listed here.
+    </p>
 
     <p>
       <button on:click={save} disabled={saving}>Save</button>
@@ -283,6 +300,17 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0.5rem 0;
+  }
+
+  .add-library {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.8rem;
+  }
+
+  .add-library input[type='text'] {
+    flex: 1;
+    max-width: 18rem;
   }
 
   .field {

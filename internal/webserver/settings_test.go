@@ -74,6 +74,34 @@ func Test_settings_override_persisted_and_read_back(t *testing.T) {
 	}
 }
 
+func Test_settings_reload_applies_sources(t *testing.T) {
+	server, _ := new_test_server(t)
+	called := false
+	server.reload = func() error {
+		called = true
+		return nil
+	}
+	post := do_request(t, server, http.MethodPost, "/api/v1/settings/reload", "{}")
+	if post.Code != http.StatusOK {
+		t.Fatalf("reload status = %d: %s", post.Code, post.Body)
+	}
+	if !called {
+		t.Fatal("reload hook was not called")
+	}
+	body := decode[settings_response](t, post)
+	if body.Tmdb_key != "test" || !body.Tmdb_configured {
+		t.Fatalf("expected refreshed settings: %+v", body)
+	}
+}
+
+func Test_settings_reload_unconfigured_returns_503(t *testing.T) {
+	server, _ := new_test_server(t)
+	post := do_request(t, server, http.MethodPost, "/api/v1/settings/reload", "{}")
+	if post.Code != http.StatusServiceUnavailable {
+		t.Fatalf("reload status = %d, want 503", post.Code)
+	}
+}
+
 func Test_settings_overrides_merge_over_config_file_value(t *testing.T) {
 	server, _ := new_test_server(t)
 	get := do_request(t, server, http.MethodGet, "/api/v1/settings", "")

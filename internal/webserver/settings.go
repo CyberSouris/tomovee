@@ -129,6 +129,27 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusOK, response)
 }
 
+// handle_sources_reload re-applies the persisted source settings (TMDB and
+// OpenSubtitles keys saved on the Settings page) to the live matching pipeline,
+// so they take effect immediately without restarting the server, then returns
+// the refreshed settings.
+func (s *Server) handle_sources_reload(w http.ResponseWriter, r *http.Request) {
+	if s.reload == nil {
+		write_error(w, http.StatusServiceUnavailable, "source reload is not configured")
+		return
+	}
+	if err := s.reload(); err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response, err := s.settings(r)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write_json(w, http.StatusOK, response)
+}
+
 func (s *Server) settings(r *http.Request) (settings_response, error) {
 	tmdb_key, err := s.settings_value(r.Context(), config.Override_tmdb_key, s.cfg.Api.Tmdb_key)
 	if err != nil {

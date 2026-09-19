@@ -5,6 +5,8 @@
   let settings = null;
   let error = '';
   let saving = false;
+  let reloading = false;
+  let reload_message = '';
   let saved = false;
   let downloading = false;
   let download_message = '';
@@ -104,6 +106,20 @@
       error = err.message;
     } finally {
       saving = false;
+    }
+  }
+
+  async function reload_sources() {
+    reloading = true;
+    reload_message = '';
+    error = '';
+    try {
+      settings = normalize(await api_send('/api/v1/settings/reload', 'POST', {}));
+      reload_message = 'Sources applied to the running server.';
+    } catch (err) {
+      error = err.message;
+    } finally {
+      reloading = false;
     }
   }
 
@@ -212,7 +228,10 @@
       </span>
     </p>
     <ul class="help">
-      <li>Saved sources take effect after <code>tomovee serve</code> restarts.</li>
+      <li>
+        Save stores the sources; Reload applies them to the running server
+        immediately, no restart needed.
+      </li>
       <li>
         <strong>TMDB</strong> — request a key at
         <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">themoviedb.org → Settings → API</a>,
@@ -224,6 +243,12 @@
         then paste the key, username and password above.
       </li>
     </ul>
+    <p>
+      <button class="secondary" on:click={reload_sources} disabled={reloading}>
+        {reloading ? 'Reloading…' : 'Reload sources'}
+      </button>
+      {#if reload_message}<span class="good"> {reload_message}</span>{/if}
+    </p>
 
     <h2>Watching</h2>
     <label class="toggle">

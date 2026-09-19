@@ -39,8 +39,13 @@ type Options struct {
 	// page's import button can build the index at runtime. When nil, POST
 	// /api/v1/datasets reports the feature as unavailable.
 	Stream_datasets func(index_db_path string)
-	Static          fs.FS
-	Logger          *slog.Logger
+	// Reload, when set, re-applies the persisted source settings (API keys)
+	// to the live matching pipeline so they take effect immediately instead of
+	// on the next restart. When nil, POST /api/v1/settings/reload reports the
+	// feature as unavailable.
+	Reload  func() error
+	Static  fs.FS
+	Logger  *slog.Logger
 }
 
 // Server holds the HTTP handlers and background job state.
@@ -55,6 +60,8 @@ type Server struct {
 	datasets *imdb_datasets.Tracker
 	// stream_datasets mirrors the Options field; see there.
 	stream_datasets func(index_db_path string)
+	// reload mirrors the Options field; see there.
+	reload func() error
 	static          fs.FS
 	logger          *slog.Logger
 	mux             *http.ServeMux
@@ -78,6 +85,7 @@ func New(opts Options) *Server {
 		posters:         opts.Posters,
 		datasets:        opts.Datasets,
 		stream_datasets: opts.Stream_datasets,
+		reload:          opts.Reload,
 		static:          opts.Static,
 		logger:          logger,
 		mux:             http.NewServeMux(),
@@ -112,6 +120,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
 	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)
 	s.mux.HandleFunc("GET /api/v1/versions/{version_id}/file", s.handle_version_file)
+	s.mux.HandleFunc("POST /api/v1/settings/reload", s.handle_sources_reload)
 	s.mux.HandleFunc("/", s.handle_spa)
 }
 

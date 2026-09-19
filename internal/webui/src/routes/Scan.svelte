@@ -99,7 +99,7 @@
 <section>
   {#if libraries.length}
     <div class="controls">
-      <button class="secondary" on:click={toggle_all} disabled={running || selected.length === 0}>
+      <button class="secondary" on:click={toggle_all} disabled={running || libraries.length === 0}>
         {all_selected() ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>

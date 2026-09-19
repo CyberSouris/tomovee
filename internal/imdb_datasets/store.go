@@ -34,6 +34,10 @@ const (
 	// Build_import reports progress importing one export. Build_progress names
 	// the dataset and counts rows and source bytes imported so far.
 	Build_import Build_step = "import"
+	// Build_download reports progress downloading the datasets from the
+	// internet before a rebuild. Bytes are cumulative across datasets; Total
+	// is the combined size of every download measured up front.
+	Build_download Build_step = "download"
 	// Build_fts reports the full-text search index population phase.
 	Build_fts Build_step = "fts"
 	// Build_ready reports that the freshly built index is complete.

@@ -6,6 +6,8 @@
   let error = '';
   let saving = false;
   let saved = false;
+  let downloading = false;
+  let download_message = '';
   let prune_message = '';
 
   async function load() {
@@ -18,7 +20,23 @@
 
   function normalize(data) {
     data.libraries = data.libraries || [];
+    data.tmdb_key = data.tmdb_key || '';
+    data.opensubtitles_api_key = data.opensubtitles_api_key || '';
+    data.opensubtitles_username = data.opensubtitles_username || '';
+    data.opensubtitles_password = data.opensubtitles_password || '';
+    data.imdb_datasets_path = data.imdb_datasets_path || '';
     return data;
+  }
+
+  function building() {
+    return !!settings && !!settings.datasets && settings.datasets.state === 'building';
+  }
+
+  function datasets_label(d) {
+    if (d.step === 'download') return 'Downloading IMDb datasets…';
+    if (d.step === 'fts') return 'Building full-text search index…';
+    if (d.dataset) return `Importing ${d.dataset}…`;
+    return 'Building the IMDb index…';
   }
 
   async function prune() {
@@ -32,6 +50,23 @@
     }
   }
 
+  async function download_datasets() {
+    downloading = true;
+    download_message = '';
+    error = '';
+    try {
+      const data = await api_send('/api/v1/datasets', 'POST', {
+        path: settings.imdb_datasets_path || '',
+      });
+      download_message = `Download started into ${data.path}.`;
+      await load();
+    } catch (err) {
+      error = err.message;
+    } finally {
+      downloading = false;
+    }
+  }
+
   async function save() {
     saving = true;
     saved = false;
@@ -40,6 +75,11 @@
       settings = normalize(
         await api_send('/api/v1/settings', 'PUT', {
           watch_enabled: settings.watch_enabled,
+          tmdb_key: settings.tmdb_key,
+          opensubtitles_api_key: settings.opensubtitles_api_key,
+          opensubtitles_username: settings.opensubtitles_username,
+          opensubtitles_password: settings.opensubtitles_password,
+          imdb_datasets_path: settings.imdb_datasets_path,
           libraries: settings.libraries.map((library) => ({
             name: library.name,
             path: library.path,
@@ -55,7 +95,13 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    const interval = setInterval(() => {
+      if (building()) load();
+    }, 1000);
+    return () => clearInterval(interval);
+  });
 </script>
 
 <section>
@@ -69,19 +115,71 @@
         <tr><th>Database</th><td>{settings.database_path}</td></tr>
         <tr><th>Poster cache</th><td>{settings.poster_cache_dir}</td></tr>
         <tr><th>Listen</th><td>{settings.listen}</td></tr>
-        <tr>
-          <th>IMDb datasets</th>
-          <td>
-            {settings.imdb_datasets_path || '—'}
-            <div class="muted help">
-              Download <a href="https://datasets.imdbws.com/title.basics.tsv.gz" target="_blank" rel="noreferrer">title.basics.tsv.gz</a>
-              and set <code>imdb_datasets_path</code> to it
-              (<a href="https://developer.imdb.com/non-commercial-datasets/" target="_blank" rel="noreferrer">dataset details</a>).
-            </div>
-          </td>
-        </tr>
       </tbody>
     </table>
+
+    <h2>Sources</h2>
+    <p class="muted">
+      Source settings are saved to the database and applied the next time
+      <code>tomovee serve</code> starts; no need to edit the config file by hand.
+    </p>
+    <div class="field">
+      <label for="tmdb">TMDB API key</label>
+      <input id="tmdb" type="password" bind:value={settings.tmdb_key} placeholder="tmdb key" />
+    </div>
+    <div class="field">
+      <label for="os-key">OpenSubtitles API key</label>
+      <input id="os-key" type="password" bind:value={settings.opensubtitles_api_key} placeholder="opensubtitles key" />
+    </div>
+    <div class="field">
+      <label for="os-user">OpenSubtitles username</label>
+      <input id="os-user" type="text" bind:value={settings.opensubtitles_username} placeholder="username" />
+    </div>
+    <div class="field">
+      <label for="os-pass">OpenSubtitles password</label>
+      <input id="os-pass" type="password" bind:value={settings.opensubtitles_password} placeholder="password" />
+    </div>
+    <div class="field">
+      <label for="imdb-path">IMDb datasets path</label>
+      <input id="imdb-path" type="text" bind:value={settings.imdb_datasets_path} placeholder="leave empty to download into the data directory" />
+    </div>
+
+    <h2>IMDb datasets</h2>
+    <p class="muted">
+      Download the official IMDb exports (<code>title.basics</code>,
+      <code>title.akas</code>, <code>title.episode</code>, <code>title.ratings</code>)
+      and build the offline matching index in the background. The download can
+      take a while; the current progress is shown below and in the status bar.
+    </p>
+    {#if settings.datasets && settings.datasets.state === 'building'}
+      <div class="datasets-status">
+        <p>{datasets_label(settings.datasets)}</p>
+        <div class="bar"><div class="fill" style={`width: ${settings.datasets.percent}%`}></div></div>
+        <p class="muted">
+          {settings.datasets.percent}%{#if settings.datasets.dataset} — {settings.datasets.dataset}{/if}
+        </p>
+      </div>
+    {:else if settings.datasets && settings.datasets.state === 'error'}
+      <p class="error">
+        The IMDb datasets failed to load ({settings.datasets.message || 'see server log'}).
+      </p>
+    {:else if !settings.datasets || settings.datasets.state === 'idle'}
+      <p class="muted">
+        {settings.imdb_datasets_path ? 'Configured; press the button below to download and import.' : 'No IMDb datasets downloaded yet.'}
+      </p>
+    {:else}
+      <p class="good">The local IMDb index is ready.</p>
+    {/if}
+    <p>
+      <button on:click={download_datasets} disabled={downloading || building()}>
+        {building() ? 'Downloading / building…' : 'Download and import IMDb datasets'}
+      </button>
+      {#if download_message}<span class="good"> {download_message}</span>{/if}
+    </p>
+    <p class="help attribution">
+      Information courtesy of IMDb (<a href="https://www.imdb.com" target="_blank" rel="noreferrer">https://www.imdb.com</a>).
+      Used with permission. IMDb data is for non-commercial use only.
+    </p>
 
     <h2>APIs</h2>
     <p>
@@ -98,44 +196,17 @@
         {settings.matching_ready ? 'ready' : 'not ready'}
       </span>
     </p>
-    {#if !settings.matching_ready}
-      <ul class="help">
-        {#if settings.datasets && settings.datasets.state === 'building'}
-          <li>
-            The local IMDb index is <strong>building in the background</strong>
-            <span class="progress">
-              {settings.datasets.percent}%{#if settings.datasets.dataset} — importing {settings.datasets.dataset}{/if}
-            </span>.
-            Matching becomes available automatically once it finishes; no action needed.
-          </li>
-        {:else if settings.imdb_datasets_path && settings.datasets && settings.datasets.state === 'error'}
-          <li>
-            The local IMDb index <strong>failed to load</strong>
-            ({settings.datasets.message || 'see server log'}). Check the <code>tomovee serve</code> log.
-          </li>
-        {:else if settings.imdb_datasets_path}
-          <li>
-            The local IMDb index is <strong>paused or not loaded</strong>. Matching becomes
-            available once it finishes loading; no action needed.
-          </li>
-        {/if}
-        <li>
-          Matching has no sources until at least one of the above is configured
-          and <strong>ready</strong>. After changing the config file, restart <code>tomovee serve</code>.
-        </li>
-      </ul>
-    {/if}
     <ul class="help">
+      <li>Saved sources take effect after <code>tomovee serve</code> restarts.</li>
       <li>
         <strong>TMDB</strong> — request a key at
         <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">themoviedb.org → Settings → API</a>,
-        then set <code>api.tmdb_key</code> in the config file.
+        then paste it into the TMDB field above.
       </li>
       <li>
         <strong>OpenSubtitles</strong> — create a key under
         <a href="https://www.opensubtitles.com/en/consumers" target="_blank" rel="noreferrer">opensubtitles.com → Account → API consumers</a>,
-        then set <code>api.opensubtitles_api_key</code>, <code>api.opensubtitles_username</code> and
-        <code>api.opensubtitles_password</code>.
+        then paste the key, username and password above.
       </li>
     </ul>
 
@@ -208,6 +279,47 @@
     margin: 0.5rem 0;
   }
 
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0.5rem 0;
+    max-width: 36rem;
+  }
+
+  .field label {
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  input[type='text'],
+  input[type='password'] {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+  }
+
+  .datasets-status {
+    margin: 0.5rem 0;
+  }
+
+  .bar {
+    height: 0.6rem;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    max-width: 36rem;
+  }
+
+  .fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+  }
+
   .help {
     color: var(--muted);
     font-size: 0.9rem;
@@ -216,6 +328,11 @@
 
   .help li {
     margin: 0.3rem 0;
+  }
+
+  .attribution {
+    padding-left: 0;
+    margin: 0.5rem 0 0;
   }
 
   code {

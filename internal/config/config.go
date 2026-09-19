@@ -50,6 +50,39 @@ type Scan_config struct {
 	Min_file_size_mb        int `yaml:"min_file_size_mb"`
 }
 
+// Override keys are settings persisted in the database config table and merged
+// over the config file by Apply_overrides. The web UI's Settings page writes
+// them via database.Store.Config_set.
+const (
+	Override_tmdb_key               = "api.tmdb_key"
+	Override_opensubtitles_api_key  = "api.opensubtitles_api_key"
+	Override_opensubtitles_username = "api.opensubtitles_username"
+	Override_opensubtitles_password = "api.opensubtitles_password"
+	Override_imdb_datasets_path     = "imdb_datasets_path"
+)
+
+// Apply_overrides merges persisted runtime settings over a loaded Config,
+// mutating cfg in place. Values come from the database config table so
+// settings changed from the web UI survive restarts and take effect from the
+// next run onward. Unknown keys are ignored.
+func Apply_overrides(cfg *Config, values map[string]string) {
+	if value, ok := values[Override_tmdb_key]; ok {
+		cfg.Api.Tmdb_key = value
+	}
+	if value, ok := values[Override_opensubtitles_api_key]; ok {
+		cfg.Api.Opensubtitles_api_key = value
+	}
+	if value, ok := values[Override_opensubtitles_username]; ok {
+		cfg.Api.Opensubtitles_username = value
+	}
+	if value, ok := values[Override_opensubtitles_password]; ok {
+		cfg.Api.Opensubtitles_password = value
+	}
+	if value, ok := values[Override_imdb_datasets_path]; ok {
+		cfg.Imdb_datasets_path = value
+	}
+}
+
 // Defaults returns a configuration populated with built-in defaults.
 func Defaults() *Config {
 	base_dir := user_data_dir()

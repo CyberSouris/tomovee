@@ -122,6 +122,46 @@ func Test_normalize_rejects_empty_library(t *testing.T) {
 	}
 }
 
+func Test_apply_overrides_merges_settings_over_config(t *testing.T) {
+	cfg := Defaults()
+	cfg.Api.Tmdb_key = "file-key"
+	cfg.Api.Opensubtitles_api_key = "file-os"
+	cfg.Api.Opensubtitles_username = "file-user"
+	cfg.Api.Opensubtitles_password = "file-pass"
+	cfg.Imdb_datasets_path = "/file/datasets"
+
+	Apply_overrides(cfg, map[string]string{
+		Override_tmdb_key:               "db-key",
+		Override_opensubtitles_username: "db-user",
+		Override_imdb_datasets_path:     "/db/datasets",
+		"unrelated.setting":             "ignored",
+	})
+	if cfg.Api.Tmdb_key != "db-key" {
+		t.Errorf("tmdb_key = %q, want db-key", cfg.Api.Tmdb_key)
+	}
+	if cfg.Api.Opensubtitles_username != "db-user" {
+		t.Errorf("opensubtitles_username = %q, want db-user", cfg.Api.Opensubtitles_username)
+	}
+	if cfg.Api.Opensubtitles_api_key != "file-os" {
+		t.Errorf("opensubtitles_api_key = %q, want file-os (unset override)", cfg.Api.Opensubtitles_api_key)
+	}
+	if cfg.Api.Opensubtitles_password != "file-pass" {
+		t.Errorf("opensubtitles_password = %q, want file-pass", cfg.Api.Opensubtitles_password)
+	}
+	if cfg.Imdb_datasets_path != "/db/datasets" {
+		t.Errorf("imdb_datasets_path = %q, want /db/datasets", cfg.Imdb_datasets_path)
+	}
+}
+
+func Test_apply_overrides_can_clear_a_setting(t *testing.T) {
+	cfg := Defaults()
+	cfg.Api.Tmdb_key = "file-key"
+	Apply_overrides(cfg, map[string]string{Override_tmdb_key: ""})
+	if cfg.Api.Tmdb_key != "" {
+		t.Errorf("tmdb_key = %q, want empty after clear", cfg.Api.Tmdb_key)
+	}
+}
+
 func Test_validate_requires_library_or_watch(t *testing.T) {
 	cfg := Defaults()
 	cfg.Libraries = nil

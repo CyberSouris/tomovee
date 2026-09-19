@@ -3,6 +3,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
@@ -32,8 +33,17 @@ type Options struct {
 	// Datasets reports the offline IMDb index build state, when configured.
 	// Nil tracks nothing.
 	Datasets *imdb_datasets.Tracker
-	Static   fs.FS
-	Logger   *slog.Logger
+	// Download_datasets, when set, is used by POST /api/v1/datasets to fetch
+	// the IMDb datasets into dir before importing them. When nil, the default
+	// downloader (https://datasets.imdbws.com) is used.
+	Download_datasets func(ctx context.Context, dir string, on_progress func(imdb_datasets.Build_progress)) error
+	// Load_datasets, when set, starts a background load and import of the IMDb
+	// datasets at dir. cmd_serve wires this to its pipeline so the Settings
+	// page's download+import button can build the index at runtime. When nil,
+	// POST /api/v1/datasets reports the feature as unavailable.
+	Load_datasets func(dir string)
+	Static        fs.FS
+	Logger        *slog.Logger
 }
 
 // Server holds the HTTP handlers and background job state.
@@ -46,11 +56,14 @@ type Server struct {
 	matching *matching.Matching
 	posters  *poster_cache.Cache
 	datasets *imdb_datasets.Tracker
-	static   fs.FS
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	jobs     *job_manager[scan.Progress, scan.Result]
-	matches  *job_manager[matching.Progress, matching.Result]
+	// download_datasets and load_datasets mirror the Options fields; see there.
+	download_datasets func(ctx context.Context, dir string, on_progress func(imdb_datasets.Build_progress)) error
+	load_datasets     func(dir string)
+	static            fs.FS
+	logger            *slog.Logger
+	mux               *http.ServeMux
+	jobs              *job_manager[scan.Progress, scan.Result]
+	matches           *job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.
@@ -60,19 +73,21 @@ func New(opts Options) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		store:    opts.Store,
-		cfg:      opts.Config,
-		matcher:  opts.Matcher,
-		metadata: opts.Metadata,
-		scanner:  opts.Scanner,
-		matching: opts.Matching,
-		posters:  opts.Posters,
-		datasets: opts.Datasets,
-		static:   opts.Static,
-		logger:   logger,
-		mux:      http.NewServeMux(),
-		jobs:     new_job_manager[scan.Progress, scan.Result](logger),
-		matches:  new_job_manager[matching.Progress, matching.Result](logger),
+		store:             opts.Store,
+		cfg:               opts.Config,
+		matcher:           opts.Matcher,
+		metadata:          opts.Metadata,
+		scanner:           opts.Scanner,
+		matching:          opts.Matching,
+		posters:           opts.Posters,
+		datasets:          opts.Datasets,
+		download_datasets: opts.Download_datasets,
+		load_datasets:     opts.Load_datasets,
+		static:            opts.Static,
+		logger:            logger,
+		mux:               http.NewServeMux(),
+		jobs:              new_job_manager[scan.Progress, scan.Result](logger),
+		matches:           new_job_manager[matching.Progress, matching.Result](logger),
 	}
 	s.routes()
 	return s
@@ -98,6 +113,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/match/stream", s.handle_match_stream)
 	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)
 	s.mux.HandleFunc("PUT /api/v1/settings", s.handle_settings_put)
+	s.mux.HandleFunc("POST /api/v1/datasets", s.handle_datasets_start)
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
 	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)
 	s.mux.HandleFunc("/", s.handle_spa)

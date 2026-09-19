@@ -1,0 +1,182 @@
+package webserver
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/cybersouris/tomovee/internal/config"
+	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/imdb_datasets"
+	"github.com/cybersouris/tomovee/internal/webui"
+)
+
+func discard_logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func mem_store(t *testing.T) *database.Store {
+	t.Helper()
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return database.New_store(d)
+}
+
+func Test_settings_override_persisted_and_read_back(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	put := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"tmdb_key":"tmdb-2","opensubtitles_api_key":"os-2","opensubtitles_username":"user2","opensubtitles_password":"pass2","imdb_datasets_path":"/data/imdb"}`)
+	if put.Code != http.StatusOK {
+		t.Fatalf("put status = %d: %s", put.Code, put.Body)
+	}
+	body := decode[settings_response](t, put)
+	if body.Tmdb_key != "tmdb-2" || body.Opensubtitles_api_key != "os-2" || body.Opensubtitles_username != "user2" || body.Opensubtitles_password != "pass2" {
+		t.Fatalf("settings not echoed back: %+v", body)
+	}
+	if body.Imdb_datasets_path != "/data/imdb" || !body.Tmdb_configured || !body.Opensubtitles_configured {
+		t.Fatalf("expected configured sources: %+v", body)
+	}
+
+	// Values persist in the config table and survive a fresh read.
+	get := do_request(t, server, http.MethodGet, "/api/v1/settings", "")
+	got := decode[settings_response](t, get)
+	if got.Tmdb_key != "tmdb-2" || got.Imdb_datasets_path != "/data/imdb" {
+		t.Fatalf("settings GET did not reflect overrides: %+v", got)
+	}
+	for key, want := range map[string]string{
+		config.Override_tmdb_key:               "tmdb-2",
+		config.Override_opensubtitles_api_key:  "os-2",
+		config.Override_opensubtitles_username: "user2",
+		config.Override_opensubtitles_password: "pass2",
+		config.Override_imdb_datasets_path:     "/data/imdb",
+	} {
+		value, ok, err := store.Config_get(ctx, key)
+		if err != nil || !ok || value != want {
+			t.Errorf("config %s = %q, ok=%v, err=%v; want %q", key, value, ok, err, want)
+		}
+	}
+
+	// Clearing a key to "" removes the credential and marks it unconfigured.
+	clear := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"tmdb_key":""}`)
+	cleared := decode[settings_response](t, clear)
+	if cleared.Tmdb_key != "" || cleared.Tmdb_configured {
+		t.Fatalf("expected tmdb cleared/unconfigured: %+v", cleared)
+	}
+}
+
+func Test_settings_overrides_merge_over_config_file_value(t *testing.T) {
+	server, _ := new_test_server(t)
+	get := do_request(t, server, http.MethodGet, "/api/v1/settings", "")
+	body := decode[settings_response](t, get)
+	if body.Tmdb_key != "test" || !body.Tmdb_configured {
+		t.Fatalf("expected config-file tmdb key without override: %+v", body)
+	}
+	if body.Opensubtitles_username != "" {
+		t.Fatalf("expected empty opensubtitles username by default: %+v", body)
+	}
+}
+
+func Test_datasets_download_and_import_roundtrip(t *testing.T) {
+	store := mem_store(t)
+	tracker := imdb_datasets.New_tracker()
+	loaded := make(chan string, 1)
+	cfg := &config.Config{Database_path: ":memory:", Poster_cache_dir: t.TempDir()}
+	server := New(Options{
+		Store: store, Config: cfg, Static: webui.FS(), Logger: discard_logger(),
+		Datasets: tracker,
+		Download_datasets: func(_ context.Context, _ string, on_progress func(imdb_datasets.Build_progress)) error {
+			on_progress(imdb_datasets.Build_progress{
+				Step: imdb_datasets.Build_download, Dataset: "title.basics.tsv.gz",
+				Bytes: 250, Total: 1000,
+			})
+			return nil
+		},
+		Load_datasets: func(dir string) { loaded <- dir },
+	})
+
+	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{"path":"/data/imdb"}`)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", resp.Code, resp.Body)
+	}
+	select {
+	case dir := <-loaded:
+		if dir != "/data/imdb" {
+			t.Errorf("loaded dir = %q, want /data/imdb", dir)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("download+import hook was not invoked")
+	}
+	status := tracker.Snapshot()
+	if status.State != imdb_datasets.State_building || status.Step != imdb_datasets.Build_download {
+		t.Errorf("tracker state = %q/%q, want building/download", status.State, status.Step)
+	}
+	if status.Percent != 25 {
+		t.Errorf("tracker percent = %d, want 25", status.Percent)
+	}
+	if !status.Has_path {
+		t.Error("expected has_path after starting a download")
+	}
+	value, ok, _ := store.Config_get(context.Background(), config.Override_imdb_datasets_path)
+	if !ok || value != "/data/imdb" {
+		t.Errorf("persisted datasets path = %q, ok=%v; want /data/imdb", value, ok)
+	}
+}
+
+func Test_datasets_default_directory_under_database_path(t *testing.T) {
+	store := mem_store(t)
+	loaded := make(chan string, 1)
+	cfg := &config.Config{Database_path: "/tmp/data/tomovee.db", Poster_cache_dir: t.TempDir()}
+	server := New(Options{
+		Store: store, Config: cfg, Static: webui.FS(), Logger: discard_logger(),
+		Datasets: imdb_datasets.New_tracker(),
+		Download_datasets: func(context.Context, string, func(imdb_datasets.Build_progress)) error {
+			return nil
+		},
+		Load_datasets: func(dir string) { loaded <- dir },
+	})
+
+	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{}`)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", resp.Code, resp.Body)
+	}
+	want := filepath.Join("/tmp/data", "imdb_datasets")
+	select {
+	case dir := <-loaded:
+		if dir != want {
+			t.Errorf("loaded dir = %q, want %q", dir, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("download+import hook was not invoked")
+	}
+}
+
+func Test_datasets_endpoint_unavailable_without_pipeline_hook(t *testing.T) {
+	server, _ := new_test_server(t)
+	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{}`)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.Code)
+	}
+}
+
+func Test_datasets_endpoint_conflicts_with_running_build(t *testing.T) {
+	server, _ := new_test_server(t)
+	server.load_datasets = func(string) {}
+	tracker := imdb_datasets.New_tracker()
+	tracker.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_stale, Total: 100})
+	server.datasets = tracker
+
+	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{}`)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", resp.Code, resp.Body)
+	}
+}

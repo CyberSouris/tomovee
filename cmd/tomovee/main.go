@@ -249,6 +249,16 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	}
 
 	store := database.New_store(db)
+
+	// Settings changed from the web UI (API keys, datasets path) are persisted
+	// in the config table; merge them over the config file so they take effect
+	// from this run onward.
+	if overrides, err := store.Config_all(context.Background()); err != nil {
+		return err
+	} else if len(overrides) > 0 {
+		config.Apply_overrides(cfg, overrides)
+	}
+
 	pipe, err := build_pipeline(logger, cfg, store)
 	if err != nil {
 		return err
@@ -271,6 +281,11 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 
 	matching_service := matching.New(store, pipe.matcher, nil, logger)
 
+	// start_matching kicks off an automatic matching run; it is assigned after
+	// the webserver exists, but the Load_datasets hook below can be triggered
+	// from the Settings page at any later point.
+	var start_matching func()
+
 	server := webserver.New(webserver.Options{
 		Store:    store,
 		Config:   cfg,
@@ -282,7 +297,17 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		Static:   webui.FS(),
 		Logger:   logger,
 		Datasets: pipe.status,
+		Load_datasets: func(dir string) {
+			pipe.load_datasets(logger, dir, matching_service, start_matching, pipe.status)
+		},
 	})
+
+	start_matching = func() {
+		if matching_configured(cfg) {
+			logger.Info("starting background matching at startup")
+			server.Auto_match()
+		}
+	}
 
 	watch_ctx, stop_watch := context.WithCancel(context.Background())
 	defer stop_watch()
@@ -313,12 +338,6 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	// Building an imdb datasets index can take minutes and peg a core, so it
 	// must not delay the web service. Load it in the background and start the
 	// startup matching run only once it (or the online sources) are ready.
-	start_matching := func() {
-		if matching_configured(cfg) {
-			logger.Info("starting background matching at startup")
-			server.Auto_match()
-		}
-	}
 	if cfg.Imdb_datasets_path != "" {
 		logger.Info("loading imdb datasets in the background", "path", cfg.Imdb_datasets_path)
 		pipe.load_datasets(logger, cfg.Imdb_datasets_path, matching_service, start_matching, pipe.status)

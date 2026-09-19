@@ -88,9 +88,9 @@
         name: 'datasets',
         active: true,
         get label() {
-          return d.step === 'fts'
-            ? 'Building IMDb index — full-text search'
-            : `Building IMDb index — ${d.dataset || 'importing'}`;
+          if (d.step === 'download') return `Downloading IMDb data — ${d.dataset || '…'}`;
+          if (d.step === 'fts') return 'Building IMDb index — full-text search';
+          return `Building IMDb index — ${d.dataset || 'importing'}`;
         },
         percent: () => d.percent || 0,
       });

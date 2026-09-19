@@ -154,7 +154,7 @@
     </p>
     <p class="muted">
       The datasets total several gigabytes even compressed (roughly 10–15 GB
-      unpacked), so the first import can take ten minutes or more. Progress is
+      unpacked), so the first import can take a really long time. Progress is
       shown below and in the status bar.
     </p>
     {#if settings.datasets && settings.datasets.state === 'building'}

@@ -88,9 +88,10 @@
         name: 'datasets',
         active: true,
         get label() {
-          if (d.step === 'download') return `Downloading IMDb data — ${d.dataset || '…'}`;
           if (d.step === 'fts') return 'Building IMDb index — full-text search';
-          return `Building IMDb index — ${d.dataset || 'importing'}`;
+          if (d.dataset) return `Downloading & importing IMDb data — ${d.dataset}`;
+          if (d.step === 'stale' || d.step === 'import' || d.step === 'ready') return 'Downloading & importing IMDb data';
+          return 'Building IMDb index — importing';
         },
         percent: () => d.percent || 0,
       });

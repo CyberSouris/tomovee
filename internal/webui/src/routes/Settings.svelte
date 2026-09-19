@@ -33,8 +33,9 @@
   }
 
   function datasets_label(d) {
-    if (d.step === 'download') return 'Downloading IMDb datasets…';
     if (d.step === 'fts') return 'Building full-text search index…';
+    if (d.step === 'stale' || d.step === 'import')
+      return d.dataset ? `Downloading & importing ${d.dataset}…` : 'Downloading & importing IMDb data…';
     if (d.dataset) return `Importing ${d.dataset}…`;
     return 'Building the IMDb index…';
   }
@@ -58,7 +59,7 @@
       const data = await api_send('/api/v1/datasets', 'POST', {
         path: settings.imdb_datasets_path || '',
       });
-      download_message = `Download started into ${data.path}.`;
+      download_message = `Import started into ${data.path}.`;
       await load();
     } catch (err) {
       error = err.message;
@@ -141,15 +142,20 @@
     </div>
     <div class="field">
       <label for="imdb-path">IMDb datasets path</label>
-      <input id="imdb-path" type="text" bind:value={settings.imdb_datasets_path} placeholder="leave empty to download into the data directory" />
+      <input id="imdb-path" type="text" bind:value={settings.imdb_datasets_path} placeholder="leave empty to import into the data directory" />
     </div>
 
     <h2>IMDb datasets</h2>
     <p class="muted">
-      Download the official IMDb exports (<code>title.basics</code>,
+      Stream the official IMDb exports (<code>title.basics</code>,
       <code>title.akas</code>, <code>title.episode</code>, <code>title.ratings</code>)
-      and build the offline matching index in the background. The download can
-      take a while; the current progress is shown below and in the status bar.
+      into the offline matching index in the background. The exports are imported
+      on the fly and never kept on disk; only the built index is stored.
+    </p>
+    <p class="muted">
+      The datasets total several gigabytes even compressed (roughly 10–15 GB
+      unpacked), so the first import can take ten minutes or more. Progress is
+      shown below and in the status bar.
     </p>
     {#if settings.datasets && settings.datasets.state === 'building'}
       <div class="datasets-status">
@@ -165,14 +171,14 @@
       </p>
     {:else if !settings.datasets || settings.datasets.state === 'idle'}
       <p class="muted">
-        {settings.imdb_datasets_path ? 'Configured; press the button below to download and import.' : 'No IMDb datasets downloaded yet.'}
+        {settings.imdb_datasets_path ? 'Configured; press the button below to download and import.' : 'No IMDb index built yet.'}
       </p>
     {:else}
       <p class="good">The local IMDb index is ready.</p>
     {/if}
     <p>
       <button on:click={download_datasets} disabled={downloading || building()}>
-        {building() ? 'Downloading / building…' : 'Download and import IMDb datasets'}
+        {building() ? 'Importing / building…' : 'Download and import IMDb datasets'}
       </button>
       {#if download_message}<span class="good"> {download_message}</span>{/if}
     </p>

@@ -86,77 +86,73 @@ func Test_settings_overrides_merge_over_config_file_value(t *testing.T) {
 	}
 }
 
-func Test_datasets_download_and_import_roundtrip(t *testing.T) {
+func Test_datasets_stream_and_import_roundtrip(t *testing.T) {
 	store := mem_store(t)
 	tracker := imdb_datasets.New_tracker()
-	loaded := make(chan string, 1)
+	streamed := make(chan string, 1)
 	cfg := &config.Config{Database_path: ":memory:", Poster_cache_dir: t.TempDir()}
+	data_dir := filepath.Join(t.TempDir(), "imdb")
 	server := New(Options{
 		Store: store, Config: cfg, Static: webui.FS(), Logger: discard_logger(),
 		Datasets: tracker,
-		Download_datasets: func(_ context.Context, _ string, on_progress func(imdb_datasets.Build_progress)) error {
-			on_progress(imdb_datasets.Build_progress{
-				Step: imdb_datasets.Build_download, Dataset: "title.basics.tsv.gz",
+		Stream_datasets: func(index_db_path string) {
+			tracker.Set_has_path(true)
+			tracker.Observe(imdb_datasets.Build_progress{
+				Step: imdb_datasets.Build_import, Dataset: "title.basics",
 				Bytes: 250, Total: 1000,
 			})
-			return nil
+			streamed <- index_db_path
 		},
-		Load_datasets: func(dir string) { loaded <- dir },
 	})
 
-	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{"path":"/data/imdb"}`)
+	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{"path":"`+data_dir+`"}`)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("start status = %d: %s", resp.Code, resp.Body)
 	}
 	select {
-	case dir := <-loaded:
-		if dir != "/data/imdb" {
-			t.Errorf("loaded dir = %q, want /data/imdb", dir)
+	case index_db_path := <-streamed:
+		want := filepath.Join(data_dir, imdb_datasets.Index_db_name)
+		if index_db_path != want {
+			t.Errorf("streamed index path = %q, want %q", index_db_path, want)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("download+import hook was not invoked")
+		t.Fatal("stream hook was not invoked")
 	}
 	status := tracker.Snapshot()
-	if status.State != imdb_datasets.State_building || status.Step != imdb_datasets.Build_download {
-		t.Errorf("tracker state = %q/%q, want building/download", status.State, status.Step)
-	}
-	if status.Percent != 25 {
-		t.Errorf("tracker percent = %d, want 25", status.Percent)
+	if status.Step != imdb_datasets.Build_import || status.Bytes != 250 {
+		t.Errorf("tracker step/bytes = %q/%d, want import/250", status.Step, status.Bytes)
 	}
 	if !status.Has_path {
-		t.Error("expected has_path after starting a download")
+		t.Error("expected has_path after starting an import")
 	}
 	value, ok, _ := store.Config_get(context.Background(), config.Override_imdb_datasets_path)
-	if !ok || value != "/data/imdb" {
-		t.Errorf("persisted datasets path = %q, ok=%v; want /data/imdb", value, ok)
+	if !ok || value != data_dir {
+		t.Errorf("persisted datasets path = %q, ok=%v; want %q", value, ok, data_dir)
 	}
 }
 
 func Test_datasets_default_directory_under_database_path(t *testing.T) {
 	store := mem_store(t)
-	loaded := make(chan string, 1)
+	streamed := make(chan string, 1)
 	cfg := &config.Config{Database_path: "/tmp/data/tomovee.db", Poster_cache_dir: t.TempDir()}
 	server := New(Options{
 		Store: store, Config: cfg, Static: webui.FS(), Logger: discard_logger(),
-		Datasets: imdb_datasets.New_tracker(),
-		Download_datasets: func(context.Context, string, func(imdb_datasets.Build_progress)) error {
-			return nil
-		},
-		Load_datasets: func(dir string) { loaded <- dir },
+		Datasets:        imdb_datasets.New_tracker(),
+		Stream_datasets: func(index_db_path string) { streamed <- index_db_path },
 	})
 
 	resp := do_request(t, server, http.MethodPost, "/api/v1/datasets", `{}`)
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("start status = %d: %s", resp.Code, resp.Body)
 	}
-	want := filepath.Join("/tmp/data", "imdb_datasets")
+	want := filepath.Join("/tmp/data", "imdb_datasets", imdb_datasets.Index_db_name)
 	select {
-	case dir := <-loaded:
-		if dir != want {
-			t.Errorf("loaded dir = %q, want %q", dir, want)
+	case index_db_path := <-streamed:
+		if index_db_path != want {
+			t.Errorf("streamed index path = %q, want %q", index_db_path, want)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("download+import hook was not invoked")
+		t.Fatal("stream hook was not invoked")
 	}
 }
 
@@ -170,7 +166,7 @@ func Test_datasets_endpoint_unavailable_without_pipeline_hook(t *testing.T) {
 
 func Test_datasets_endpoint_conflicts_with_running_build(t *testing.T) {
 	server, _ := new_test_server(t)
-	server.load_datasets = func(string) {}
+	server.stream_datasets = func(string) {}
 	tracker := imdb_datasets.New_tracker()
 	tracker.Observe(imdb_datasets.Build_progress{Step: imdb_datasets.Build_stale, Total: 100})
 	server.datasets = tracker

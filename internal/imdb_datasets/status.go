@@ -78,14 +78,6 @@ func (t *Tracker) Observe(p Build_progress) {
 			t.current = 0
 			t.dataset = ""
 		}
-	case Build_download:
-		t.state = State_building
-		t.step = Build_download
-		t.dataset = p.Dataset
-		t.bytes = p.Bytes
-		t.total = p.Total
-		t.current = 0
-		t.message = "downloading IMDb datasets"
 	case Build_fts:
 		t.step = Build_fts
 		t.dataset = ""

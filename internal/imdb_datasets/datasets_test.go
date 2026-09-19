@@ -361,7 +361,7 @@ func Test_open_single_file_builds_sidecar_index(t *testing.T) {
 	if index.Count() != 7 {
 		t.Errorf("count = %d, want 7", index.Count())
 	}
-	if _, err := os.Stat(filepath.Join(dir, index_db_name)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, Index_db_name)); err != nil {
 		t.Errorf("sidecar index not created: %v", err)
 	}
 }

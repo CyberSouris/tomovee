@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -209,17 +210,19 @@ type datasets_start_request struct {
 	Path string `json:"path"`
 }
 
-// handle_datasets_start downloads the IMDb datasets in the background and then
-// imports them, reporting progress through the datasets tracker. It persists
-// the chosen directory as the imdb_datasets_path override so the same data is
-// reused across restarts. The request returns as soon as the download begins.
+// handle_datasets_start downloads the IMDb datasets and imports them straight
+// into a new index, streaming each export and decompressing it on the fly, all
+// in the background with progress reported through the datasets tracker. The
+// originals are never written to disk. The chosen data directory is persisted
+// as the imdb_datasets_path override so the resulting index is reused across
+// restarts. The request returns as soon as the import begins.
 func (s *Server) handle_datasets_start(w http.ResponseWriter, r *http.Request) {
-	if s.load_datasets == nil {
+	if s.stream_datasets == nil {
 		write_error(w, http.StatusNotFound, "imdb datasets are not configured")
 		return
 	}
 	if s.datasets != nil && s.datasets.Snapshot().State == imdb_datasets.State_building {
-		write_error(w, http.StatusConflict, "an imdb datasets download or build is already running")
+		write_error(w, http.StatusConflict, "an imdb datasets import is already running")
 		return
 	}
 	var body datasets_start_request
@@ -249,32 +252,14 @@ func (s *Server) handle_datasets_start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Imdb_datasets_path = dir
-	if s.datasets != nil {
-		s.datasets.Set_has_path(true)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	download := s.download_datasets
-	if download == nil {
-		download = func(ctx context.Context, target string, on_progress func(imdb_datasets.Build_progress)) error {
-			_, err := imdb_datasets.Download(ctx, target, on_progress)
-			return err
-		}
-	}
-	load := s.load_datasets
+	stream := s.stream_datasets
+	index_db_path := imdb_datasets.Index_db_path(dir)
 	go func() {
-		err := download(context.Background(), dir, func(p imdb_datasets.Build_progress) {
-			if s.datasets != nil {
-				s.datasets.Observe(p)
-			}
-		})
-		if err != nil {
-			if s.datasets != nil {
-				s.datasets.Fail(err.Error())
-			}
-			s.logger.Error("imdb datasets: download failed", "dir", dir, "error", err)
-			return
-		}
-		s.logger.Info("imdb datasets: downloaded, importing", "dir", dir)
-		load(dir)
+		stream(index_db_path)
 	}()
 	write_json(w, http.StatusAccepted, map[string]any{"status": "started", "path": dir})
 }

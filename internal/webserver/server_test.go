@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -91,7 +92,25 @@ func (f fake_local) Search(_ context.Context, _ string, _ int, _ scanner.Media_t
 	return nil, nil
 }
 
+// fake_offline_low supplies an offline candidate with a low match score, so a
+// rematch stays ambiguous and surfaces the candidate shortlist instead of
+// applying a match.
+type fake_offline_low struct{}
+
+func (fake_offline_low) Search(_ context.Context, _ string, _ int, kind scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	if kind != scanner.Movie {
+		return nil, nil
+	}
+	return []matcher.Offline_candidate{{
+		Imdb_id: "tt9999999", Title: "Completely Different", Year: 1999, Media_type: scanner.Movie,
+	}}, nil
+}
+
 func new_test_server(t *testing.T) (*Server, *database.Store) {
+	return new_test_server_with_offline(t, fake_offline{})
+}
+
+func new_test_server_with_offline(t *testing.T, offline matcher.Offline_source) (*Server, *database.Store) {
 	t.Helper()
 	d, err := database.Open(":memory:")
 	if err != nil {
@@ -112,7 +131,7 @@ func new_test_server(t *testing.T) (*Server, *database.Store) {
 		},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := matcher.New(matcher.Options{Metadata: metadata, Offline: fake_offline{}, Logger: logger})
+	m := matcher.New(matcher.Options{Metadata: metadata, Offline: offline, Logger: logger})
 	runner := scan.New(store, scan.Options{Logger: logger})
 	matching_service := matching.New(store, m, nil, logger)
 	cfg := &config.Config{
@@ -650,5 +669,129 @@ func Test_matching_unavailable_message_includes_percent(t *testing.T) {
 	msg := server.matching_unavailable_message()
 	if !strings.Contains(msg, "25%") {
 		t.Fatalf("message = %q, want percent", msg)
+	}
+}
+
+func Test_rematch_ambiguous_persists_candidates(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	id := unmatched_entry_with_version(t, store)
+
+	response := do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("rematch status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[struct {
+		Applied    bool             `json:"applied"`
+		Candidates []candidate_item `json:"candidates"`
+	}](t, response)
+	if body.Applied {
+		t.Fatal("rematch applied despite low-confidence candidates")
+	}
+	if len(body.Candidates) != 1 || body.Candidates[0].Imdb_id != "tt9999999" {
+		t.Fatalf("candidates = %+v", body.Candidates)
+	}
+
+	persisted, err := store.List_candidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list persisted candidates: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].Title != "Completely Different" {
+		t.Fatalf("persisted candidates = %+v", persisted)
+	}
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "needs_lookup" {
+		t.Fatalf("entry status = %q, want needs_lookup", entry.Status)
+	}
+}
+
+func Test_rematch_exposes_candidates_in_unmatched_and_detail(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	id := unmatched_entry_with_version(t, store)
+
+	rematch := do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
+	if rematch.Code != http.StatusOK {
+		t.Fatalf("rematch status = %d: %s", rematch.Code, rematch.Body)
+	}
+
+	unmatched := do_request(t, server, http.MethodGet, "/api/v1/unmatched", "")
+	un := decode[struct {
+		Entries []catalog_item `json:"entries"`
+	}](t, unmatched)
+	for _, entry := range un.Entries {
+		if entry.Id == id {
+			if len(entry.Candidates) != 1 || entry.Candidates[0].Imdb_id != "tt9999999" {
+				t.Fatalf("unmatched candidates = %+v", entry.Candidates)
+			}
+		}
+	}
+
+	detail := do_request(t, server, http.MethodGet, fmt.Sprintf("/api/v1/catalog/%d", id), "")
+	det := decode[detail_response](t, detail)
+	if len(det.Entry.Candidates) != 1 || det.Entry.Candidates[0].Imdb_id != "tt9999999" {
+		t.Fatalf("detail candidates = %+v", det.Entry.Candidates)
+	}
+
+	status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+	snap := decode[struct {
+		Job *match_job_response `json:"job"`
+	}](t, status)
+	if snap.Job == nil || snap.Job.Running {
+		t.Fatalf("no finished rematch job in snapshot: %+v", snap.Job)
+	}
+	if snap.Job.Result == nil || snap.Job.Result.Unmatched != 1 || snap.Job.Result.Candidates != 1 {
+		t.Fatalf("job result = %+v, want unmatched=1 candidates=1", snap.Job.Result)
+	}
+}
+
+func Test_rematch_applied_path_clears_candidates(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	id := unmatched_entry_with_version(t, store)
+	if err := store.Replace_candidates(ctx, id, []database.Candidate{{Tmdb_id: 42, Title: "Stale", Media_type: "movie"}}); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
+
+	response := do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("rematch status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[struct {
+		Applied bool `json:"applied"`
+	}](t, response)
+	if !body.Applied {
+		t.Fatal("rematch did not apply the confident offline match")
+	}
+	left, err := store.List_candidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("candidates survived an applied rematch: %+v", left)
+	}
+}
+
+func Test_rematch_conflicts_with_running_job(t *testing.T) {
+	server, _ := new_test_server(t)
+	id := unmatched_entry_with_version(t, server.store)
+
+	started := make(chan struct{})
+	go func() {
+		_, _ = server.matches.Start(func(job_ctx context.Context, _ func(matching.Progress)) (*matching.Result, error) {
+			close(started)
+			<-job_ctx.Done()
+			return &matching.Result{Total: 1}, nil
+		})
+	}()
+	<-started
+	defer server.matches.Cancel()
+
+	response := do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("rematch under running job = %d, want 409: %s", response.Code, response.Body)
 	}
 }

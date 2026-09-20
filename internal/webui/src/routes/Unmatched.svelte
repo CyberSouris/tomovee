@@ -65,6 +65,15 @@
     if (body) submit_match(entry, body);
   }
 
+  function pick(entry, candidate) {
+    const body = candidate.tmdb_id
+      ? { tmdb_id: candidate.tmdb_id, media_type: candidate.media_type }
+      : candidate.imdb_id
+        ? { imdb_id: candidate.imdb_id, media_type: candidate.media_type }
+        : null;
+    if (body) submit_match(entry, body);
+  }
+
   onMount(() => load(true));
 </script>
 
@@ -105,6 +114,18 @@
                 placeholder="Search title…"
                 on:select={(event) => match_candidate(entry, event)}
               />
+              {#if entry.candidates && entry.candidates.length}
+                <p class="chooser-label">Suggestions:</p>
+                <ul class="chooser">
+                  {#each entry.candidates as candidate}
+                    <li>
+                      <button on:click={() => pick(entry, candidate)} disabled={busy === entry.id}>
+                        {candidate.title}{candidate.year ? ` (${candidate.year})` : ''}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </td>
             <td>
               <button on:click={() => match(entry)} disabled={busy === entry.id}>Match</button>
@@ -128,5 +149,25 @@
 
   .error {
     color: var(--bad);
+  }
+
+  .chooser-label {
+    margin: 0.5rem 0 0.25rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .chooser {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .chooser button {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.55rem;
   }
 </style>

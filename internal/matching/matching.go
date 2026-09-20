@@ -35,7 +35,9 @@ type Result struct {
 	Total     int
 	Matched   int
 	Unmatched int
-	Errors    []string
+	// Candidates is how many ambiguous matches were left for manual review.
+	Candidates int
+	Errors     []string
 }
 
 // Matching runs the background matching job.
@@ -241,7 +243,6 @@ func (m *Matching) Enrich_episodes(ctx context.Context, entry_id int64, match *m
 	}
 	return m.enrich_series(ctx, entry_id, match)
 }
-
 
 // Rematch_one re-runs automatic matching for a single catalog entry. When the
 // matcher is confident it persists the result exactly like a background pass

@@ -366,3 +366,83 @@ func Test_normalize_library_versions(t *testing.T) {
 		t.Errorf("outside path = %q", outside.File_path)
 	}
 }
+
+func Test_candidates_roundtrip_and_batch(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Ambiguous Title", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	candidates := []Candidate{
+		{Tmdb_id: 10, Imdb_id: "tt0000001", Title: "First", Year: 2000, Media_type: "movie", Score: 0.7, Overview: "o1", Poster_path: "/p1.jpg"},
+		{Imdb_id: "tt0000002", Title: "Second", Year: 2001, Media_type: "movie", Score: 0.5, Overview: "o2"},
+	}
+	if err := store.Replace_candidates(ctx, id, candidates); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	listed, err := store.List_candidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 2 || listed[0].Title != "First" {
+		t.Fatalf("listed = %+v", listed)
+	}
+
+	batch, err := store.List_candidates_for_entries(ctx, []int64{id})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(batch[id]) != 2 || batch[id][0].Title != "First" || batch[id][1].Title != "Second" {
+		t.Fatalf("batch = %+v", batch)
+	}
+
+	if err := store.Replace_candidates(ctx, id, []Candidate{{Tmdb_id: 30, Title: "Third", Media_type: "movie"}}); err != nil {
+		t.Fatalf("replace again: %v", err)
+	}
+	after, _ := store.List_candidates(ctx, id)
+	if len(after) != 1 || after[0].Tmdb_id != 30 {
+		t.Fatalf("after replace = %+v", after)
+	}
+
+	if err := store.Clear_candidates(ctx, id); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	gone, _ := store.List_candidates(ctx, id)
+	if len(gone) != 0 {
+		t.Fatalf("after clear = %+v", gone)
+	}
+}
+
+func Test_update_catalog_entry_to_matched_clears_candidates(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Ambiguous", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := store.Replace_candidates(ctx, id, []Candidate{{Tmdb_id: 10, Title: "First", Media_type: "movie"}}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	if err := store.Update_catalog_entry(ctx, id, Catalog_entry{
+		Media_type: "movie", Title: "Ambiguous", Tmdb_id: 10, Status: "matched",
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	left, err := store.List_candidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("candidates survived a matched update: %+v", left)
+	}
+}

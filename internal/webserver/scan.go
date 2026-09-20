@@ -397,10 +397,11 @@ type match_progress_item struct {
 }
 
 type match_result_item struct {
-	Total     int      `json:"total"`
-	Matched   int      `json:"matched"`
-	Unmatched int      `json:"unmatched"`
-	Errors    []string `json:"errors,omitempty"`
+	Total      int      `json:"total"`
+	Matched    int      `json:"matched"`
+	Unmatched  int      `json:"unmatched"`
+	Candidates int      `json:"candidates,omitempty"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 func match_job_response_from(job *job[matching.Progress, matching.Result]) *match_job_response {
@@ -425,7 +426,8 @@ func match_job_response_from(job *job[matching.Progress, matching.Result]) *matc
 	if job.Result != nil {
 		response.Result = &match_result_item{
 			Total: job.Result.Total, Matched: job.Result.Matched,
-			Unmatched: job.Result.Unmatched, Errors: job.Result.Errors,
+			Unmatched: job.Result.Unmatched, Candidates: job.Result.Candidates,
+			Errors: job.Result.Errors,
 		}
 	}
 	return response

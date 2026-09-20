@@ -74,8 +74,9 @@ type Stream_config struct {
 	// others (e.g. an MKV container holding H.265+AAC plays with no audio).
 	// Modes:
 	//   - none: serve the file as-is (default; no ffmpeg needed).
-	//   - container: remux into an MP4 container, copying the existing video
-	//     and audio streams without re-encoding (fast; needs ffmpeg).
+	//   - container: remux into an MP4 container, copying the video streams and
+	//     re-encoding audio to AAC when it uses a codec browsers cannot decode
+	//     (fast; needs ffmpeg).
 	//   - live: re-encode on the fly to H.264/AAC with the fastest settings
 	//     (slow CPU but maximum compatibility; needs ffmpeg).
 	Transcode string `yaml:"transcode"`

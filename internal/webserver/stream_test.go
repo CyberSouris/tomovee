@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/metadata"
 )
 
 // skip_without_ffmpeg skips a test when the ffmpeg binary is not installed, so
@@ -29,13 +30,20 @@ func skip_without_ffmpeg(t *testing.T) {
 // returns its path. Used as a realistic source for the container-remux path.
 func make_mkv(t *testing.T, dir string) string {
 	t.Helper()
+	return make_mkv_with(t, dir, "aac")
+}
+
+// make_mkv_with writes an MKV whose audio stream is encoded with the given
+// codec, so tests can exercise remuxing of browser-unplayable audio.
+func make_mkv_with(t *testing.T, dir, audio_codec string) string {
+	t.Helper()
 	path := filepath.Join(dir, "sample.mkv")
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
 		"-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-t", "1",
 		"-f", "lavfi", "-i", "sine=frequency=440", "-t", "1",
 		"-map", "0:v:0", "-map", "1:a:0",
 		"-c:v", "libx264", "-preset", "ultrafast",
-		"-c:a", "aac",
+		"-c:a", audio_codec,
 		path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg build fixture: %v (%s)", err, out)
@@ -260,6 +268,35 @@ func Test_version_file_container_remux_serves_an_mp4(t *testing.T) {
 	}
 	if ct := resp.Header().Get("Content-Type"); !strings.HasPrefix(ct, "video/mp4") {
 		t.Errorf("Content-Type = %q, want video/mp4", ct)
+	}
+}
+
+// Test_version_file_container_remux_reencodes_unplayable_audio verifies that a
+// source whose audio uses a codec browsers cannot decode (AC3) is remuxed with
+// the audio re-encoded to AAC. A blind -c copy remux would leave AC3 in the MP4
+// and the browser would have no un-mutable sound, hence the re-encode.
+func Test_version_file_container_remux_reencodes_unplayable_audio(t *testing.T) {
+	skip_without_ffmpeg(t)
+	media := make_mkv_with(t, t.TempDir(), "ac3")
+	server, version_id := stream_version_server(t, media, "container", "h264", []database.Audio_track{{Codec: "ac3"}})
+	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
+	}
+	body := resp.Body.Bytes()
+	if len(body) < 8 || !bytes.HasPrefix(body[4:8], []byte("ftyp")) {
+		t.Errorf("body is not an MP4 (no ftyp box at offset 4), first bytes: %x", body[:min(16, len(body))])
+	}
+	out := filepath.Join(t.TempDir(), "remuxed.mp4")
+	if err := os.WriteFile(out, body, 0o644); err != nil {
+		t.Fatalf("write remuxed output: %v", err)
+	}
+	info, err := metadata.Probe(context.Background(), out)
+	if err != nil {
+		t.Fatalf("probe remuxed output: %v", err)
+	}
+	if len(info.Audio) != 1 || info.Audio[0].Codec != "aac" {
+		t.Errorf("remuxed audio = %+v, want exactly one aac track", info.Audio)
 	}
 }
 

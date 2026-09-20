@@ -241,3 +241,52 @@ func (m *Matching) Enrich_episodes(ctx context.Context, entry_id int64, match *m
 	}
 	return m.enrich_series(ctx, entry_id, match)
 }
+
+
+// Rematch_one re-runs automatic matching for a single catalog entry. When the
+// matcher is confident it persists the result exactly like a background pass
+// would. When the match stays ambiguous it returns the candidate shortlist
+// without persisting anything, so the caller can let the user choose.
+func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied bool, candidates []matcher.Candidate, err error) {
+	entry, err := m.store.Get_catalog_entry(ctx, entry_id)
+	if err != nil {
+		return false, nil, err
+	}
+	if entry == nil {
+		return false, nil, nil
+	}
+	version, ok, err := m.largest_version(ctx, *entry)
+	if err != nil {
+		return false, nil, err
+	}
+	if !ok {
+		return false, nil, nil
+	}
+	kind := scanner.Movie
+	if entry.Media_type == "series" {
+		kind = scanner.Series
+	}
+	result := m.matcher.Match(ctx, matcher.Input{
+		Path:      version.File_path,
+		File_name: filepath.Base(version.File_path),
+		Hash:      version.Hash,
+		Kind:      kind,
+	})
+	if result == nil || !result.Matched {
+		if result == nil {
+			return false, nil, nil
+		}
+		return false, result.Candidates, nil
+	}
+	updated := scan.Catalog_entry_from_match(result)
+	updated.Id = entry.Id
+	if err := m.store.Update_catalog_entry(ctx, entry.Id, updated); err != nil {
+		return false, nil, err
+	}
+	if entry.Media_type == "series" {
+		if err := m.enrich_series(ctx, entry.Id, result); err != nil {
+			m.logger.Warn("matching: episode enrichment failed", "title", entry.Title, "error", err)
+		}
+	}
+	return true, nil, nil
+}

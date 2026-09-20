@@ -105,6 +105,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/catalog", s.handle_catalog_list)
 	s.mux.HandleFunc("GET /api/v1/catalog/{id}", s.handle_catalog_detail)
 	s.mux.HandleFunc("POST /api/v1/catalog/{id}/match", s.handle_manual_match)
+	s.mux.HandleFunc("POST /api/v1/catalog/{id}/rematch", s.handle_rematch)
 	s.mux.HandleFunc("GET /api/v1/unmatched", s.handle_unmatched)
 	s.mux.HandleFunc("GET /api/v1/background", s.handle_background_status)
 	s.mux.HandleFunc("GET /api/v1/search", s.handle_search)

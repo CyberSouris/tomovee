@@ -549,3 +549,51 @@ func Test_match_offline_error_records_warning(t *testing.T) {
 		t.Fatal("expected a warning about the offline lookup")
 	}
 }
+
+// offline_lookup is a scripted Offline_resolver for the manual-match fallback.
+type offline_lookup struct {
+	fake_offline
+	results map[string]Result
+}
+
+func (f *offline_lookup) Lookup(_ context.Context, imdb_id string) (*Result, bool) {
+	if result, ok := f.results[imdb_id]; ok {
+		return &result, true
+	}
+	return nil, false
+}
+
+func Test_resolve_by_imdb_offline(t *testing.T) {
+	ctx := context.Background()
+	offline := &offline_lookup{results: map[string]Result{
+		"tt0133093": {
+			Matched: true, Source: "imdb-datasets", Media_type: scanner.Movie,
+			Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Rating: 8.2, Vote_count: 24000,
+		},
+	}}
+	m := New(Options{Offline: offline})
+
+	result, ok := m.Resolve_by_imdb_offline(ctx, "tt0133093")
+	if !ok {
+		t.Fatal("resolve returned false for a known id")
+	}
+	if !result.Matched || result.Title != "The Matrix" || result.Imdb_id != "tt0133093" {
+		t.Fatalf("resolved result = %+v", result)
+	}
+	if result.Rating != 8.2 {
+		t.Errorf("rating = %v, want 8.2", result.Rating)
+	}
+
+	if _, ok := m.Resolve_by_imdb_offline(ctx, "tt9999999"); ok {
+		t.Error("resolve returned true for an unknown id")
+	}
+}
+
+func Test_resolve_by_imdb_offline_requires_resolver(t *testing.T) {
+	m := New(Options{Offline: &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}}})
+	if _, ok := m.Resolve_by_imdb_offline(context.Background(), "tt0133093"); ok {
+		t.Error("resolve must be false when the offline source cannot look up by id")
+	}
+}

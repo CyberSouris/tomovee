@@ -456,6 +456,37 @@ func Test_matcher_source_adapter(t *testing.T) {
 	}
 }
 
+func Test_matcher_source_offline_lookup(t *testing.T) {
+	index := must_index(t)
+	if _, ok := index.Lookup("tt0133093"); !ok {
+		t.Fatal("fixture missing tt0133093")
+	}
+	ratings, err := Parse_ratings(strings.NewReader("tconst\taverageRating\tnumVotes\ntt0133093\t8.7\t2500000\n"))
+	if err != nil {
+		t.Fatalf("parse ratings: %v", err)
+	}
+	index.Index_ratings(ratings)
+
+	source := New_matcher_source(index)
+	result, ok := source.Lookup(nil, "tt0133093")
+	if !ok {
+		t.Fatal("lookup reported not found for known id")
+	}
+	if !result.Matched || result.Source != "imdb-datasets" || result.Media_type != scanner.Movie {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Title != "The Matrix" || result.Year != 1999 {
+		t.Errorf("title/year = %q/%d", result.Title, result.Year)
+	}
+	if result.Rating != 8.7 || result.Vote_count != 2500000 {
+		t.Errorf("rating/votes = %v/%d", result.Rating, result.Vote_count)
+	}
+
+	if _, ok := source.Lookup(nil, "tt9999999"); ok {
+		t.Error("lookup reported found for unknown id")
+	}
+}
+
 func must_index(t *testing.T) *Index {
 	t.Helper()
 	titles, err := Parse_titles(strings.NewReader(test_tsv))

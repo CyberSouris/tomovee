@@ -106,6 +106,18 @@ func (fake_offline_low) Search(_ context.Context, _ string, _ int, kind scanner.
 	}}, nil
 }
 
+// fake_offline_lookup extends fake_local so manual matching can resolve an
+// exact IMDb id from the local index when TMDB is not configured.
+type fake_offline_lookup struct {
+	fake_local
+	results map[string]*matcher.Result
+}
+
+func (f fake_offline_lookup) Lookup(_ context.Context, imdb_id string) (*matcher.Result, bool) {
+	result, ok := f.results[imdb_id]
+	return result, ok
+}
+
 func new_test_server(t *testing.T) (*Server, *database.Store) {
 	return new_test_server_with_offline(t, fake_offline{})
 }
@@ -337,6 +349,108 @@ func Test_unmatched_and_manual_match(t *testing.T) {
 	}
 	if match_body.Entry.Tmdb_id != 603 {
 		t.Errorf("tmdb id = %d", match_body.Entry.Tmdb_id)
+	}
+}
+
+func Test_manual_match_without_tmdb_key(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_lookup{
+		fake_local: fake_local{hits: []matcher.Offline_candidate{
+			{Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie},
+		}},
+		results: map[string]*matcher.Result{
+			"tt0133093": {
+				Matched: true, Confidence: 1, Source: "imdb-datasets",
+				Media_type: scanner.Movie, Imdb_id: "tt0133093",
+				Title: "The Matrix", Original_title: "The Matrix", Year: 1999,
+				Rating: 8.7, Vote_count: 2500000,
+			},
+		},
+	})
+	server.metadata = nil
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Matching by a bare IMDb id must work without TMDB when the offline index
+	// knows the title.
+	match := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match",
+		`{"imdb_id": "tt0133093", "media_type": "movie"}`)
+	if match.Code != http.StatusOK {
+		t.Fatalf("imdb match status = %d: %s", match.Code, match.Body)
+	}
+	match_body := decode[struct {
+		Entry catalog_item `json:"entry"`
+	}](t, match)
+	if match_body.Entry.Status != "matched" || match_body.Entry.Title != "The Matrix" ||
+		match_body.Entry.Imdb_id != "tt0133093" || match_body.Entry.Tmdb_id != 0 {
+		t.Fatalf("unexpected matched entry: %+v", match_body.Entry)
+	}
+
+	// An unknown id must surface a clear error instead of a false match.
+	other_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "other", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	missing := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(other_id)+"/match",
+		`{"imdb_id": "tt9999999", "media_type": "movie"}`)
+	if missing.Code == http.StatusOK {
+		t.Fatalf("unknown imdb id accepted: %s", missing.Body)
+	}
+}
+
+func Test_manual_match_tmdb_id_falls_back_to_persisted_offline_candidate(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_lookup{
+		fake_local: fake_local{hits: []matcher.Offline_candidate{
+			{Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie},
+		}},
+		results: map[string]*matcher.Result{
+			"tt0133093": {
+				Matched: true, Confidence: 1, Source: "imdb-datasets",
+				Media_type: scanner.Movie, Imdb_id: "tt0133093",
+				Title: "The Matrix", Original_title: "The Matrix", Year: 1999,
+			},
+		},
+	})
+	server.metadata = nil
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// A candidate persisted from an earlier rematch carries only a tmdb id that
+	// maps to an offline-resolvable imdb id.
+	if err := store.Replace_candidates(ctx, id, []database.Candidate{{
+		Tmdb_id: 603, Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: "movie",
+	}}); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
+
+	match := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match",
+		`{"tmdb_id": 603, "media_type": "movie"}`)
+	if match.Code != http.StatusOK {
+		t.Fatalf("match status = %d: %s", match.Code, match.Body)
+	}
+	match_body := decode[struct {
+		Entry catalog_item `json:"entry"`
+	}](t, match)
+	if match_body.Entry.Status != "matched" || match_body.Entry.Title != "The Matrix" ||
+		match_body.Entry.Imdb_id != "tt0133093" {
+		t.Fatalf("unexpected matched entry: %+v", match_body.Entry)
+	}
+
+	// A tmdb id with no persisted candidate still fails cleanly.
+	match_unknown := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match",
+		`{"tmdb_id": 999, "media_type": "movie"}`)
+	if match_unknown.Code == http.StatusOK {
+		t.Fatalf("unknown tmdb id accepted: %s", match_unknown.Body)
 	}
 }
 

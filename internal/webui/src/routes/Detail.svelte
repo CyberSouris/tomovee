@@ -383,7 +383,7 @@
     margin: 0 0 0.3rem;
   }
 
-  .manual h2 + .muted {
+  .manual .muted {
     margin: 0;
   }
 

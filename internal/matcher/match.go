@@ -52,6 +52,13 @@ type Local_search_source interface {
 	Search_local(ctx context.Context, query string, year int, media_type scanner.Media_type, limit int) ([]Offline_candidate, error)
 }
 
+// Offline_resolver is the optional capability of an Offline_source to resolve
+// one exact IMDb id into a complete result, letting a manual candidate pick be
+// applied purely from the local index when no TMDB API key is configured.
+type Offline_resolver interface {
+	Lookup(ctx context.Context, imdb_id string) (*Result, bool)
+}
+
 func (m *Matcher) Has_local_search() bool {
 	ref := m.offline.Load()
 	if ref == nil {
@@ -545,6 +552,21 @@ func (m *Matcher) Enrich_by_imdb(ctx context.Context, media_type scanner.Media_t
 	result.Confidence = 1
 	result.Source = "manual"
 	return result, nil
+}
+
+// Resolve_by_imdb_offline resolves an IMDb id against the attached offline
+// index, building a matched result without any TMDB access. It reports false
+// when no offline source is attached or the id is unknown to it.
+func (m *Matcher) Resolve_by_imdb_offline(ctx context.Context, imdb_id string) (*Result, bool) {
+	ref := m.offline.Load()
+	if ref == nil {
+		return nil, false
+	}
+	resolver, ok := ref.src.(Offline_resolver)
+	if !ok {
+		return nil, false
+	}
+	return resolver.Lookup(ctx, imdb_id)
 }
 
 // enrich fills a hash-matched result with full metadata from TMDB, resolving

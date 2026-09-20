@@ -31,6 +31,23 @@ api:
 # changed from the web UI.
 watch_enabled: false
 
+# Run a full background matching pass over the catalog at boot. Building the
+# IMDb datasets index and hitting TMDB for every unmatched entry is expensive,
+# so this is opt-in: leave it false to just start serving and launch a matching
+# run from the web UI or the API when convenient.
+match_on_start: false
+
+# How video files are delivered to the browser. Most players can demux
+# MP4/H.264/AAC natively but struggle with others (e.g. an MKV container
+# holding H.265+AAC plays with no audio).
+#   - none:      serve the file as-is (default; no ffmpeg needed).
+#   - container: remux into an MP4 container, copying the existing video and
+#                audio streams without re-encoding (fast; needs ffmpeg).
+#   - live:      re-encode on the fly to H.264/AAC with the fastest settings
+#                (slow CPU but maximum compatibility; needs ffmpeg).
+stream:
+  transcode: none
+
 scan:
   # A file is treated as a quality variant of a sibling when the parent folder
   # holds at least this many files.

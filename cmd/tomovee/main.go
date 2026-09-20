@@ -392,6 +392,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		w := watcher.New(store, runner, watcher.Options{
 			Default_enabled: cfg.Watch_enabled,
 			Logger:          logger,
+			Run_scan:        server.Watch_scan,
 		})
 		if err := w.Run(watch_ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Warn("folder watcher stopped", "error", err)

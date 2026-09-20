@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -146,6 +147,53 @@ func decode[T any](t *testing.T, recorder *httptest.ResponseRecorder) T {
 		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 	}
 	return out
+}
+
+func Test_Watch_scan_runs_through_job_manager(t *testing.T) {
+	server, _ := new_test_server(t)
+	ctx := context.Background()
+
+	result, err := server.Watch_scan(ctx, nil)
+	if err != nil {
+		t.Fatalf("watch_scan: %v", err)
+	}
+	if result == nil {
+		t.Fatal("watch_scan returned nil result")
+	}
+
+	snapshot := server.jobs.Snapshot()
+	if snapshot == nil {
+		t.Fatal("no job snapshot recorded")
+	}
+	if snapshot.Running {
+		t.Errorf("job still running after sync scan")
+	}
+	if snapshot.Result == nil {
+		t.Errorf("job snapshot has no result")
+	}
+}
+
+func Test_Watch_scan_reports_busy(t *testing.T) {
+	server, _ := new_test_server(t)
+	ctx := context.Background()
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	defer close(release)
+	_, err := server.jobs.Start(func(_ context.Context, _ func(scan.Progress)) (*scan.Result, error) {
+		close(started)
+		<-release
+		return &scan.Result{}, nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	<-started
+
+	_, err = server.Watch_scan(ctx, nil)
+	if !errors.Is(err, scan.Err_scan_in_progress) {
+		t.Fatalf("watch_scan error = %v, want scan.Err_scan_in_progress", err)
+	}
 }
 
 func Test_catalog_list_and_detail(t *testing.T) {

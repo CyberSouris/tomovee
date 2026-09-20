@@ -27,6 +27,11 @@ type Options struct {
 	Default_enabled bool
 	Logger          *slog.Logger
 	On_scan         func(scan.Result)
+	// Run_scan, when set, performs watch-triggered scans instead of Runner, so
+	// callers can route them through their own background job tracking. It runs
+	// synchronously and should return scan.Err_scan_in_progress when another
+	// scan is already running, in which case the watcher skips quietly.
+	Run_scan func(ctx context.Context, names []string) (*scan.Result, error)
 }
 
 // Watcher polls the database for enabled watch folders and scans them.
@@ -37,6 +42,7 @@ type Watcher struct {
 	default_enabled bool
 	logger          *slog.Logger
 	on_scan         func(scan.Result)
+	run_scan        func(ctx context.Context, names []string) (*scan.Result, error)
 }
 
 // New builds a Watcher.
@@ -56,6 +62,7 @@ func New(store *database.Store, runner Runner, opts Options) *Watcher {
 		default_enabled: opts.Default_enabled,
 		logger:          logger,
 		on_scan:         opts.On_scan,
+		run_scan:        opts.Run_scan,
 	}
 }
 
@@ -96,8 +103,12 @@ func (w *Watcher) Scan_once(ctx context.Context) error {
 		names = append(names, library.Name)
 	}
 	w.logger.Info("watch scan starting", "libraries", len(names))
-	result, err := w.runner.Run_libraries(ctx, names, nil)
+	result, err := w.run(ctx, names)
 	if err != nil {
+		if errors.Is(err, scan.Err_scan_in_progress) {
+			w.logger.Debug("watch scan skipped; another scan is running")
+			return nil
+		}
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -112,6 +123,13 @@ func (w *Watcher) Scan_once(ctx context.Context) error {
 		w.on_scan(*result)
 	}
 	return nil
+}
+
+func (w *Watcher) run(ctx context.Context, names []string) (*scan.Result, error) {
+	if w.run_scan != nil {
+		return w.run_scan(ctx, names)
+	}
+	return w.runner.Run_libraries(ctx, names, nil)
 }
 
 func (w *Watcher) enabled(ctx context.Context) bool {

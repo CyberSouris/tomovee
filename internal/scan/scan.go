@@ -24,6 +24,11 @@ import (
 	"github.com/cybersouris/tomovee/internal/thumbnail"
 )
 
+// Err_scan_in_progress is returned when a scan cannot start because another
+// scan is still running. It lets callers that trigger scans from multiple
+// places (the folder watcher, the web API) skip quietly instead of erroring.
+var Err_scan_in_progress = errors.New("a scan is already in progress")
+
 // Options configures a Scanner.
 type Options struct {
 	Exclude_patterns []string

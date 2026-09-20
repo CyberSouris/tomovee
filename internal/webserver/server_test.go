@@ -352,6 +352,54 @@ func Test_unmatched_and_manual_match(t *testing.T) {
 	}
 }
 
+func Test_unmatched_lists_candidate_entries_first(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	late := func(title string) int64 {
+		time.Sleep(1 * time.Millisecond)
+		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+			Media_type: "movie", Title: title, Status: "needs_lookup",
+		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		return id
+	}
+	plain := late("Plain entry")
+	with_candidates := late("With candidates")
+	other := late("Other plain entry")
+	if err := store.Replace_candidates(ctx, with_candidates, []database.Candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: "movie",
+	}}); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
+
+	unmatched := do_request(t, server, http.MethodGet, "/api/v1/unmatched", "")
+	if unmatched.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", unmatched.Code, unmatched.Body)
+	}
+	body := decode[struct {
+		Entries []catalog_item `json:"entries"`
+	}](t, unmatched)
+	if len(body.Entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(body.Entries))
+	}
+	if body.Entries[0].Id != with_candidates || len(body.Entries[0].Candidates) != 1 {
+		t.Fatalf("first entry = %+v, want the one with candidates", body.Entries[0])
+	}
+	seen := map[int64]bool{}
+	for _, entry := range body.Entries[1:] {
+		if len(entry.Candidates) != 0 {
+			t.Fatalf("candidate-bearing entry not first: %+v", entry)
+		}
+		seen[entry.Id] = true
+	}
+	if !seen[plain] || !seen[other] {
+		t.Fatalf("plain entries missing from tail: %+v", body.Entries)
+	}
+}
+
 func Test_manual_match_without_tmdb_key(t *testing.T) {
 	server, store := new_test_server_with_offline(t, fake_offline_lookup{
 		fake_local: fake_local{hits: []matcher.Offline_candidate{

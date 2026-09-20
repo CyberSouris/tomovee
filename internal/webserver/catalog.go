@@ -199,11 +199,29 @@ func (s *Server) handle_unmatched(w http.ResponseWriter, r *http.Request) {
 	}
 	items := catalog_items(entries)
 	s.attach_candidates(r.Context(), items)
+	s.candidates_first(items)
 	write_json(w, http.StatusOK, map[string]any{
 		"total":   total,
 		"count":   len(entries),
 		"entries": items,
 	})
+}
+
+// candidates_first stably reorders unmatched entries so those carrying a
+// persisted candidate shortlist are listed before the rest, making the picks
+// that need human attention easy to spot. The reorder is stable so each group
+// keeps its original added-first order.
+func (s *Server) candidates_first(items []catalog_item) {
+	has, rest := make([]catalog_item, 0, len(items)), make([]catalog_item, 0, len(items))
+	for _, item := range items {
+		if len(item.Candidates) > 0 {
+			has = append(has, item)
+		} else {
+			rest = append(rest, item)
+		}
+	}
+	copy(items, has)
+	copy(items[len(has):], rest)
 }
 
 // attach_candidates fills every item's candidate shortlist from the store so

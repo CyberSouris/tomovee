@@ -10,7 +10,14 @@ import (
 	"strings"
 
 	"github.com/cybersouris/tomovee/internal/database"
+	ffmpeg "github.com/krau/ffmpeg-go"
 )
+
+func init() {
+	// ffmpeg-go logs every compiled command to stderr by default; the streaming
+	// endpoint calls it per request, so silence that noise once at startup.
+	ffmpeg.LogCompiledCommand = false
+}
 
 // handle_version_file serves a version's media file so a browser can stream it
 // in a <video> element or download it. http.ServeFile handles Range requests
@@ -40,7 +47,57 @@ func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusNotFound, "media file not found")
 		return
 	}
+	if s.cfg != nil && s.cfg.Stream.Transcode == "container" && browser_unplayable_container(path) {
+		if dst, err := remux_to_mp4(r.Context(), path); err == nil {
+			defer os.Remove(dst)
+			s.logger.Debug("serving container-remuxed media", "src", path, "dst", dst)
+			http.ServeFile(w, r, dst)
+			return
+		} else {
+			// ffmpeg absence or a remux failure falls back to the raw file.
+			s.logger.Debug("container remux failed; serving original", "src", path, "error", err)
+		}
+	}
 	http.ServeFile(w, r, path)
+}
+
+// browser_unplayable_container reports whether path is in a container browsers
+// cannot demux natively, so stream.transcode=container should remux it first.
+// MP4 and its close relatives (M4V/MOV) are already browser-friendly.
+func browser_unplayable_container(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".m4v", ".mov":
+		return false
+	default:
+		return true
+	}
+}
+
+// remux_to_mp4 rewraps src in an MP4 container, copying the streams without
+// re-encoding, and returns the path of the resulting temporary file. The caller
+// owns the temp file and must remove it when done.
+func remux_to_mp4(ctx context.Context, src string) (string, error) {
+	file, err := os.CreateTemp("", "tomovee-remux-*.mp4")
+	if err != nil {
+		return "", err
+	}
+	dst := file.Name()
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	err = ffmpeg.Input(src).
+		Output(dst, ffmpeg.KwArgs{
+			"map":      "0",
+			"c":        "copy",
+			"movflags": "+faststart",
+		}).
+		OverWriteOutput().
+		Run()
+	if err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	return dst, nil
 }
 
 // version_file_path resolves the cleaned, safe absolute path of a version's

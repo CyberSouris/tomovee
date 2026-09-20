@@ -95,3 +95,46 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 	}
 	write_json(w, http.StatusOK, map[string]any{"entry": catalog_item_from(*fresh)})
 }
+
+// handle_rematch re-runs the automatic matcher for one catalog entry and
+// applies the result when the matcher is confident. When the match stays
+// ambiguous it returns the candidate shortlist so the UI can offer a chooser.
+func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
+	if s.matching == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	id, ok := path_id(r)
+	if !ok {
+		write_error(w, http.StatusBadRequest, "invalid catalog id")
+		return
+	}
+	applied, candidates, err := s.matching.Rematch_one(r.Context(), id)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if applied {
+		fresh, err := s.store.Get_catalog_entry(r.Context(), id)
+		if err != nil || fresh == nil {
+			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
+			return
+		}
+		write_json(w, http.StatusOK, map[string]any{"applied": true, "entry": catalog_item_from(*fresh)})
+		return
+	}
+	views := make([]map[string]any, 0, len(candidates))
+	for _, c := range candidates {
+		views = append(views, map[string]any{
+			"tmdb_id":     c.Tmdb_id,
+			"imdb_id":     c.Imdb_id,
+			"title":       c.Title,
+			"year":        c.Year,
+			"score":       c.Score,
+			"overview":    c.Overview,
+			"poster_path": c.Poster_path,
+			"media_type":  "movie",
+		})
+	}
+	write_json(w, http.StatusOK, map[string]any{"applied": false, "candidates": views})
+}

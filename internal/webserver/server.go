@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/catalog", s.handle_catalog_list)
+	s.mux.HandleFunc("GET /api/v1/categories", s.handle_categories)
 	s.mux.HandleFunc("GET /api/v1/catalog/{id}", s.handle_catalog_detail)
 	s.mux.HandleFunc("POST /api/v1/catalog/{id}/match", s.handle_manual_match)
 	s.mux.HandleFunc("POST /api/v1/catalog/{id}/rematch", s.handle_rematch)

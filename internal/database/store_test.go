@@ -224,6 +224,41 @@ func Test_list_catalog_entries_filters(t *testing.T) {
 	}
 }
 
+func Test_genre_counts(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Status: "matched",
+		Genres: []string{"Action"},
+	})
+	store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Alien", Status: "matched",
+		Genres: []string{"Action", "Science Fiction"},
+	})
+	store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Unmatched Drama", Status: "needs_lookup",
+		Genres: []string{"Drama"},
+	})
+
+	matched, err := store.Genre_counts(ctx, "matched")
+	if err != nil {
+		t.Fatalf("genre counts: %v", err)
+	}
+	if len(matched) != 2 || matched[0].Name != "Action" || matched[0].Count != 2 ||
+		matched[1].Name != "Science Fiction" || matched[1].Count != 1 {
+		t.Errorf("matched genre counts = %+v", matched)
+	}
+
+	unmatched, err := store.Genre_counts(ctx, "needs_lookup")
+	if err != nil {
+		t.Fatalf("genre counts: %v", err)
+	}
+	if len(unmatched) != 1 || unmatched[0].Name != "Drama" || unmatched[0].Count != 1 {
+		t.Errorf("needs_lookup genre counts = %+v", unmatched)
+	}
+}
+
 func Test_cache_roundtrip(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()

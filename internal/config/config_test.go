@@ -162,6 +162,49 @@ func Test_apply_overrides_can_clear_a_setting(t *testing.T) {
 	}
 }
 
+func Test_validate_log_level(t *testing.T) {
+	cfg := Defaults()
+	cfg.Libraries = map[string]string{"movies": "/media/movies"}
+	for _, level := range []string{"debug", "info", "warn", "error", "DEBUG", "Info"} {
+		cfg.Log_level = level
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("log_level %q should validate, got: %v", level, err)
+		}
+	}
+	for _, level := range []string{"verbose", "loud"} {
+		cfg.Log_level = level
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("log_level %q should be rejected", level)
+		}
+	}
+	cfg.Log_level = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty log_level is valid (falls back to info), got: %v", err)
+	}
+	cfg.Log_level = "info"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("default log_level should validate, got: %v", err)
+	}
+}
+
+func Test_load_log_level(t *testing.T) {
+	path := write_temp_config(t, `
+database_path: /tmp/library.db
+poster_cache_dir: /tmp/posters
+listen: 127.0.0.1:8080
+libraries:
+  movies: /mnt/media/movies
+log_level: debug
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Log_level != "debug" {
+		t.Errorf("log_level = %q, want debug", cfg.Log_level)
+	}
+}
+
 func Test_validate_requires_library_or_watch(t *testing.T) {
 	cfg := Defaults()
 	cfg.Libraries = nil

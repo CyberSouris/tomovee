@@ -1,7 +1,10 @@
 package matcher
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
@@ -278,6 +281,40 @@ func Test_match_with_no_derivable_title(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0] != "could not derive a title from the file name" {
 		t.Errorf("warnings = %v", result.Warnings)
+	}
+}
+
+func Test_match_debug_logs_reasoning(t *testing.T) {
+	var buf bytes.Buffer
+	debug_logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	m := New(Options{
+		Metadata: &fake_metadata{
+			movies: []tmdb.Movie_search_result{{Id: 603, Title: "The Matrix", Release_date: "1999-03-31"}},
+			details: map[int]any{
+				603: matrix_movie_details(),
+			},
+		},
+		Logger: debug_logger,
+	})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/m/Matrix.1999.mkv", File_name: "Matrix.1999.mkv", Kind: scanner.Movie,
+	})
+	if !result.Matched {
+		t.Fatalf("expected a match: %+v", result)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "match: start") {
+		t.Errorf("debug output missing start log:\n%s", output)
+	}
+	if !strings.Contains(output, "match: tmdb movie candidate") {
+		t.Errorf("debug output missing candidate log:\n%s", output)
+	}
+	if !strings.Contains(output, "match: search accepted") {
+		t.Errorf("debug output missing accepted log:\n%s", output)
+	}
+	if !strings.Contains(output, "score=") {
+		t.Errorf("debug output missing score attribute:\n%s", output)
 	}
 }
 

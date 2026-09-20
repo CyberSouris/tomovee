@@ -32,8 +32,25 @@ import (
 
 const version = "0.1.0"
 
+// build_logger returns a text handler logger writing to stderr at the given
+// level (debug, info, warn, error; anything else falls back to info).
+func build_logger(level string) *slog.Logger {
+	var l slog.Level
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		l = slog.LevelDebug
+	case "warn":
+		l = slog.LevelWarn
+	case "error":
+		l = slog.LevelError
+	default:
+		l = slog.LevelInfo
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l}))
+}
+
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := build_logger("info")
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -312,6 +329,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	logger = build_logger(cfg.Log_level)
 	db, err := open_database(cfg)
 	if err != nil {
 		return err
@@ -450,6 +468,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	logger = build_logger(cfg.Log_level)
 	db, err := open_database(cfg)
 	if err != nil {
 		return err

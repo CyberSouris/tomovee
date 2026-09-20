@@ -227,14 +227,25 @@ func (m *Matcher) Has_sources() bool {
 func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	sub, meta := m.source()
 	hint := Parse_filename(input.File_name)
+	m.logger.Debug("match: start",
+		"file", input.File_name, "kind", input.Kind,
+		"title", hint.Title, "year", hint.Year,
+		"hash_lookup", sub != nil, "search", meta != nil)
 	result := &Result{Media_type: input.Kind, Title: hint.Title, Year: hint.Year}
 
 	if input.Hash != "" && sub != nil {
 		hash_result, err := m.match_by_hash(ctx, input, hint)
 		if err != nil {
 			result.Warnings = append(result.Warnings, "opensubtitles hash lookup: "+err.Error())
+			m.logger.Debug("match: hash lookup failed", "file", input.File_name, "error", err)
 		} else if hash_result != nil {
+			m.logger.Debug("match: hash matched", "file", input.File_name,
+				"source", hash_result.Source, "title", hash_result.Title,
+				"year", hash_result.Year, "tmdb_id", hash_result.Tmdb_id,
+				"imdb_id", hash_result.Imdb_id, "confidence", hash_result.Confidence)
 			return hash_result
+		} else {
+			m.logger.Debug("match: no hash feature", "file", input.File_name)
 		}
 	}
 
@@ -242,6 +253,10 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 		search_result := m.match_by_search(ctx, input, hint)
 		search_result.Warnings = append(search_result.Warnings, result.Warnings...)
 		if search_result.Matched {
+			m.logger.Debug("match: search matched", "file", input.File_name,
+				"source", search_result.Source, "title", search_result.Title,
+				"year", search_result.Year, "tmdb_id", search_result.Tmdb_id,
+				"confidence", search_result.Confidence)
 			return search_result
 		}
 		result = search_result
@@ -251,6 +266,16 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	}
 	if !result.Matched && len(result.Warnings) == 0 && meta == nil && m.offline.Load() == nil {
 		result.Warnings = append(result.Warnings, "no metadata source configured")
+	}
+	if result.Matched {
+		m.logger.Debug("match: offline matched", "file", input.File_name,
+			"source", result.Source, "title", result.Title,
+			"year", result.Year, "imdb_id", result.Imdb_id,
+			"confidence", result.Confidence)
+	} else {
+		m.logger.Debug("match: no match",
+			"file", input.File_name, "candidates", len(result.Candidates),
+			"warnings", result.Warnings)
 	}
 	return result
 }
@@ -309,17 +334,24 @@ func (m *Matcher) search_movie(ctx context.Context, hint Filename_hint, result *
 	results, err := meta.Search_movie(ctx, hint.Title, hint.Year)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "tmdb movie search: "+err.Error())
+		m.logger.Debug("match: tmdb movie search failed",
+			"title", hint.Title, "year", hint.Year, "error", err)
 		return result
 	}
+	m.logger.Debug("match: tmdb movie search results",
+		"title", hint.Title, "year", hint.Year, "count", len(results))
 	scored := make([]Candidate, 0, len(results))
 	for _, r := range results {
 		year := tmdb.Year_from_date(r.Release_date)
+		score := score_match(hint.Title, hint.Year, r.Title, year)
+		m.logger.Debug("match: tmdb movie candidate",
+			"id", r.Id, "title", r.Title, "year", year, "score", score)
 		scored = append(scored, Candidate{
 			Source:      "tmdb",
 			Tmdb_id:     r.Id,
 			Title:       r.Title,
 			Year:        year,
-			Score:       score_match(hint.Title, hint.Year, r.Title, year),
+			Score:       score,
 			Overview:    r.Overview,
 			Poster_path: r.Poster_path,
 		})
@@ -332,17 +364,24 @@ func (m *Matcher) search_series(ctx context.Context, hint Filename_hint, result 
 	results, err := meta.Search_tv(ctx, hint.Title, hint.Year)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "tmdb tv search: "+err.Error())
+		m.logger.Debug("match: tmdb tv search failed",
+			"title", hint.Title, "year", hint.Year, "error", err)
 		return result
 	}
+	m.logger.Debug("match: tmdb tv search results",
+		"title", hint.Title, "year", hint.Year, "count", len(results))
 	scored := make([]Candidate, 0, len(results))
 	for _, r := range results {
 		year := tmdb.Year_from_date(r.First_air_date)
+		score := score_match(hint.Title, hint.Year, r.Name, year)
+		m.logger.Debug("match: tmdb tv candidate",
+			"id", r.Id, "title", r.Name, "year", year, "score", score)
 		scored = append(scored, Candidate{
 			Source:      "tmdb",
 			Tmdb_id:     r.Id,
 			Title:       r.Name,
 			Year:        year,
-			Score:       score_match(hint.Title, hint.Year, r.Name, year),
+			Score:       score,
 			Overview:    r.Overview,
 			Poster_path: r.Poster_path,
 		})
@@ -356,10 +395,18 @@ func (m *Matcher) finish_search(ctx context.Context, result *Result, scored []Ca
 	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
 	result.Candidates = top_candidates(scored, max_candidates)
 	if len(scored) == 0 || scored[0].Score < m.min_confidence {
+		best := float64(0)
+		if len(scored) > 0 {
+			best = scored[0].Score
+		}
+		m.logger.Debug("match: search below threshold",
+			"title", hint.Title, "best_score", best, "min_confidence", m.min_confidence)
 		return result
 	}
 
 	best := scored[0]
+	m.logger.Debug("match: search accepted", "title", best.Title, "year", best.Year,
+		"score", best.Score, "tmdb_id", best.Tmdb_id)
 	result.Matched = true
 	result.Confidence = best.Score
 	result.Source = "tmdb"
@@ -388,16 +435,23 @@ func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_
 	candidates, err := offline.Search(ctx, hint.Title, hint.Year, input.Kind)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "imdb datasets lookup: "+err.Error())
+		m.logger.Debug("match: imdb datasets lookup failed",
+			"title", hint.Title, "year", hint.Year, "error", err)
 		return
 	}
+	m.logger.Debug("match: imdb datasets candidates",
+		"title", hint.Title, "year", hint.Year, "count", len(candidates))
 	scored := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
+		score := score_match(hint.Title, hint.Year, c.Title, c.Year)
+		m.logger.Debug("match: imdb datasets candidate",
+			"imdb_id", c.Imdb_id, "title", c.Title, "year", c.Year, "score", score)
 		scored = append(scored, Candidate{
 			Source:  "imdb-datasets",
 			Imdb_id: c.Imdb_id,
 			Title:   c.Title,
 			Year:    c.Year,
-			Score:   score_match(hint.Title, hint.Year, c.Title, c.Year),
+			Score:   score,
 		})
 	}
 	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
@@ -408,11 +462,17 @@ func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_
 
 	best := scored[0]
 	if best.Score < m.min_confidence {
+		m.logger.Debug("match: offline below threshold",
+			"title", hint.Title, "best_score", best.Score, "min_confidence", m.min_confidence)
 		return
 	}
 	if len(scored) > 1 && scored[1].Score >= best.Score {
+		m.logger.Debug("match: offline ambiguous", "title", hint.Title,
+			"best_score", best.Score, "tie_score", scored[1].Score)
 		return // ambiguous (e.g. identical title/year remakes): manual review
 	}
+	m.logger.Debug("match: offline accepted", "title", best.Title, "year", best.Year,
+		"score", best.Score, "imdb_id", best.Imdb_id)
 	result.Matched = true
 	result.Confidence = best.Score
 	result.Source = "imdb-datasets"

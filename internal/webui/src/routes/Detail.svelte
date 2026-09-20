@@ -14,7 +14,6 @@
   let manual_error = '';
   let manual_ok = '';
   let rematch_busy = false;
-  let rematch_candidates = [];
   let rematch_error = '';
   let playing = null;
   let open_episodes = new Set();
@@ -25,6 +24,7 @@
     try {
       const detail = await api_get('/api/v1/catalog/' + encodeURIComponent(id));
       detail.entry.genres = detail.entry.genres || [];
+      detail.entry.candidates = detail.entry.candidates || [];
       detail.versions = (detail.versions || []).map(normalize_version);
       detail.episodes = (detail.episodes || []).map((episode) => ({
         ...episode,
@@ -70,14 +70,9 @@
   async function rematch() {
     rematch_busy = true;
     rematch_error = '';
-    rematch_candidates = [];
     try {
-      const res = await api_send('/api/v1/catalog/' + data.entry.id + '/rematch', 'POST', {});
-      if (res && res.applied) {
-        await load();
-      } else {
-        rematch_candidates = (res && res.candidates) || [];
-      }
+      await api_send('/api/v1/catalog/' + data.entry.id + '/rematch', 'POST', {});
+      await load();
     } catch (err) {
       rematch_error = err.message;
     } finally {
@@ -92,6 +87,15 @@
       ? { imdb_id: value, media_type: data.entry.media_type }
       : { tmdb_id: Number(value), media_type: data.entry.media_type };
     match_body(body);
+  }
+
+  function pick_candidate(candidate) {
+    const body = candidate.tmdb_id
+      ? { tmdb_id: candidate.tmdb_id, media_type: candidate.media_type }
+      : candidate.imdb_id
+        ? { imdb_id: candidate.imdb_id, media_type: candidate.media_type }
+        : null;
+    if (body) match_body(body);
   }
 
   function on_candidate(event) {
@@ -178,13 +182,13 @@
     <button on:click={rematch} disabled={rematch_busy}>
       {rematch_busy ? 'Retrying automatch…' : 'Retry automatch'}
     </button>
-    {#if rematch_candidates.length}
+    {#if data.entry.candidates && data.entry.candidates.length}
       <p class="divider">Ambiguous — pick one:</p>
       <ul class="candidates">
-        {#each rematch_candidates as candidate}
+        {#each data.entry.candidates as candidate}
           <li>
-            <button on:click={() => match_body({ tmdb_id: candidate.tmdb_id, media_type: candidate.media_type })}>
-              {candidate.title} ({candidate.year})
+            <button on:click={() => pick_candidate(candidate)}>
+              {candidate.title}{candidate.year ? ` (${candidate.year})` : ''}
             </button>
           </li>
         {/each}

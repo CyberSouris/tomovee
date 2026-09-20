@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/matcher"
 )
 
 type catalog_item struct {
@@ -23,6 +24,57 @@ type catalog_item struct {
 	Poster_url      string   `json:"poster_url"`
 	Status          string   `json:"status"`
 	Genres          []string `json:"genres"`
+	// Candidates are the persisted automatic-match suggestions waiting for the
+	// user to pick, only present for entries that stayed ambiguous.
+	Candidates []candidate_item `json:"candidates,omitempty"`
+}
+
+type candidate_item struct {
+	Tmdb_id     int     `json:"tmdb_id"`
+	Imdb_id     string  `json:"imdb_id"`
+	Title       string  `json:"title"`
+	Year        int     `json:"year"`
+	Media_type  string  `json:"media_type"`
+	Score       float64 `json:"score"`
+	Overview    string  `json:"overview"`
+	Poster_path string  `json:"poster_path"`
+}
+
+// candidate_items converts matcher candidates (no media type of their own)
+// into the JSON views the UI renders in the picker.
+func candidate_items(candidates []matcher.Candidate, media_type string) []candidate_item {
+	views := make([]candidate_item, 0, len(candidates))
+	for _, c := range candidates {
+		views = append(views, candidate_item{
+			Tmdb_id:     c.Tmdb_id,
+			Imdb_id:     c.Imdb_id,
+			Title:       c.Title,
+			Year:        c.Year,
+			Media_type:  media_type,
+			Score:       c.Score,
+			Overview:    c.Overview,
+			Poster_path: c.Poster_path,
+		})
+	}
+	return views
+}
+
+// db_candidate_items converts persisted candidate rows into their JSON views.
+func db_candidate_items(candidates []database.Candidate) []candidate_item {
+	views := make([]candidate_item, 0, len(candidates))
+	for _, c := range candidates {
+		views = append(views, candidate_item{
+			Tmdb_id:     c.Tmdb_id,
+			Imdb_id:     c.Imdb_id,
+			Title:       c.Title,
+			Year:        c.Year,
+			Media_type:  c.Media_type,
+			Score:       c.Score,
+			Overview:    c.Overview,
+			Poster_path: c.Poster_path,
+		})
+	}
+	return views
 }
 
 type audio_item struct {
@@ -145,11 +197,34 @@ func (s *Server) handle_unmatched(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	items := catalog_items(entries)
+	s.attach_candidates(r.Context(), items)
 	write_json(w, http.StatusOK, map[string]any{
 		"total":   total,
 		"count":   len(entries),
-		"entries": catalog_items(entries),
+		"entries": items,
 	})
+}
+
+// attach_candidates fills every item's candidate shortlist from the store so
+// entries with a persisted ambiguous-match list carry their picker data.
+func (s *Server) attach_candidates(ctx context.Context, items []catalog_item) {
+	if len(items) == 0 {
+		return
+	}
+	ids := make([]int64, len(items))
+	for i, item := range items {
+		ids[i] = item.Id
+	}
+	by_entry, err := s.store.List_candidates_for_entries(ctx, ids)
+	if err != nil {
+		return
+	}
+	for i := range items {
+		if list, ok := by_entry[items[i].Id]; ok {
+			items[i].Candidates = db_candidate_items(list)
+		}
+	}
 }
 
 func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +247,9 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 		Entry:    catalog_item_from(*entry),
 		Episodes: []episode_item{},
 		Versions: []version_item{},
+	}
+	if list, err := s.store.List_candidates(r.Context(), id); err == nil {
+		response.Entry.Candidates = db_candidate_items(list)
 	}
 	if entry.Media_type == "series" {
 		if meta, err := s.store.Get_series_metadata(r.Context(), id); err == nil && meta != nil {

@@ -137,14 +137,23 @@ func update_entry_tx(ctx context.Context, tx *sql.Tx, id int64, entry Catalog_en
 }
 
 // Update_catalog_entry overwrites the metadata of an existing entry without
-// re-grouping, preserving its versions. It is used by manual re-matching.
+// re-grouping, preserving its versions. It is used by manual re-matching. Once
+// an entry is matched its pending-candidate shortlist is dropped, so a decided
+// title stops offering a picker.
 func (s *Store) Update_catalog_entry(ctx context.Context, id int64, entry Catalog_entry) error {
 	return s.with_tx(ctx, func(tx *sql.Tx) error {
 		if err := update_entry_tx(ctx, tx, id, entry); err != nil {
 			return err
 		}
 		if len(entry.Genres) > 0 {
-			return set_genres_tx(ctx, tx, id, entry.Genres)
+			if err := set_genres_tx(ctx, tx, id, entry.Genres); err != nil {
+				return err
+			}
+		}
+		if entry.Status == "matched" {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM candidate WHERE catalog_entry_id = ?", id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

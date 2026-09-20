@@ -53,10 +53,20 @@
               add_notice({ kind: 'done', page: '/scan', text: parts.length ? 'Scan finished — ' + parts.join(', ') : 'Scan finished' });
             }
           }
-          if (prev.match && prev.match.running && next.match && !next.match.running) {
+          if (
+            prev.match &&
+            next.match &&
+            !next.match.running &&
+            (prev.match.running || (prev.match.id && next.match.id && prev.match.id !== next.match.id))
+          ) {
             const r = next.match.result || {};
             if (next.match.error) {
               add_notice({ kind: 'error', page: '/match', text: 'Matching failed: ' + next.match.error });
+            } else if (r.candidates) {
+              const parts = [];
+              if (r.matched) parts.push(`${r.matched} matched`);
+              if (r.candidates) parts.push(`${r.candidates} candidate${r.candidates === 1 ? '' : 's'} to review`);
+              add_notice({ kind: 'done', page: '/unmatched', text: 'Matching finished — ' + parts.join(', ') });
             } else {
               const parts = [];
               if (r.matched) parts.push(`${r.matched} matched`);

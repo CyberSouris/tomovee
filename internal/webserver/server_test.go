@@ -261,6 +261,39 @@ func Test_catalog_list_and_detail(t *testing.T) {
 	}
 }
 
+func Test_categories(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	for _, entry := range []database.Catalog_entry{
+		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
+		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "Needs Review", Status: "needs_lookup"},
+	} {
+		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	response := do_request(t, server, http.MethodGet, "/api/v1/categories", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("categories status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[struct {
+		Genres    []category_item `json:"genres"`
+		Unmatched int             `json:"unmatched"`
+	}](t, response)
+	if body.Unmatched != 1 {
+		t.Errorf("unmatched = %d, want 1", body.Unmatched)
+	}
+	if len(body.Genres) != 2 {
+		t.Fatalf("genres = %+v, want 2", body.Genres)
+	}
+	if body.Genres[0].Name != "Action" || body.Genres[0].Count != 2 ||
+		body.Genres[1].Name != "Science Fiction" || body.Genres[1].Count != 1 {
+		t.Errorf("genres = %+v", body.Genres)
+	}
+}
+
 func Test_empty_lists_encode_as_arrays(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()

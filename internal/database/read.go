@@ -364,6 +364,36 @@ func (s *Store) attach_genres(ctx context.Context, entries []Catalog_entry) erro
 	return nil
 }
 
+// Genre_count pairs a genre name with how many catalog entries carry it.
+type Genre_count struct {
+	Name  string
+	Count int
+}
+
+// Genre_counts returns each genre name and how many entries of the given
+// status carry it, ordered by count descending for the browse category chips.
+func (s *Store) Genre_counts(ctx context.Context, status string) ([]Genre_count, error) {
+	rows, err := s.db.db.QueryContext(ctx, `
+		SELECT g.name, COUNT(*) FROM genre g
+		JOIN catalog_entry_genre ceg ON ceg.genre_id = g.id
+		JOIN catalog_entry ce ON ce.id = ceg.catalog_entry_id
+		WHERE ce.status = ?
+		GROUP BY g.id ORDER BY COUNT(*) DESC, g.name`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var genres []Genre_count
+	for rows.Next() {
+		var genre Genre_count
+		if err := rows.Scan(&genre.Name, &genre.Count); err != nil {
+			return nil, err
+		}
+		genres = append(genres, genre)
+	}
+	return genres, rows.Err()
+}
+
 // List_poster_refs returns the ids of catalog entries that have a poster path.
 // It is used by the poster cache to determine which images to keep.
 func (s *Store) List_poster_refs(ctx context.Context) (map[int64]bool, error) {

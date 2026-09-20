@@ -134,6 +134,35 @@ type detail_response struct {
 	Versions []version_item `json:"versions"`
 }
 
+type category_item struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// handle_categories returns the browse categories: one entry per genre among
+// matched titles with its count, plus the count of unmatched entries. The
+// frontend renders these as chips so the library can be browsed by tag.
+func (s *Server) handle_categories(w http.ResponseWriter, r *http.Request) {
+	genres, err := s.store.Genre_counts(r.Context(), "matched")
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	items := make([]category_item, 0, len(genres))
+	for _, genre := range genres {
+		items = append(items, category_item{Name: genre.Name, Count: genre.Count})
+	}
+	unmatched, err := s.store.Count_catalog_entries(r.Context(), database.Catalog_filter{Status: "needs_lookup"})
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write_json(w, http.StatusOK, map[string]any{
+		"genres":    items,
+		"unmatched": unmatched,
+	})
+}
+
 func (s *Server) handle_catalog_list(w http.ResponseWriter, r *http.Request) {
 	filter := database.Catalog_filter{
 		Media_type: r.URL.Query().Get("media_type"),

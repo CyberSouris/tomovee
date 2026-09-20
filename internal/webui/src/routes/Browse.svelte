@@ -15,6 +15,25 @@
   let status = '';
   let sort = 'added';
 
+  let categories = { genres: [], unmatched: 0 };
+  let genre = '';
+  let category = 'all';
+
+  async function load_categories() {
+    try {
+      categories = await api_get('/api/v1/categories');
+    } catch {
+      categories = { genres: [], unmatched: 0 };
+    }
+  }
+
+  function pick_category(cat, genre_name = '') {
+    category = cat;
+    genre = genre_name;
+    status = cat === 'unmatched' ? 'needs_lookup' : cat === 'genre' ? 'matched' : '';
+    load(true);
+  }
+
   async function load(reset = true) {
     loading = true;
     error = '';
@@ -23,6 +42,7 @@
       if (q) params.set('q', q);
       if (media_type) params.set('media_type', media_type);
       if (status) params.set('status', status);
+      if (genre) params.set('genre', genre);
       if (sort) params.set('sort', sort);
       params.set('limit', String(PAGE));
       params.set('offset', String(reset ? 0 : offset));
@@ -43,10 +63,30 @@
     load(true);
   }
 
-  onMount(() => load(true));
+  onMount(() => {
+    load(true);
+    load_categories();
+  });
 </script>
 
 <section>
+  <div class="chips" role="list" aria-label="Categories">
+    <button
+      class:active={category === 'all'}
+      on:click={() => pick_category('all')}
+    >All</button>
+    <button
+      class:active={category === 'unmatched'}
+      on:click={() => pick_category('unmatched')}
+    >Unmatched ({categories.unmatched})</button>
+    {#each categories.genres as g}
+      <button
+        class:active={category === 'genre' && genre === g.name}
+        on:click={() => pick_category('genre', g.name)}
+      >{g.name} ({g.count})</button>
+    {/each}
+  </div>
+
   <form on:submit={submit}>
     <input placeholder="Search title…" bind:value={q} />
     <select bind:value={media_type}>
@@ -119,6 +159,35 @@
   form input {
     flex: 1;
     min-width: 12rem;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.9rem;
+  }
+
+  .chips button {
+    font-size: 0.82rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .chips button:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .chips button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--text);
+    font-weight: 600;
   }
 
   .muted {

@@ -19,15 +19,13 @@ type match_request struct {
 	Media_type string `json:"media_type"`
 }
 
-// handle_manual_match re-matches an unmatched catalog entry against a TMDB or
-// IMDb identifier chosen by the user.
+// handle_manual_match associates an unmatched catalog entry with the TMDB or
+// IMDb identifier chosen by the user. When no TMDB API key is configured it
+// falls back to the local IMDb index, so picking an offline candidate still
+// works.
 func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 	if s.matcher == nil {
 		write_error(w, http.StatusServiceUnavailable, "matcher is not configured")
-		return
-	}
-	if s.metadata == nil {
-		write_error(w, http.StatusServiceUnavailable, "manual matching unavailable: no TMDB API key configured")
 		return
 	}
 	id, ok := path_id(r)
@@ -62,19 +60,37 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 	var result *matcher.Result
 	switch {
 	case request.Tmdb_id > 0:
-		enriched, err := s.matcher.Enrich_by_tmdb(r.Context(), media_type, request.Tmdb_id)
-		if err != nil {
-			write_error(w, http.StatusBadGateway, err.Error())
+		if s.metadata != nil {
+			enriched, err := s.matcher.Enrich_by_tmdb(r.Context(), media_type, request.Tmdb_id)
+			if err != nil {
+				write_error(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			result = enriched
+		} else if resolved := s.offline_from_candidate(r.Context(), id, request.Tmdb_id, ""); resolved != nil {
+			result = resolved
+		} else {
+			write_error(w, http.StatusServiceUnavailable, "matching by TMDB id requires a TMDB API key")
 			return
 		}
-		result = enriched
 	case request.Imdb_id != "":
-		enriched, err := s.matcher.Enrich_by_imdb(r.Context(), media_type, request.Imdb_id)
-		if err != nil {
-			write_error(w, http.StatusBadGateway, err.Error())
+		if s.metadata != nil {
+			enriched, err := s.matcher.Enrich_by_imdb(r.Context(), media_type, request.Imdb_id)
+			if err == nil {
+				result = enriched
+				break
+			}
+		}
+		if resolved, ok := s.matcher.Resolve_by_imdb_offline(r.Context(), request.Imdb_id); ok {
+			result = resolved
+			break
+		}
+		if s.metadata == nil {
+			write_error(w, http.StatusServiceUnavailable, "matching by IMDb id requires a TMDB API key or a local IMDb index entry")
 			return
 		}
-		result = enriched
+		write_error(w, http.StatusBadGateway, "could not resolve IMDb id "+request.Imdb_id)
+		return
 	default:
 		write_error(w, http.StatusBadRequest, "tmdb_id or imdb_id is required")
 		return
@@ -98,6 +114,32 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{"entry": catalog_item_from(*fresh)})
+}
+
+// offline_from_candidate resolves a picked candidate against the persisted
+// shortlist when TMDB is unavailable: it finds the stored candidate whose
+// tmdb_id (or imdb_id) matches and resolves its imdb id through the local
+// index. A nil result means the id is not in the shortlist or not resolvable.
+func (s *Server) offline_from_candidate(ctx context.Context, entry_id int64, tmdb_id int, imdb_id string) *matcher.Result {
+	stored, err := s.store.List_candidates(ctx, entry_id)
+	if err != nil {
+		return nil
+	}
+	for _, c := range stored {
+		if tmdb_id > 0 && c.Tmdb_id != tmdb_id {
+			continue
+		}
+		if imdb_id != "" && c.Imdb_id != imdb_id {
+			continue
+		}
+		if c.Imdb_id == "" {
+			continue
+		}
+		if result, ok := s.matcher.Resolve_by_imdb_offline(ctx, c.Imdb_id); ok {
+			return result
+		}
+	}
+	return nil
 }
 
 // handle_rematch re-runs the automatic matcher for one catalog entry through

@@ -48,3 +48,33 @@ func (s *Matcher_source) Search_local(_ context.Context, query string, year int,
 	}
 	return out, nil
 }
+
+// Lookup implements matcher.Offline_resolver so a manual candidate pick can be
+// applied purely from the local index, with no TMDB key required.
+func (s *Matcher_source) Lookup(_ context.Context, imdb_id string) (*matcher.Result, bool) {
+	title, ok := s.index.Lookup(imdb_id)
+	if !ok {
+		return nil, false
+	}
+	media_type, ok := media_type_of(title.Title_type)
+	if !ok {
+		return nil, false
+	}
+	result := &matcher.Result{
+		Matched:         true,
+		Confidence:      1,
+		Source:          "imdb-datasets",
+		Media_type:      media_type,
+		Imdb_id:         title.Id,
+		Title:           title.Primary_title,
+		Original_title:  title.Original_title,
+		Year:            title.Start_year,
+		Runtime_minutes: title.Runtime_minutes,
+		Genres:          split_genres(title.Genres),
+	}
+	if rating, ok := s.index.Rating(imdb_id); ok {
+		result.Rating = rating.Average_rating
+		result.Vote_count = rating.Num_votes
+	}
+	return result, true
+}

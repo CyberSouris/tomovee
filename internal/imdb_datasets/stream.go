@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -34,14 +35,14 @@ func Index_db_path(dir string) string {
 // Build_stale / Build_import / Build_fts / Build_ready events; the import
 // events are byte-weighted like the on-disk flow, using the compressed sizes
 // measured up front with HEAD requests.
-func Open_stream(ctx context.Context, index_db_path string, base string, on_progress func(Build_progress)) (*Index, error) {
+func Open_stream(ctx context.Context, index_db_path string, base string, logs *slog.Logger, on_progress func(Build_progress)) (*Index, error) {
 	client := &http.Client{Timeout: 2 * time.Hour}
 	stems, total := stream_manifest(client, base)
 	if on_progress != nil {
 		on_progress(Build_progress{Step: Build_stale, Total: total})
 	}
 	exports := stream_exports(client, ctx, base, stems)
-	if err := build_index_db_exports(index_db_path, on_progress, exports); err != nil {
+	if err := build_index_db_exports(index_db_path, logs, on_progress, exports); err != nil {
 		return nil, err
 	}
 	if on_progress != nil {

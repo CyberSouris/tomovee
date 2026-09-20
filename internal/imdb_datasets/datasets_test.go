@@ -197,7 +197,7 @@ func Test_open_directory_loads_optional_datasets(t *testing.T) {
 		"tconst\tparentTconst\tseasonNumber\tepisodeNumber\n"+
 			"tt1586952\ttt0903747\t1\t1\n")
 
-	index, err := Open(dir)
+	index, err := Open(dir, nil)
 	if err != nil {
 		t.Fatalf("open directory: %v", err)
 	}
@@ -230,7 +230,7 @@ func Test_open_gzip(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	index, err := Open(path)
+	index, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -311,7 +311,7 @@ func Test_open_reuses_and_rebuilds_index(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	index, err := Open(dir)
+	index, err := Open(dir, nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -322,7 +322,7 @@ func Test_open_reuses_and_rebuilds_index(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	index, err = Open(dir)
+	index, err = Open(dir, nil)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -336,7 +336,7 @@ func Test_open_reuses_and_rebuilds_index(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(dir, "title.basics.tsv"), now.Add(time.Minute), now.Add(time.Minute)); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	index, err = Open(dir)
+	index, err = Open(dir, nil)
 	if err != nil {
 		t.Fatalf("reopen after touch: %v", err)
 	}
@@ -353,7 +353,7 @@ func Test_open_single_file_builds_sidecar_index(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	index, err := Open(path)
+	index, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -373,7 +373,7 @@ func Test_open_with_progress_reports_build_stages(t *testing.T) {
 	}
 
 	var events []Build_progress
-	index, err := Open_with_progress(dir, func(p Build_progress) {
+	index, err := Open_with_progress(dir, nil, func(p Build_progress) {
 		events = append(events, p)
 	})
 	if err != nil {
@@ -406,7 +406,7 @@ func Test_open_with_progress_reports_build_stages(t *testing.T) {
 	_ = index.Close()
 
 	var reuse *Build_progress
-	index, err = Open_with_progress(dir, func(p Build_progress) {
+	index, err = Open_with_progress(dir, nil, func(p Build_progress) {
 		if p.Step == Build_reuse {
 			reuse = &p
 		}

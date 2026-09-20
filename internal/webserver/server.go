@@ -43,9 +43,9 @@ type Options struct {
 	// to the live matching pipeline so they take effect immediately instead of
 	// on the next restart. When nil, POST /api/v1/settings/reload reports the
 	// feature as unavailable.
-	Reload  func() error
-	Static  fs.FS
-	Logger  *slog.Logger
+	Reload func() error
+	Static fs.FS
+	Logger *slog.Logger
 }
 
 // Server holds the HTTP handlers and background job state.
@@ -61,12 +61,12 @@ type Server struct {
 	// stream_datasets mirrors the Options field; see there.
 	stream_datasets func(index_db_path string)
 	// reload mirrors the Options field; see there.
-	reload func() error
-	static          fs.FS
-	logger          *slog.Logger
-	mux             *http.ServeMux
-	jobs            *job_manager[scan.Progress, scan.Result]
-	matches         *job_manager[matching.Progress, matching.Result]
+	reload  func() error
+	static  fs.FS
+	logger  *slog.Logger
+	mux     *http.ServeMux
+	jobs    *job_manager[scan.Progress, scan.Result]
+	matches *job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.

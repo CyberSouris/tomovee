@@ -180,7 +180,7 @@ func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matc
 		}
 	}
 	go func() {
-		index, err := imdb_datasets.Open_with_progress(path, progress)
+		index, err := imdb_datasets.Open_with_progress(path, logger, progress)
 		if err != nil {
 			status.Fail(err.Error())
 			logger.Error("imdb datasets: not available for offline matching", "path", path, "error", err)
@@ -223,7 +223,7 @@ func (p *pipeline) stream_datasets(logger *slog.Logger, index_db_path string, se
 		}
 	}
 	go func() {
-		index, err := imdb_datasets.Open_stream(context.Background(), index_db_path, imdb_datasets.Datasets_base_url, progress)
+		index, err := imdb_datasets.Open_stream(context.Background(), index_db_path, imdb_datasets.Datasets_base_url, logger, progress)
 		if err != nil {
 			status.Fail(err.Error())
 			logger.Error("imdb datasets: import failed", "index", index_db_path, "error", err)

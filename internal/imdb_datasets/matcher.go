@@ -48,4 +48,3 @@ func (s *Matcher_source) Search_local(_ context.Context, query string, year int,
 	}
 	return out, nil
 }
-

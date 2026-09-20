@@ -13,6 +13,9 @@
   let busy = false;
   let manual_error = '';
   let manual_ok = '';
+  let rematch_busy = false;
+  let rematch_candidates = [];
+  let rematch_error = '';
   let playing = null;
   let open_episodes = new Set();
 
@@ -60,6 +63,25 @@
       manual_error = err.message;
     } finally {
       busy = false;
+    }
+  }
+
+
+  async function rematch() {
+    rematch_busy = true;
+    rematch_error = '';
+    rematch_candidates = [];
+    try {
+      const res = await api_send('/api/v1/catalog/' + data.entry.id + '/rematch', 'POST', {});
+      if (res && res.applied) {
+        await load();
+      } else {
+        rematch_candidates = (res && res.candidates) || [];
+      }
+    } catch (err) {
+      rematch_error = err.message;
+    } finally {
+      rematch_busy = false;
     }
   }
 
@@ -153,6 +175,23 @@
 
   <section class="manual">
     <h2>{data.entry.status === 'matched' ? 'Wrong match? Re-match' : 'Match manually'}</h2>
+    <button on:click={rematch} disabled={rematch_busy}>
+      {rematch_busy ? 'Retrying automatch…' : 'Retry automatch'}
+    </button>
+    {#if rematch_candidates.length}
+      <p class="divider">Ambiguous — pick one:</p>
+      <ul class="candidates">
+        {#each rematch_candidates as candidate}
+          <li>
+            <button on:click={() => match_body({ tmdb_id: candidate.tmdb_id, media_type: candidate.media_type })}>
+              {candidate.title} ({candidate.year})
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#if rematch_error}<p class="result error">{rematch_error}</p>{/if}
+
     <p class="muted">
       {data.entry.status === 'matched'
         ? 'Automatic matching picked this title but it looks wrong? Search by title and pick a suggestion, or enter a TMDB / IMDb id directly.'

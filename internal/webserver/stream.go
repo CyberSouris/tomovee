@@ -47,6 +47,13 @@ func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusNotFound, "media file not found")
 		return
 	}
+	// Load the version's audio tracks so the codec gate below can inspect
+	// them; Get_version returns only the version row, not its track tables.
+	if audio, _, err := s.store.Version_tracks(r.Context(), version_id); err != nil {
+		s.logger.Debug("loading version audio tracks failed; codec gate disabled", "version_id", version_id, "error", err)
+	} else {
+		version.Audio = audio
+	}
 	if s.cfg != nil {
 		switch s.cfg.Stream.Transcode {
 		case "live":
@@ -54,8 +61,8 @@ func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case "container":
-			if browser_unplayable_container(path) {
-				if dst, err := remux_to_mp4(r.Context(), path); err == nil {
+			if browser_unplayable_container(path) || browser_unplayable_audio(version.Audio) {
+				if dst, err := remux_to_mp4(r.Context(), path, version.Audio); err == nil {
 					defer os.Remove(dst)
 					s.logger.Debug("serving container-remuxed media", "src", path, "dst", dst)
 					http.ServeFile(w, r, dst)
@@ -82,10 +89,13 @@ func browser_unplayable_container(path string) bool {
 	}
 }
 
-// remux_to_mp4 rewraps src in an MP4 container, copying the streams without
-// re-encoding, and returns the path of the resulting temporary file. The caller
-// owns the temp file and must remove it when done.
-func remux_to_mp4(ctx context.Context, src string) (string, error) {
+// remux_to_mp4 rewraps src in an MP4 container. Browser-playable streams are
+// copied without re-encoding; audio in a codec browsers cannot decode is
+// re-encoded to AAC so the remuxed file actually has audible sound (a blind
+// -c copy remux would preserve e.g. AC3, which browsers cannot unmute). The
+// returned path is the resulting temporary file; the caller owns it and must
+// remove it when done.
+func remux_to_mp4(ctx context.Context, src string, audio []database.Audio_track) (string, error) {
 	file, err := os.CreateTemp("", "tomovee-remux-*.mp4")
 	if err != nil {
 		return "", err
@@ -94,12 +104,19 @@ func remux_to_mp4(ctx context.Context, src string) (string, error) {
 	if err := file.Close(); err != nil {
 		return "", err
 	}
+	args := ffmpeg.KwArgs{
+		"map":      "0",
+		"c:v":      "copy",
+		"c:s":      "copy",
+		"movflags": "+faststart",
+	}
+	if browser_unplayable_audio(audio) {
+		args["c:a"] = "aac"
+	} else {
+		args["c:a"] = "copy"
+	}
 	err = ffmpeg.Input(src).
-		Output(dst, ffmpeg.KwArgs{
-			"map":      "0",
-			"c":        "copy",
-			"movflags": "+faststart",
-		}).
+		Output(dst, args).
 		OverWriteOutput().
 		Run()
 	if err != nil {
@@ -132,6 +149,14 @@ func browser_unplayable_codecs(video_codec string, audio []database.Audio_track)
 	default:
 		return true
 	}
+	return browser_unplayable_audio(audio)
+}
+
+// browser_unplayable_audio reports whether any audio track uses a codec browsers
+// cannot decode when muxed into an MP4. AC3/EAC3/DTS/TrueHD are common in MKV
+// sources but silent in the browser's <video> element, so such tracks must be
+// re-encoded to AAC when remuxing.
+func browser_unplayable_audio(audio []database.Audio_track) bool {
 	for _, track := range audio {
 		switch strings.ToLower(track.Codec) {
 		case "", "aac", "mp3", "mp2", "opus", "vorbis", "flac":

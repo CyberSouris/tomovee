@@ -40,6 +40,16 @@ type Config struct {
 	// network-free matching. A single title.basics.tsv(.gz) file is also
 	// accepted.
 	Imdb_datasets_path string `yaml:"imdb_datasets_path"`
+	// Log_level sets the minimum log verbosity printed to stderr: one of
+	// debug, info, warn, error. Debug enables per-file matching diagnostics
+	// (parsed titles, candidate scores, threshold verdicts) which are hidden by
+	// default.
+	Log_level string `yaml:"log_level"`
+}
+
+// log_levels are the accepted Log_level values.
+var log_levels = map[string]bool{
+	"debug": true, "info": true, "warn": true, "error": true,
 }
 
 // Api_config holds credentials and settings for the external matching APIs.
@@ -121,6 +131,7 @@ func Defaults() *Config {
 		Stream: Stream_config{
 			Transcode: "none",
 		},
+		Log_level: "info",
 	}
 }
 
@@ -218,6 +229,10 @@ func (c *Config) Validate() error {
 		// valid
 	default:
 		errs = append(errs, fmt.Sprintf("stream.transcode must be one of none, container, live (got %q)", c.Stream.Transcode))
+	}
+	level := strings.ToLower(strings.TrimSpace(c.Log_level))
+	if level != "" && !log_levels[level] {
+		errs = append(errs, fmt.Sprintf("log_level must be one of debug, info, warn, error (got %q)", c.Log_level))
 	}
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))

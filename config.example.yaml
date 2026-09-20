@@ -60,3 +60,8 @@ scan:
 # used for offline, network-free matching. A single title.basics.tsv(.gz) file
 # is also accepted.
 imdb_datasets_path: ""
+
+# Minimum log verbosity written to stderr: debug, info, warn, or error.
+# debug enables per-file matching diagnostics (parsed titles, candidate scores,
+# threshold verdicts, and why a file did not match), which are hidden at info.
+log_level: info

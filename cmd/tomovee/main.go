@@ -380,7 +380,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	})
 
 	start_matching = func() {
-		if matching_configured(cfg) {
+		if cfg.Match_on_start && matching_configured(cfg) {
 			logger.Info("starting background matching at startup")
 			server.Auto_match()
 		}

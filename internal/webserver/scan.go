@@ -47,10 +47,42 @@ func new_job_manager[R any, T any](logger *slog.Logger) *job_manager[R, T] {
 
 // Start launches a job in the background and returns a snapshot of it.
 func (jm *job_manager[R, T]) Start(run func(context.Context, func(R)) (*T, error)) (*job[R, T], error) {
+	ctx, cancel, snapshot, err := jm.begin()
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		result, run_err := run(ctx, jm.report)
+		jm.finish(result, run_err)
+		cancel()
+	}()
+	return snapshot, nil
+}
+
+// Run_sync executes a job synchronously in the caller's goroutine while still
+// keeping the manager's snapshot and SSE subscribers in sync. It lets callers
+// that own their own scheduling (the folder watcher) surface their work in the
+// global background status like any other job. It returns Err_job_running when
+// another job is already in progress.
+func (jm *job_manager[R, T]) Run_sync(run func(context.Context, func(R)) (*T, error)) (*T, error) {
+	ctx, cancel, _, err := jm.begin()
+	if err != nil {
+		return nil, err
+	}
+	result, run_err := run(ctx, jm.report)
+	jm.finish(result, run_err)
+	cancel()
+	return result, run_err
+}
+
+// begin claims the job slot for a new job, marking it running, and returns the
+// derived context, its cancel function, and a snapshot suitable for the HTTP
+// response. It returns Err_job_running when another job is in progress.
+func (jm *job_manager[R, T]) begin() (context.Context, context.CancelFunc, *job[R, T], error) {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	if jm.job != nil && jm.job.Running {
-		jm.mu.Unlock()
-		return nil, Err_job_running
+		return nil, nil, nil, Err_job_running
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	jm.cancel = cancel
@@ -61,24 +93,22 @@ func (jm *job_manager[R, T]) Start(run func(context.Context, func(R)) (*T, error
 		Running:    true,
 		Progress:   zero,
 	}
-	snapshot := jm.snapshot_locked()
-	jm.mu.Unlock()
+	return ctx, cancel, jm.snapshot_locked(), nil
+}
 
-	go func() {
-		result, err := run(ctx, jm.report)
-		jm.mu.Lock()
-		jm.job.Running = false
-		jm.job.Finished_at = time.Now()
-		jm.job.Result = result
-		if err != nil {
-			jm.job.Error = err.Error()
-		}
-		progress := jm.job.Progress
-		jm.mu.Unlock()
-		jm.broadcast(progress)
-		cancel()
-	}()
-	return snapshot, nil
+// finish records the outcome of a finished job and broadcasts a final progress
+// update so SSE subscribers observe the transition.
+func (jm *job_manager[R, T]) finish(result *T, err error) {
+	jm.mu.Lock()
+	jm.job.Running = false
+	jm.job.Finished_at = time.Now()
+	jm.job.Result = result
+	if err != nil {
+		jm.job.Error = err.Error()
+	}
+	progress := jm.job.Progress
+	jm.mu.Unlock()
+	jm.broadcast(progress)
 }
 
 // Cancel requests cancellation of the running job, if any.
@@ -244,6 +274,24 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handle_scan_status(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusOK, map[string]any{"job": job_response_from(s.jobs.Snapshot())})
+}
+
+// Watch_scan runs a scan synchronously through the same job manager the manual
+// scan endpoint uses, so folder-watcher triggers surface in the global
+// background status and SSE feed. It returns scan.Err_scan_in_progress when
+// another scan is already running, so the watcher can skip its round instead
+// of colliding with a manual scan.
+func (s *Server) Watch_scan(ctx context.Context, names []string) (*scan.Result, error) {
+	if s.scanner == nil {
+		return nil, errors.New("scanner is not configured")
+	}
+	result, err := s.jobs.Run_sync(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+		return s.scanner.Run_libraries(ctx, names, progress)
+	})
+	if errors.Is(err, Err_job_running) {
+		return nil, scan.Err_scan_in_progress
+	}
+	return result, err
 }
 
 // background_status aggregates the state of every background activity (folder

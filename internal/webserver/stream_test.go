@@ -201,12 +201,14 @@ func Test_browser_unplayable_container(t *testing.T) {
 	}
 }
 
-// container_version_server returns a server whose stream config is set to
-// container-remux, with a version pointing at media_file inside a library.
-func container_version_server(t *testing.T, media_file string) (*Server, int64) {
+// stream_version_server returns a server configured with the given stream
+// transcode mode, with a version pointing at media_file inside a library. The
+// version's scanned metadata (video codec + audio tracks) is as given, so the
+// codec gate can be exercised independently of the file's real contents.
+func stream_version_server(t *testing.T, media_file, transcode, video_codec string, audio []database.Audio_track) (*Server, int64) {
 	t.Helper()
 	server, store := new_test_server(t)
-	server.cfg.Stream.Transcode = "container"
+	server.cfg.Stream.Transcode = transcode
 	root := filepath.Dir(media_file)
 	if err := store.Upsert_library(context.Background(), "movies", root, false); err != nil {
 		t.Fatalf("register library: %v", err)
@@ -228,7 +230,9 @@ func container_version_server(t *testing.T, media_file string) (*Server, int64) 
 	version_id, err := store.Save_version(context.Background(), database.Version{
 		Catalog_entry_id: entry_id, Library_id: libraries[0].Id,
 		File_path: filepath.Base(media_file), Container: "matroska",
-		Size_bytes: info.Size(),
+		Size_bytes:  info.Size(),
+		Video_codec: video_codec,
+		Audio:       audio,
 	})
 	if err != nil {
 		t.Fatalf("save version: %v", err)
@@ -243,7 +247,7 @@ func container_version_server(t *testing.T, media_file string) (*Server, int64) 
 func Test_version_file_container_remux_serves_an_mp4(t *testing.T) {
 	skip_without_ffmpeg(t)
 	media := make_mkv(t, t.TempDir())
-	server, version_id := container_version_server(t, media)
+	server, version_id := stream_version_server(t, media, "container", "hevc", []database.Audio_track{{Codec: "ac3"}})
 	target := fmt.Sprintf("/api/v1/versions/%d/file", version_id)
 
 	resp := media_request(server, http.MethodGet, target, nil)
@@ -269,7 +273,7 @@ func Test_version_file_container_remux_falls_back_on_bad_input(t *testing.T) {
 	if err := os.WriteFile(media, []byte("this is not a real video"), 0o644); err != nil {
 		t.Fatalf("write garbage media: %v", err)
 	}
-	server, version_id := container_version_server(t, media)
+	server, version_id := stream_version_server(t, media, "container", "hevc", []database.Audio_track{{Codec: "ac3"}})
 	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
@@ -299,7 +303,7 @@ func Test_version_file_mp4_not_remuxed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read mp4: %v", err)
 	}
-	server, version_id := container_version_server(t, out)
+	server, version_id := stream_version_server(t, out, "container", "h264", []database.Audio_track{{Codec: "aac"}})
 	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
@@ -319,5 +323,131 @@ func Test_version_file_default_no_transcode_serves_raw(t *testing.T) {
 	}
 	if resp.Body.String() != media_bytes {
 		t.Errorf("body = %q, want raw media_bytes", resp.Body.String())
+	}
+}
+
+// Test_version_file_live_serves_an_mp4 verifies that with stream.transcode=live
+// the file is re-encoded to an H.264/AAC MP4 streamed in a browser-friendly way
+// (video/mp4 content type, valid ftyp signature, and the stream actually
+// changing the payload vs. the raw container copy).
+func Test_version_file_live_serves_an_mp4(t *testing.T) {
+	skip_without_ffmpeg(t)
+	media := make_mkv(t, t.TempDir())
+	server, version_id := stream_version_server(t, media, "live", "hevc", []database.Audio_track{{Codec: "ac3"}})
+
+	// Exercise the live path with a real GET (streaming through a Flusher).
+	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
+	}
+	if ct := resp.Header().Get("Content-Type"); !strings.HasPrefix(ct, "video/mp4") {
+		t.Errorf("Content-Type = %q, want video/mp4", ct)
+	}
+	body := resp.Body.Bytes()
+	if len(body) < 8 || !bytes.HasPrefix(body[4:8], []byte("ftyp")) {
+		t.Errorf("body is not an MP4 (no ftyp box at offset 4), first bytes: %x", body[:min(16, len(body))])
+	}
+	if bytes.HasPrefix(body, []byte{0x1a, 0x45, 0xdf, 0xa3}) {
+		t.Errorf("body looks like the raw matroska EBML signature, not a transcode")
+	}
+}
+
+// Test_version_file_live_falls_back_on_bad_input ensures a live transcode
+// failure (unreadable media bytes) degrades to serving the original raw file
+// rather than erroring the request.
+func Test_version_file_live_falls_back_on_bad_input(t *testing.T) {
+	skip_without_ffmpeg(t)
+	root := t.TempDir()
+	media := filepath.Join(root, "garbage.mkv")
+	if err := os.WriteFile(media, []byte("this is not a real video"), 0o644); err != nil {
+		t.Fatalf("write garbage media: %v", err)
+	}
+	server, version_id := stream_version_server(t, media, "live", "hevc", []database.Audio_track{{Codec: "ac3"}})
+	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
+	}
+	if resp.Body.String() != "this is not a real video" {
+		t.Errorf("body = %q, want raw garbage bytes", resp.Body.String())
+	}
+}
+
+// Test_version_file_live_head_no_body confirms HEAD against a live-transcoded
+// version advertises video/mp4 without running a transcode (no body).
+func Test_version_file_live_head_no_body(t *testing.T) {
+	skip_without_ffmpeg(t)
+	media := make_mkv(t, t.TempDir())
+	server, version_id := stream_version_server(t, media, "live", "hevc", []database.Audio_track{{Codec: "ac3"}})
+	resp := media_request(server, http.MethodHead, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("head status = %d: %s", resp.Code, resp.Body)
+	}
+	if ct := resp.Header().Get("Content-Type"); !strings.HasPrefix(ct, "video/mp4") {
+		t.Errorf("Content-Type = %q, want video/mp4", ct)
+	}
+	if resp.Body.Len() != 0 {
+		t.Errorf("HEAD body length = %d, want 0", resp.Body.Len())
+	}
+}
+
+// Test_version_file_live_skips_browser_playable_files confirms a file that is
+// already browser-playable (mp4 + h264/aac metadata) is served raw even in live
+// mode, so we do not waste CPU re-encoding what browsers can already play.
+func Test_version_file_live_skips_browser_playable_files(t *testing.T) {
+	skip_without_ffmpeg(t)
+	root := t.TempDir()
+	out := filepath.Join(root, "sample.mp4")
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-t", "1",
+		"-f", "lavfi", "-i", "sine=frequency=440", "-t", "1",
+		"-map", "0:v:0", "-map", "1:a:0",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-c:a", "aac",
+		out)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg build mp4 fixture: %v (%s)", err, output)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read mp4: %v", err)
+	}
+	server, version_id := stream_version_server(t, out, "live", "h264", []database.Audio_track{{Codec: "aac"}})
+	resp := media_request(server, http.MethodGet, fmt.Sprintf("/api/v1/versions/%d/file", version_id), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", resp.Code, resp.Body)
+	}
+	if !bytes.Equal(resp.Body.Bytes(), raw) {
+		t.Errorf("browser-playable mp4 was modified by live transcode")
+	}
+}
+
+// Test_needs_transcode exercises the codec/container gate used by live mode
+// without needing an ffmpeg binary.
+func Test_needs_transcode(t *testing.T) {
+	playable_audio := []database.Audio_track{{Codec: "aac"}, {Codec: "mp3"}}
+	unplayable_audio := []database.Audio_track{{Codec: "ac3"}}
+	playable := database.Version{Video_codec: "h264", Audio: playable_audio}
+	hevc := database.Version{Video_codec: "hevc", Audio: playable_audio}
+	ac3 := database.Version{Video_codec: "h264", Audio: unplayable_audio}
+	noctrl := database.Version{Video_codec: "", Audio: nil}
+
+	cases := []struct {
+		path    string
+		version database.Version
+		want    bool
+	}{
+		{"movie.mkv", playable, true},  // unplayable container -> transcode
+		{"movie.mp4", hevc, true},      // hevc inside mp4 -> transcode
+		{"movie.mp4", ac3, true},       // ac3 audio inside mp4 -> transcode
+		{"movie.mp4", playable, false}, // h264/aac mp4 -> raw
+		{"movie.mp4", noctrl, false},   // unknown codecs treated playable
+		{"movie.mkv", noctrl, true},    // container alone still triggers
+		{"movie.mov", ac3, true},       // mov container + ac3 -> transcode
+	}
+	for _, tc := range cases {
+		if got := needs_transcode(tc.path, tc.version); got != tc.want {
+			t.Errorf("needs_transcode(%q, video=%q) = %v, want %v",
+				tc.path, tc.version.Video_codec, got, tc.want)
+		}
 	}
 }

@@ -79,12 +79,13 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `tomovee %s — movie and TV database
 
 Usage:
-  tomovee serve [--config PATH]              run the daemon (REST API + web UI)
-  tomovee scan  [--config PATH] [--library NAME...]  run a one-shot scan and exit
+  tomovee serve [--config PATH] [--log-level LEVEL]              run the daemon (REST API + web UI)
+  tomovee scan  [--config PATH] [--log-level LEVEL] [--library NAME...]  run a one-shot scan and exit
   tomovee version                            print the version
   tomovee help                               show this help
 
   --config PATH    config file (default: %s)
+  --log-level LEVEL  log verbosity: debug, info, warn, error (overrides config file)
   --library NAME   scan only the named library (repeatable; default: all)
 `, version, config.Default_config_path())
 }
@@ -103,6 +104,7 @@ func (s *string_list) Set(value string) error {
 func load_config(args []string, extra_flags ...func(*flag.FlagSet)) (*config.Config, error) {
 	fs := flag.NewFlagSet("tomovee", flag.ContinueOnError)
 	config_path := fs.String("config", "", "path to the YAML config file")
+	log_level := fs.String("log-level", "", "log verbosity: debug, info, warn, error (overrides config file)")
 	for _, extra := range extra_flags {
 		extra(fs)
 	}
@@ -121,6 +123,9 @@ func load_config(args []string, extra_flags ...func(*flag.FlagSet)) (*config.Con
 		return nil, err
 	}
 	cfg = loaded
+	if *log_level != "" {
+		cfg.Log_level = *log_level
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

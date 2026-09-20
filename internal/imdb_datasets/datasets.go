@@ -10,6 +10,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -228,8 +229,8 @@ func column_getter(column map[string]int) func([]string, string) string {
 // them, then queried lazily; opening an already built index does not hold the
 // datasets in memory. Rebuilding happens automatically when an export is
 // newer than the index.
-func Open(path string) (*Index, error) {
-	return Open_with_progress(path, nil)
+func Open(path string, logs *slog.Logger) (*Index, error) {
+	return Open_with_progress(path, logs, nil)
 }
 
 // Open_with_progress is Open, additionally reporting index build events
@@ -237,7 +238,7 @@ func Open(path string) (*Index, error) {
 // nil to keep the plain behaviour. Because building a fresh index can take a
 // long time, callers that must serve immediately should run this in the
 // background and report it to the user.
-func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, error) {
+func Open_with_progress(path string, logs *slog.Logger, on_progress func(Build_progress)) (*Index, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
@@ -258,7 +259,7 @@ func Open_with_progress(path string, on_progress func(Build_progress)) (*Index, 
 				}
 				on_progress(Build_progress{Step: Build_stale, Total: total})
 			}
-			if err := build_index_db(path, db_path, on_progress); err != nil {
+			if err := build_index_db(path, db_path, logs, on_progress); err != nil {
 				return nil, err
 			}
 			if on_progress != nil {

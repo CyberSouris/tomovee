@@ -2,8 +2,11 @@ package imdb_datasets
 
 import (
 	"database/sql"
+	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -256,7 +259,7 @@ func file_exports(source string) (map[string]export_source, error) {
 // given per-stem export sources. Exports missing from the map are skipped. It
 // builds to a temporary file and renames it into place, so a partially built
 // index is never observed. on_progress, when non-nil, receives build events.
-func build_index_db_exports(db_path string, on_progress func(Build_progress), exports map[string]export_source) error {
+func build_index_db_exports(db_path string, logs *slog.Logger, on_progress func(Build_progress), exports map[string]export_source) error {
 	tmp := db_path + ".tmp"
 	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
 		return err
@@ -281,7 +284,7 @@ func build_index_db_exports(db_path string, on_progress func(Build_progress), ex
 			if err != nil {
 				return fmt.Errorf("imdb_datasets: open %s: %w", name, err)
 			}
-			import_err := import_dataset(db, name, data, progress_with_bytes(on_progress, &counter, total))
+			import_err := import_dataset(db, name, data, logs, progress_with_bytes(on_progress, &counter, total))
 			_ = data.Close()
 			if import_err != nil {
 				return import_err
@@ -315,12 +318,12 @@ func build_index_db_exports(db_path string, on_progress func(Build_progress), ex
 
 // build_index_db parses the dataset exports in source (a directory or a single
 // title.basics file) and writes an indexed SQLite database at db_path.
-func build_index_db(source string, db_path string, on_progress func(Build_progress)) error {
+func build_index_db(source string, db_path string, logs *slog.Logger, on_progress func(Build_progress)) error {
 	exports, err := file_exports(source)
 	if err != nil {
 		return err
 	}
-	return build_index_db_exports(db_path, on_progress, exports)
+	return build_index_db_exports(db_path, logs, on_progress, exports)
 }
 
 // dataset_files resolves the exports to import for a source (directory or
@@ -370,21 +373,21 @@ func dataset_file(stem string) (string, error) {
 }
 
 // import_dataset streams one export into its table.
-func import_dataset(db *sql.DB, name string, data io.Reader, on_progress func(Build_progress)) error {
+func import_dataset(db *sql.DB, name string, data io.Reader, logs *slog.Logger, on_progress func(Build_progress)) error {
 	switch name {
 	case "title.basics":
-		return import_titles_stream(db, data, on_progress)
+		return import_titles_stream(db, data, logs, on_progress)
 	case "title.akas":
-		return import_akas_stream(db, data, on_progress)
+		return import_akas_stream(db, data, logs, on_progress)
 	case "title.episode":
-		return import_episodes_stream(db, data, on_progress)
+		return import_episodes_stream(db, data, logs, on_progress)
 	case "title.ratings":
-		return import_ratings_stream(db, data, on_progress)
+		return import_ratings_stream(db, data, logs, on_progress)
 	}
 	return fmt.Errorf("imdb_datasets: unknown dataset %s", name)
 }
 
-func import_titles_stream(db *sql.DB, data io.Reader, on_progress func(Build_progress)) error {
+func import_titles_stream(db *sql.DB, data io.Reader, logs *slog.Logger, on_progress func(Build_progress)) error {
 	batch := new_sqlite_batch(db, `
 		INSERT INTO title (id, title_type, primary_title, original_title, pri_key, orig_key,
 		                   start_year, end_year, runtime_minutes, genres)
@@ -392,6 +395,7 @@ func import_titles_stream(db *sql.DB, data io.Reader, on_progress func(Build_pro
 	defer batch.Flush()
 	return each_row(data, "title.basics",
 		[]string{"tconst", "titleType", "primaryTitle", "originalTitle", "isAdult", "startYear", "endYear", "runtimeMinutes", "genres"},
+		logs,
 		func(get func([]string, string) string, rec []string) error {
 			primary := get(rec, "primaryTitle")
 			original := get(rec, "originalTitle")
@@ -407,11 +411,12 @@ func import_titles_stream(db *sql.DB, data io.Reader, on_progress func(Build_pro
 		}, on_progress)
 }
 
-func import_akas_stream(db *sql.DB, data io.Reader, on_progress func(Build_progress)) error {
+func import_akas_stream(db *sql.DB, data io.Reader, logs *slog.Logger, on_progress func(Build_progress)) error {
 	batch := new_sqlite_batch(db, "INSERT INTO title_aka (key, title_id) VALUES (?, ?)")
 	defer batch.Flush()
 	return each_row(data, "title.akas",
 		[]string{"titleId", "ordering", "title", "region", "language", "types", "attributes", "isOriginalTitle"},
+		logs,
 		func(get func([]string, string) string, rec []string) error {
 			id := get(rec, "titleId")
 			if id == "" || parse_bool(get(rec, "isOriginalTitle")) {
@@ -425,13 +430,14 @@ func import_akas_stream(db *sql.DB, data io.Reader, on_progress func(Build_progr
 		}, on_progress)
 }
 
-func import_episodes_stream(db *sql.DB, data io.Reader, on_progress func(Build_progress)) error {
+func import_episodes_stream(db *sql.DB, data io.Reader, logs *slog.Logger, on_progress func(Build_progress)) error {
 	batch := new_sqlite_batch(db, `
 		INSERT INTO title_episode (id, parent_id, season, episode)
 		VALUES (?, ?, ?, ?)`)
 	defer batch.Flush()
 	return each_row(data, "title.episode",
 		[]string{"tconst", "parentTconst", "seasonNumber", "episodeNumber"},
+		logs,
 		func(get func([]string, string) string, rec []string) error {
 			id := get(rec, "tconst")
 			parent := get(rec, "parentTconst")
@@ -443,13 +449,14 @@ func import_episodes_stream(db *sql.DB, data io.Reader, on_progress func(Build_p
 		}, on_progress)
 }
 
-func import_ratings_stream(db *sql.DB, data io.Reader, on_progress func(Build_progress)) error {
+func import_ratings_stream(db *sql.DB, data io.Reader, logs *slog.Logger, on_progress func(Build_progress)) error {
 	batch := new_sqlite_batch(db, `
 		INSERT INTO title_rating (id, average_rating, num_votes)
 		VALUES (?, ?, ?)`)
 	defer batch.Flush()
 	return each_row(data, "title.ratings",
 		[]string{"tconst", "averageRating", "numVotes"},
+		logs,
 		func(get func([]string, string) string, rec []string) error {
 			return batch.Exec(get(rec, "tconst"),
 				parse_float(get(rec, "averageRating")), parse_int(get(rec, "numVotes")))
@@ -459,7 +466,19 @@ func import_ratings_stream(db *sql.DB, data io.Reader, on_progress func(Build_pr
 // each_row streams a TSV dataset, invoking fn once per data row in dataset
 // order, without collecting the file in memory. on_progress, when non-nil,
 // receives Build_import events at dataset start and then periodically.
-func each_row(r io.Reader, name string, required []string, fn func(func([]string, string) string, []string) error, on_progress func(Build_progress)) error {
+// each_row streams a TSV dataset, invoking fn once per data row in dataset
+// order, without collecting the file in memory. on_progress, when non-nil,
+// receives Build_import events at dataset start and then periodically.
+//
+// A single unimportable line (a malformed record that the TSV parser cannot
+// read, or a row whose insert fails) does not abort the build: when logs is
+// non-nil it is logged there, and the line is skipped so the rest of the
+// dataset is imported. The index simply has slightly worse coverage, which
+// matching can tolerate. logs may be nil to drop these notices; imports are
+// deliberately optimistic so that a handful of bad export rows never wastes a
+// multi-hour rebuild. A hard read error (not a per-record parse error) is
+// still fatal, because retrying it would spin forever.
+func each_row(r io.Reader, name string, required []string, logs *slog.Logger, fn func(func([]string, string) string, []string) error, on_progress func(Build_progress)) error {
 	reader, column, err := make_tsv_reader(r, name, required)
 	if err != nil {
 		return err
@@ -481,14 +500,26 @@ func each_row(r io.Reader, name string, required []string, fn func(func([]string
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("imdb_datasets: parse row: %w", err)
+			var parse_err *csv.ParseError
+			if !errors.As(err, &parse_err) {
+				return fmt.Errorf("imdb_datasets: parse row: %w", err)
+			}
+			if logs != nil {
+				logs.Warn("imdb_datasets: skipping unreadable dataset line",
+					"dataset", name, "row", rows+1, "error", err.Error())
+			}
+			continue
 		}
 		rows++
 		if on_progress != nil && rows%progress_interval == 0 {
 			on_progress(Build_progress{Step: Build_import, Dataset: name, Rows: rows})
 		}
 		if err := fn(get, rec); err != nil {
-			return fmt.Errorf("imdb_datasets: import %s: %w", name, err)
+			if logs != nil {
+				logs.Warn("imdb_datasets: skipping line that could not be imported",
+					"dataset", name, "row", rows, "error", err.Error())
+			}
+			continue
 		}
 	}
 }

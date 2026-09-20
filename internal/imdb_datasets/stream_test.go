@@ -57,7 +57,7 @@ func Test_open_stream_builds_index_from_http(t *testing.T) {
 	index_db_path := Index_db_path(dir)
 	server := stream_test_server(t)
 
-	index, err := Open_stream(context.Background(), index_db_path, server.URL, nil)
+	index, err := Open_stream(context.Background(), index_db_path, server.URL, nil, nil)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -90,7 +90,7 @@ func Test_open_stream_reports_progress(t *testing.T) {
 	var events []Build_progress
 
 	index, err := Open_stream(context.Background(), Index_db_path(dir), server.URL,
-		func(p Build_progress) { events = append(events, p) })
+		nil, func(p Build_progress) { events = append(events, p) })
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -122,7 +122,7 @@ func Test_open_path_reuses_streamed_index(t *testing.T) {
 	dir := t.TempDir()
 	server := stream_test_server(t)
 
-	index, err := Open_stream(context.Background(), Index_db_path(dir), server.URL, nil)
+	index, err := Open_stream(context.Background(), Index_db_path(dir), server.URL, nil, nil)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -131,7 +131,7 @@ func Test_open_path_reuses_streamed_index(t *testing.T) {
 	// The data directory holds only the index (no exports); first open after a
 	// rebuild against a directory with streamed originals must still produce an
 	// index by reusing it instead of failing with "does not look like exports".
-	index, err = Open(dir)
+	index, err = Open(dir, nil)
 	if err != nil {
 		t.Fatalf("reopen streamed directory: %v", err)
 	}

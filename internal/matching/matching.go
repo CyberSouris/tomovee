@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cybersouris/tomovee/internal/database"
@@ -76,20 +78,6 @@ func (m *Matching) Set_datasets(index *imdb_datasets.Index) {
 // only reads the database and the persisted hashes the scans wrote.
 func (m *Matching) Run(ctx context.Context, progress func(Progress)) (*Result, error) {
 	result := &Result{}
-	report := func(entry database.Catalog_entry) {
-		if progress != nil {
-			progress(Progress{
-				Phase:     "file",
-				Title:     entry.Title,
-				Total:     result.Total,
-				Done:      result.Matched + result.Unmatched,
-				Matched:   result.Matched,
-				Unmatched: result.Unmatched,
-				Errors:    len(result.Errors),
-			})
-		}
-	}
-
 	entries, err := m.store.List_catalog_entries(ctx, database.Catalog_filter{
 		Status: "needs_lookup",
 		Sort:   "added",
@@ -99,22 +87,71 @@ func (m *Matching) Run(ctx context.Context, progress func(Progress)) (*Result, e
 	}
 	result.Total = len(entries)
 
-	for i := range entries {
-		entry := entries[i]
-		if err := ctx.Err(); err != nil {
+	// The offline dataset, when attached, is its own SQLite database, so the
+	// FTS searches it serves can run concurrently. Match entries in parallel
+	// with a bounded worker pool sized to the CPU count so the hash, search,
+	// and offline lookups overlap instead of serializing.
+	num_workers := runtime.NumCPU()
+	if num_workers < 1 {
+		num_workers = 1
+	}
+	if n := len(entries); n > 0 && n < num_workers {
+		num_workers = n
+	}
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		done      int
+		matched   int
+		unmatched int
+	)
+	jobs := make(chan database.Catalog_entry)
+	for i := 0; i < num_workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range jobs {
+				ok, err := m.match_entry(ctx, entry)
+				if err != nil {
+					m.logger.Warn("matching: entry failed", "title", entry.Title, "error", err)
+				}
+				mu.Lock()
+				if err != nil {
+					result.Errors = append(result.Errors, entry.Title+": "+err.Error())
+				} else if ok {
+					matched++
+					result.Matched++
+				} else {
+					unmatched++
+					result.Unmatched++
+				}
+				done++
+				p := Progress{
+					Phase:     "file",
+					Title:     entry.Title,
+					Total:     result.Total,
+					Done:      done,
+					Matched:   result.Matched,
+					Unmatched: result.Unmatched,
+					Errors:    len(result.Errors),
+				}
+				mu.Unlock()
+				if progress != nil {
+					progress(p)
+				}
+			}
+		}()
+	}
+	for _, entry := range entries {
+		select {
+		case jobs <- entry:
+		case <-ctx.Done():
 			break
 		}
-		matched, err := m.match_entry(ctx, entry)
-		if err != nil {
-			m.logger.Warn("matching: entry failed", "title", entry.Title, "error", err)
-			result.Errors = append(result.Errors, entry.Title+": "+err.Error())
-		} else if matched {
-			result.Matched++
-		} else {
-			result.Unmatched++
-		}
-		report(entry)
 	}
+	close(jobs)
+	wg.Wait()
 	return result, nil
 }
 
@@ -293,4 +330,39 @@ func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied boo
 		}
 	}
 	return true, nil, nil
+}
+
+// Reclassify flips a single catalog entry between series and movie (or the
+// other way around) and immediately re-runs automatic matching for it under
+// the new media type, persisting the new classification exactly like a
+// background pass would. It is what the web UI calls when the user decides a
+// catalog title was recorded with the wrong media type: the entry is re-typed,
+// any stale episode rows are dropped (movie has none), and the automatic
+// matcher runs once against the flipped kind. Confident matches are persisted;
+// ambiguous ones return the candidate shortlist for the user to pick from.
+func (m *Matching) Reclassify(ctx context.Context, entry_id int64, as_series bool) (applied bool, candidates []matcher.Candidate, err error) {
+	entry, err := m.store.Get_catalog_entry(ctx, entry_id)
+	if err != nil {
+		return false, nil, err
+	}
+	if entry == nil {
+		return false, nil, nil
+	}
+	flipped := *entry
+	flipped.Media_type = "movie"
+	if as_series {
+		flipped.Media_type = "series"
+	}
+	if entry.Media_type == flipped.Media_type {
+		return false, nil, nil
+	}
+	if err := m.store.Update_catalog_entry(ctx, entry_id, flipped); err != nil {
+		return false, nil, err
+	}
+	if !as_series {
+		if err := m.store.Delete_episodes(ctx, entry_id); err != nil {
+			return false, nil, err
+		}
+	}
+	return m.Rematch_one(ctx, entry_id)
 }

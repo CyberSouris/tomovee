@@ -1,0 +1,192 @@
+= Tomovee API Reference
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectanchors:
+:data-uri:
+:source-highlighter: coderay
+
+== API
+
+Base URL for every endpoint below is `/api/v1`. All JSON request/response
+bodies use `snake_case` keys. Errors are returned as
+`{"error":"message"}` with an appropriate HTTP status. Unknown methods on a
+registered path return `405`, unknown paths under `/api/` return `404`, and the
+SPA handler serves the embedded web UI for everything else.
+
+=== Catalog
+
+[cols="1,2,4",options="header"]
+|===
+|Method |Path |Description
+
+|`GET`
+|`/catalog`
+|List/search entries. Query params: `media_type` (`movie`|`series`), `status`,
+`genre`, `year`, `resolution`, `language`, `sort`, `order`, `limit`, `offset`,
+and `q` for a title search. Returns
+`{"count":N,"entries":[{catalog_item}...]}`.
+
+|`GET`
+|`/catalog/{id}`
+|Full detail for one entry: overview, genres, rating, all versions with their
+track breakdown (audio/subtitle language+codec+channels, resolution, codecs),
+poster URL, and status. Series entries include their episodes and seasons.
+
+|`GET`
+|`/categories`
+|Browse categories: one row per genre with counts, plus an entry for unmatched
+media — `{"categories":[{media_type,genre,count}...]}`.
+
+|`GET`
+|`/unmatched`
+|Entries awaiting manual review. Same `catalog_item` shape as `/catalog`.
+
+|`POST`
+|`/catalog/{id}/match`
+|Manually associate an unmatched entry with a candidate. Body:
+`{"tmdb_id":603}` or `{"imdb_id":"tt0133093"}`. On success the entry is updated;
+when the match is ambiguous a `candidates` list is returned.
+
+|`POST`
+|`/catalog/{id}/rematch`
+|Re-run the automatic matching pipeline for one entry.
+
+|`POST`
+|`/catalog/{id}/reclassify`
+|Force an entry's media type. Body: `{"media_type":"series"}` or `{"media_type":"movie"}`.
+|===
+
+=== Search
+
+`GET /search?q=...&media_type=movie|series&year=NNNN` — TMDB/search
+autocomplete. `media_type` is optional (defaults to `movie`). Returns
+`{"results":[{tmdb_id,imdb_id,title,year,media_type,overview,poster_url,score}...]}`.
+
+=== Background jobs / SSE
+
+Long-running work (scans, matching) runs as background jobs. Two endpoints
+control each: one to start (`POST /api/v1/scan`, `POST /api/v1/match`) with an
+optional `{"libraries":["name",...]}` body that scans only the named libraries
+(default: all), and one to read current state (`GET /api/v1/scan/status`,
+`GET /api/v1/match/status`) and progress (`/scan/stream`, `/match/stream`).
+
+The SSE streams emit `text/event-stream` events named `status` (initial job
+snapshot and job-stage changes), `progress` (per-batch progress with
+`files_found`/`files_scanned`/`new_files`/`skipped`/`errors` counters and the
+current phase), and `done` (the final result). `GET /api/v1/background`
+aggregates scan, match, and dataset-index state in one JSON document.
+
+[cols="1,2,4",options="header"]
+|===
+|Method |Path |Description
+
+|`POST`
+|`/scan`
+|Start a background scan. Body optional:
+`{"libraries":["movies"]}`. Returns `202` + job descriptor.
+
+|`GET`
+|`/scan/status`
+|Current scan job: `{"job":{running,progress,result?,error?}}`.
+
+|`GET`
+|`/scan/stream`
+|SSE stream of scan progress (`status`/`progress`/`done`).
+
+|`POST`
+|`/match`
+|Start a background matching run over unmatched entries.
+
+|`GET`
+|`/match/status`
+|Current matching job.
+
+|`GET`
+|`/match/stream`
+|SSE stream of matching progress.
+
+|`GET`
+|`/background`
+|Aggregated background state (scan + match + dataset index, with
+datasets building percentage when applicable).
+|===
+
+=== Settings
+
+[cols="1,2,4",options="header"]
+|===
+|Method |Path |Description
+
+|`GET`
+|`/settings`
+|Current settings: `listen`, `database_path`, `poster_cache_dir`, `api` block
+(keys masked; `*_configured` booleans indicate which sources are usable),
+`watch_enabled`, and a `libraries` array
+(`{name,path,enabled,last_scan}`).
+
+|`PUT`
+|`/settings`
+|Update settings. Body accepts `watch_enabled`,
+`api.tmdb_key`/`opensubtitles_*`, `imdb_datasets_path`, and a `libraries`
+array of `{name,path,enabled}`. Returns the updated settings.
+
+|`DELETE`
+|`/libraries/{name}`
+|Remove a library (by name) and its data. Returns updated settings.
+|===
+
+=== Posters & streaming
+
+[cols="1,2,4",options="header"]
+|===
+|Method |Path |Description
+
+|`GET`
+|`/posters/{id}`
+|Served cached poster for a catalog entry; downloads from TMDB on miss through
+the background cache.
+
+|`POST`
+|`/posters/prune`
+|Delete cached posters no longer referenced by the catalog. Returns
+`{"removed":N}`.
+
+|`GET`
+|`/versions/{version_id}/file`
+|Stream a version's media file to the browser, applying the configured
+`stream.transcode` mode. Supports HTTP range requests.
+|===
+
+=== Datasets
+
+`POST /datasets` with an optional `{"path":"..."}` body starts a background
+import of IMDb datasets into a local index (defaults to the configured
+`imdb_datasets_path`). Progress (state/percent/dataset name) is reported in
+`GET /api/v1/background` and streamed via SSE. Offline matching becomes
+available once the import finishes.
+
+=== Example: end-to-end with curl
+
+[source,sh]
+----
+# scan all libraries in the background
+curl -X POST localhost:8080/api/v1/scan -H 'Content-Type: application/json' \
+     -d '{"libraries":["movies","tv"]}'
+
+# list unmatched entries
+curl -s localhost:8080/api/v1/unmatched | jq '.entries[].title'
+
+# manually match an unmatched entry against a TMDB candidate
+curl -X POST localhost:8080/api/v1/catalog/7/match \
+     -H 'Content-Type: application/json' -d '{"tmdb_id":603}'
+
+# add a library
+curl -X PUT localhost:8080/api/v1/settings \
+     -H 'Content-Type: application/json' \
+     -d '{"libraries":[{"name":"movies","path":"/data/movies","enabled":true}]}'
+
+# remove a library
+curl -X DELETE localhost:8080/api/v1/libraries/movies
+----
+

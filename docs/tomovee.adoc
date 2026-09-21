@@ -1,0 +1,188 @@
+= Tomovee
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectanchors:
+:data-uri:
+:source-highlighter: coderay
+
+Tomovee is a self-hosted movie and TV database. It scans configured media
+folders for video files, extracts technical metadata with `ffprobe`, identifies
+each file through layered online and offline matching (OpenSubtitles file hash,
+TMDB search, and an offline IMDb dataset index), groups multiple versions of the
+same title into one catalog entry, and serves everything through a Svelte web UI
+plus a JSON/SSE REST API.
+
+== Requirements
+
+* Go 1.26 or newer to build from source.
+* `ffprobe` (from FFmpeg) on `PATH` — required for scanning.
+* `ffmpeg` on `PATH` only if you use `stream.transcode: container|live` or want
+  fallback frame posters.
+* Node.js + npm only to rebuild the web UI; prebuilt assets are committed and
+  embedded in the binary via `go:embed`.
+* Optional: a TMDB API key and OpenSubtitles credentials for online matching,
+  and/or IMDb dataset exports for fully offline matching.
+
+== Build
+
+[source,sh]
+----
+make build        # builds bin/tomovee using the committed web UI assets
+make test         # go test ./...
+make vet          # go vet ./...
+make frontend     # rebuilds internal/webui/dist from Svelte sources (needs npm)
+----
+
+== Configuration
+
+The daemon reads a YAML file. With no `--config` flag it looks for
+`$XDG_CONFIG_HOME/tomovee/config.yaml`
+(`~/.config/tomovee/config.yaml`), then `./config.yaml`.
+
+Copy the example and edit it:
+
+[source,sh]
+----
+cp config.example.yaml ~/.config/tomovee/config.yaml
+----
+
+Every option is documented inline in
+https://github.com/cybersouris/tomovee/blob/main/config.example.yaml[config.example.yaml].
+The table below is the quick reference.
+
+[cols="1,3",options="header"]
+|===
+|Key |Meaning
+
+|`database_path`
+|SQLite database file. `~` and relative paths are expanded.
+
+|`poster_cache_dir`
+|Directory where poster images are cached locally.
+
+|`listen`
+|HTTP listen address for `tomovee serve`, e.g. `127.0.0.1:8080`.
+
+|`libraries`
+|Map of library name → root directory. Each name identifies a library for
+per-library scans; file paths are stored relative to each library's root. At
+least one library is required unless `watch_enabled` is true.
+
+|`api.tmdb_key`
+|TMDB API key. Optional; matching falls back to filename/IMDb datasets when
+absent.
+
+|`api.opensubtitles_api_key`
+|OpenSubtitles API key. Optional.
+
+|`api.opensubtitles_username`
+|OpenSubtitles username. Optional.
+
+|`api.opensubtitles_password`
+|OpenSubtitles password. Optional.
+
+|`api.opensubtitles_user_agent`
+|OpenSubtitles user agent string. Optional; defaults to a Tomovee identifier.
+
+|`watch_enabled`
+|Master switch for folder watching, and the default for newly registered
+libraries' watching state. Per-library toggles persist to the database and are
+changeable from the web UI.
+
+|`match_on_start`
+|Opt-in background matching pass over the whole catalog at boot. Off by default
+because building the IMDb index and hitting TMDB for every unmatched entry is
+expensive; leave it false and trigger matching from the web UI or API.
+
+|`stream.transcode`
+|How video files are delivered to the browser. Most players demux
+MP4/H.264/AAC natively but not others (e.g. an MKV holding H.265+AAC has no
+audio).
+`none` (default) serves the file as-is; `container` remuxes into an MP4
+container copying video and re-encoding only incompatible audio (fast, needs
+ffmpeg); `live` re-encodes on the fly to H.264/AAC (slow, maximum
+compatibility, needs ffmpeg).
+
+|`scan.quality_subdir_min_size`
+|A file is treated as a quality variant of a sibling when the parent folder
+holds at least this many files.
+
+|`scan.min_file_size_mb`
+|Files smaller than this are ignored during discovery.
+
+|`imdb_datasets_path`
+|Optional directory holding IMDb dataset exports (title.basics.tsv.gz plus
+optional title.akas/ratings/episode .tsv.gz) for offline, network-free matching.
+A single title.basics.tsv(.gz) is also accepted.
+
+|`log_level`
+|Minimum verbosity written to stderr: `debug`, `info`, `warn`, `error`. `debug`
+enables per-file matching diagnostics.
+
+|`listen` (+ `api` block)
+|`serve` listens on `listen` and serves the web UI at `/` and the JSON API under
+`/api/v1/`.
+|===
+
+Minimal example:
+
+[source,yaml]
+----
+libraries:
+  Movies: ~/Media/Movies
+  TV: ~/Media/TV
+api:
+  tmdb_key: "your-tmdb-api-key"
+----
+
+== Usage
+
+[source,sh]
+----
+tomovee serve  [--config PATH] [--log-level LEVEL]            # daemon: REST API + web UI
+tomovee scan   [--config PATH] [--log-level LEVEL] [--library NAME...]  # one-shot scan, then exit
+tomovee version
+----
+
+`--log-level` is `debug|info|warn|error` and overrides `log_level` in the
+config file.
+
+=== First run
+
+1. Create a config (see <<Configuration>>) with at least one library.
+2. Start the daemon: `tomovee serve`.
+3. Open the web UI at `http://<listen>/`.
+4. Trigger a scan (sidebar button, or `POST /api/v1/scan`) — background
+   progress streams to the browser over SSE.
+5. Trigger matching for unmatched entries (or set `match_on_start: true`).
+   Optionally import IMDb datasets (`POST /api/v1/datasets`) for offline
+   matching and to make matching work without a TMDB key.
+
+=== Scanning
+
+`tomovee scan` runs the discovery + ffprobe pipeline once against all libraries
+(or just the named `--library` ones, repeatable) and exits. The daemon's scan
+job runs in the background and reports progress as SSE events: `status`
+(initial snapshot), `progress` (per-batch counts), and `done` (full result with
+found/scannew/new/skipped/missing and any errors). Unmatched entries land on the
+_unmatched_ list for manual matching.
+
+=== Matching
+
+Matching is layered: OpenSubtitles file hash first, then a TMDB search parsed
+from the filename, then the offline IMDb dataset index as enrichment and
+fallback. Entries that fail are marked `needs_lookup` and appear under
+_Unmatched_ in the UI, where you can pick a TMDB/IMDb candidate manually or
+re-run automatic matching per entry. `imdb_datasets_path` (or the background
+IMDb dataset import) enables the offline pass; `api.tmdb_key` enables the TMDB
+passened including autocomplete search.
+
+=== Reclassification
+
+Sometimes a filename (or a bad TMDB match) is classified as the wrong media
+type. The web UI lets you force an entry to `movie` or `series` via
+`POST /api/v1/catalog/{id}/reclassify` with `{"media_type":"series"}` (or
+`"movie"`). When candidates are ambiguous the response lists them for a manual
+pick; otherwise the reclassification is applied immediately.
+

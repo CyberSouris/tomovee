@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 
 	_ "modernc.org/sqlite"
@@ -66,7 +67,7 @@ func open_file_db(db_path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(runtime.NumCPU())
 	return db, nil
 }
 

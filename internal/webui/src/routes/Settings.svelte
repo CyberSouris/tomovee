@@ -69,13 +69,14 @@
     }
   }
 
-  function add_library() {
+  async function add_library() {
     const name = new_name.trim();
     const path = new_path.trim();
     if (!name || !path) return;
-    settings.libraries.push({ name, path, enabled: true, last_scan: '' });
+    settings.libraries = [...settings.libraries, { name, path, enabled: true }];
     new_name = '';
     new_path = '';
+    await save();
   }
 
   async function remove_library(name) {
@@ -279,7 +280,7 @@
               <td>{library.path}</td>
               <td><input type="checkbox" bind:checked={library.enabled} /></td>
               <td class="muted">{library.last_scan || '—'}</td>
-              <td class="actions"><button type="button" class="remove" on:click={() => remove_library(library.name)}>Remove</button></td>
+              <td class="actions"></td>
               <td class="actions">
                 <button class="remove" on:click={() => remove_library(library.name)} aria-label={`Remove ${library.name}`}>Remove</button>
               </td>

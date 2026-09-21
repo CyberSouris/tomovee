@@ -73,7 +73,7 @@
     const name = new_name.trim();
     const path = new_path.trim();
     if (!name || !path) return;
-    settings.libraries = [...settings.libraries, { name, path, enabled: true }];
+    settings.libraries = [...settings.libraries, { name, path, enabled: false }];
     new_name = '';
     new_path = '';
     await save();
@@ -87,6 +87,16 @@
       error = err.message;
     } finally {
       await load();
+    }
+  }
+
+  async function maybe_scan(library) {
+    if (!library.enabled) return;
+    await save();
+    try {
+      await api_send('/api/v1/scan', 'POST', { libraries: [library.name] });
+    } catch (err) {
+      error = err.message;
     }
   }
 
@@ -271,16 +281,15 @@
     {#if settings.libraries.length}
       <table>
         <thead>
-          <tr><th>Name</th><th>Path</th><th>Enabled</th><th>Last scan</th></tr>
+          <tr><th>Name</th><th>Path</th><th>Enabled</th><th>Last scan</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {#each settings.libraries as library}
             <tr>
               <td>{library.name}</td>
               <td>{library.path}</td>
-              <td><input type="checkbox" bind:checked={library.enabled} /></td>
+              <td><input type="checkbox" bind:checked={library.enabled} on:change={() => maybe_scan(library)} /></td>
               <td class="muted">{library.last_scan || '—'}</td>
-              <td class="actions"></td>
               <td class="actions">
                 <button class="remove" on:click={() => remove_library(library.name)} aria-label={`Remove ${library.name}`}>Remove</button>
               </td>
@@ -300,9 +309,9 @@
       </button>
     </div>
     <p class="muted help">
-      New libraries are enabled (watched) by default and are scanned by the
-      folder watcher. Click Save to persist; enabled libraries are picked up on
-      the next watch scan. Initial libraries from the config file stay listed here.
+      New libraries are added unwatched. Checking a library box enables
+      watching and starts a background scan of that library. Click Save to
+      persist; libraries from the config file stay listed here.
     </p>
 
     <p>
@@ -359,8 +368,7 @@
   }
   
   .remove {
-    color: var(--bad);
-    border-color: var(--bad);
+    border-color: var(--muted);
     font-size: 0.8rem;
     padding: 0.2rem 0.6rem;
   }

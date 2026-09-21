@@ -1,0 +1,25 @@
+name: lint
+'on':
+  push: null
+  pull_request: null
+  workflow_dispatch: null
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: Lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.64.8
+        args: --timeout=5m
+    - name: Vet
+      run: go vet ./...
+    - name: Format
+      run: test -z "$(gofmt -l .)"

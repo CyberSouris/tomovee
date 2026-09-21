@@ -297,7 +297,6 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     overflow: hidden;
-    max-width: 48rem;
   }
 
   .lib {

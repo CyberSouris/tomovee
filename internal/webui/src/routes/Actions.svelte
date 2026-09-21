@@ -87,6 +87,7 @@
   }
 
   async function start_match() {
+    chain_match = false;
     match_error = '';
     match_result = null;
     try {
@@ -98,9 +99,16 @@
   }
 
   async function start_chain() {
-    chain_match = false;
-    await start_scan();
-    chain_match = scan_running;
+    chain_match = true;
+    scan_error = '';
+    scan_result = null;
+    try {
+      await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
+      scan_running = true;
+    } catch (err) {
+      chain_match = false;
+      scan_error = err.message;
+    }
   }
 
   onMount(() => {

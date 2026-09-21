@@ -19,6 +19,13 @@ type match_request struct {
 	Media_type string `json:"media_type"`
 }
 
+// reclassify_request carries the media type a user wants a catalog entry forced
+// to. Reclassify flips series<->movie (or the reverse) rather than re-guessing,
+// which is how a user fixes an entry the scanner typed wrong.
+type reclassify_request struct {
+	Media_type string `json:"media_type"`
+}
+
 // handle_manual_match associates an unmatched catalog entry with the TMDB or
 // IMDb identifier chosen by the user. When no TMDB API key is configured it
 // falls back to the local IMDb index, so picking an offline candidate still
@@ -236,4 +243,99 @@ func candidates_to_db(media_type string, candidates []matcher.Candidate) []datab
 		})
 	}
 	return rows
+}
+
+// handle_reclassify forces a catalog entry to the opposite media type the
+// scanner gave it (series<->movie or movie<->series) and re-runs automatic
+// matching for it under the flipped classification through the same job manager
+// as a background pass, so the correction shows up in the global status and SSE
+// feed exactly like a rematch does. A confident flip persists the re-typed
+// entry (and re-enriches a series with fresh episode titles); an ambiguous one
+// persists the flipped entry's candidate shortlist for the user to choose from.
+func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
+	if s.matching == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	id, ok := path_id(r)
+	if !ok {
+		write_error(w, http.StatusBadRequest, "invalid catalog id")
+		return
+	}
+	entry, err := s.store.Get_catalog_entry(r.Context(), id)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entry == nil {
+		write_error(w, http.StatusNotFound, "catalog entry not found")
+		return
+	}
+
+	var request reclassify_request
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		write_error(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	media_type := request.Media_type
+	if media_type != "series" && media_type != "movie" {
+		write_error(w, http.StatusBadRequest, "media_type must be series or movie")
+		return
+	}
+	as_series := media_type == "series"
+
+	var applied bool
+	var candidates []matcher.Candidate
+	_, err = s.matches.Run_sync(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		var run_err error
+		applied, candidates, run_err = s.matching.Reclassify(ctx, id, as_series)
+		if run_err != nil {
+			return nil, run_err
+		}
+		result := &matching.Result{Total: 1}
+		if applied {
+			result.Matched = 1
+			if err := s.store.Clear_candidates(ctx, id); err != nil {
+				return nil, err
+			}
+		} else {
+			result.Unmatched = 1
+			result.Candidates = len(candidates)
+			if err := s.store.Replace_candidates(ctx, id, candidates_to_db(media_type, candidates)); err != nil {
+				return nil, err
+			}
+			if len(candidates) > 0 && entry.Status != "needs_lookup" {
+				if err := s.store.Set_catalog_status(ctx, id, "needs_lookup"); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if progress != nil {
+			progress(matching.Progress{
+				Phase: "file", Title: entry.Title, Total: 1, Done: 1,
+				Matched: result.Matched, Unmatched: result.Unmatched,
+			})
+		}
+		return result, nil
+	})
+	if errors.Is(err, Err_job_running) {
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running", err))
+		return
+	}
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if applied {
+		fresh, err := s.store.Get_catalog_entry(r.Context(), id)
+		if err != nil || fresh == nil {
+			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
+			return
+		}
+		write_json(w, http.StatusOK, map[string]any{"applied": true, "entry": catalog_item_from(*fresh)})
+		return
+	}
+	views := candidate_items(candidates, media_type)
+	write_json(w, http.StatusOK, map[string]any{"applied": false, "candidates": views})
 }

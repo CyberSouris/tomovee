@@ -225,6 +225,13 @@ func (s *Store) Set_episode_status(ctx context.Context, id int64, status string)
 		"UPDATE episode SET status = ?, updated_at = datetime('now') WHERE id = ?", status, id)
 }
 
+// Delete_episodes removes every episode row belonging to a catalog entry. It is
+// used when an entry is reclassified from series to movie, so stale offline
+// episode titles are not left behind once the entry stops being a series.
+func (s *Store) Delete_episodes(ctx context.Context, catalog_entry_id int64) error {
+	return s.exec_tx(ctx, "DELETE FROM episode WHERE catalog_entry_id = ?", catalog_entry_id)
+}
+
 func set_genres_tx(ctx context.Context, tx *sql.Tx, entry_id int64, genres []string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entry_genre WHERE catalog_entry_id = ?", entry_id); err != nil {
 		return err

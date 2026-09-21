@@ -13,6 +13,8 @@
   let prune_message = '';
   let new_name = '';
   let new_path = '';
+  let path_options = [];
+  let path_timer = null;
 
   async function load() {
     try {
@@ -76,6 +78,7 @@
     settings.libraries = [...settings.libraries, { name, path, enabled: false }];
     new_name = '';
     new_path = '';
+    path_options = [];
     await save();
   }
 
@@ -102,6 +105,25 @@
 
   function enter_add(event) {
     if (event.key === 'Enter') add_library();
+  }
+
+  async function fetch_path_options() {
+    const q = new_path.trim();
+    if (!q) {
+      path_options = [];
+      return;
+    }
+    try {
+      const data = await api_get(`/api/v1/path-complete?q=${encodeURIComponent(q)}`);
+      path_options = data.paths || [];
+    } catch {
+      path_options = [];
+    }
+  }
+
+  function on_path_input() {
+    clearTimeout(path_timer);
+    path_timer = setTimeout(fetch_path_options, 200);
   }
 
   async function save() {
@@ -281,7 +303,7 @@
     {#if settings.libraries.length}
       <table>
         <thead>
-          <tr><th>Name</th><th>Path</th><th>Enabled</th><th>Last scan</th><th>Actions</th></tr>
+          <tr><th class="col-name">Name</th><th class="col-path">Path</th><th>Enabled</th><th>Last scan</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {#each settings.libraries as library}
@@ -303,7 +325,12 @@
 
     <div class="add-library">
       <input type="text" placeholder="Name" bind:value={new_name} on:keydown={enter_add} />
-      <input type="text" placeholder="/path/to/movies" bind:value={new_path} on:keydown={enter_add} />
+      <input type="text" placeholder="/path/to/movies" bind:value={new_path} on:keydown={enter_add} on:input={on_path_input} list="path-options" />
+      <datalist id="path-options">
+        {#each path_options as option}
+          <option value={option} />
+        {/each}
+      </datalist>
       <button class="secondary" on:click={add_library} disabled={!new_name.trim() || !new_path.trim()}>
         Add library
       </button>
@@ -365,6 +392,30 @@
 
   .actions {
     white-space: nowrap;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  table th,
+  table td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  table td {
+    word-break: break-word;
+  }
+
+  .col-name {
+    width: 33%;
+  }
+
+  .col-path {
+    width: 67%;
   }
   
   .remove {

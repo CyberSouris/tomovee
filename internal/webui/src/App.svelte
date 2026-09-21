@@ -98,7 +98,7 @@
   const links = [
     ['browse', 'Browse'],
     ['unmatched', 'Unmatched'],
-    ['scan', 'Scan & Match'],
+    ['scan', 'Actions'],
     ['settings', 'Settings'],
   ];
 

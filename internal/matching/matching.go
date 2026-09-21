@@ -217,14 +217,17 @@ func (m *Matching) enrich_series(ctx context.Context, entry_id int64, match *mat
 	if parent == "" {
 		return nil
 	}
+	episode_titles := make(map[[2]int]imdb_datasets.Episode_title, len(episodes))
+	for _, et := range datasets.Episodes_titles(parent) {
+		episode_titles[[2]int{et.Season, et.Episode}] = et
+	}
+
 	for _, episode := range episodes {
 		episode.Status = "matched"
-		if ref, ok := datasets.Episode_lookup(parent, episode.Season_number, episode.Episode_number); ok {
-			if title, ok := datasets.Lookup(ref.Id); ok {
-				episode.Title = title.Primary_title
-				if title.Start_year > 0 {
-					episode.Airdate = fmt.Sprintf("%04d", title.Start_year)
-				}
+		if et, ok := episode_titles[[2]int{episode.Season_number, episode.Episode_number}]; ok {
+			episode.Title = et.Primary_title
+			if et.Start_year > 0 {
+				episode.Airdate = fmt.Sprintf("%04d", et.Start_year)
 			}
 		}
 		if _, err := m.store.Upsert_episode(ctx, episode); err != nil {

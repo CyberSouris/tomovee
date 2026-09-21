@@ -30,6 +30,17 @@ type Episode_ref struct {
 	Is_special bool
 }
 
+// Episode_title is one offline episode of a parent series joined to its
+// title.basics record. It is the batch counterpart of Episode_ref plus a
+// Lookup: Episodes_titles fills these in a single query for a whole series.
+type Episode_title struct {
+	Season        int
+	Episode       int
+	Primary_title string
+	Start_year    int
+	Is_special    bool
+}
+
 // Index serves exact-match lookups over the IMDb datasets. It is backed by an
 // indexed SQLite database (an in-memory one for programmatically built
 // indexes, or a file written next to the dataset exports), so only the rows
@@ -260,6 +271,38 @@ func (idx *Index) Episode_lookup(parent string, season, episode int) (Episode_re
 	}
 	ref.Is_special = ref.Season == 0
 	return ref, true
+}
+
+// Episodes_titles resolves every episode of a series in a single query. It
+// returns one entry per offline title_episode row joined to its title.basics
+// record, so enrichment can fill the episode titles of a whole catalog series
+// without issuing a point lookup per episode.
+func (idx *Index) Episodes_titles(parent string) []Episode_title {
+	if idx.db == nil {
+		return nil
+	}
+	rows, err := idx.db.Query(`
+		SELECT e.season, e.episode, t.primary_title, t.start_year
+		FROM title_episode e
+		LEFT JOIN title t ON t.id = e.id
+		WHERE e.parent_id = ?
+		ORDER BY e.rowid`, parent)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Episode_title
+	for rows.Next() {
+		var et Episode_title
+		var primary sql.NullString
+		if err := rows.Scan(&et.Season, &et.Episode, &primary, &et.Start_year); err != nil {
+			return out
+		}
+		et.Primary_title = primary.String
+		et.Is_special = et.Season == 0
+		out = append(out, et)
+	}
+	return out
 }
 
 // Search returns the titles whose normalized primary, original, or alternative

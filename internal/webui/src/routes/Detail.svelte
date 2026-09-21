@@ -249,6 +249,7 @@
             <table>
               <thead>
                 <tr>
+                  <th>Library</th>
                   <th>File</th>
                   <th>Resolution</th>
                   <th>Video</th>
@@ -262,6 +263,7 @@
               <tbody>
                 {#each episode.versions as version (version.id)}
                   <tr>
+                    <td class="muted">{version.library_name || '—'}</td>
                     <td class="path" title={version.file_path}>{file_name(version)}</td>
                     <td>
                       {version.resolution_label || ''}
@@ -311,6 +313,7 @@
     <table>
       <thead>
         <tr>
+          <th>Library</th>
           <th>File</th>
           <th>Resolution</th>
           <th>Video</th>
@@ -324,6 +327,7 @@
       <tbody>
         {#each data.versions as version (version.id)}
           <tr>
+            <td class="muted">{version.library_name || '—'}</td>
             <td class="path" title={version.file_path}>{file_name(version)}</td>
             <td>
               {version.resolution_label || ''}

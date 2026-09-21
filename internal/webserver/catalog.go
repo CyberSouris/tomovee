@@ -92,6 +92,7 @@ type subtitle_item struct {
 
 type version_item struct {
 	Id                int64           `json:"id"`
+	Library_name      string          `json:"library_name,omitempty"`
 	File_path         string          `json:"file_path"`
 	File_url          string          `json:"file_url"`
 	Size_bytes        int64           `json:"size_bytes"`
@@ -333,10 +334,18 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) version_items(ctx context.Context, versions []database.Version) []version_item {
 	roots := make(map[int64]string)
+	names := make(map[int64]string)
 	if libraries, err := s.store.List_libraries(ctx); err == nil {
 		for _, library := range libraries {
 			roots[library.Id] = library.Path
+			names[library.Id] = library.Name
 		}
+	}
+	name_for := func(id int64) string {
+		if name := names[id]; name != "" {
+			return name
+		}
+		return "Unknown library"
 	}
 	items := make([]version_item, 0, len(versions))
 	for _, version := range versions {
@@ -346,7 +355,7 @@ func (s *Server) version_items(ctx context.Context, versions []database.Version)
 			display_path = filepath.Join(root, display_path)
 		}
 		item := version_item{
-			Id: version.Id, File_path: display_path, File_url: "/api/v1/versions/" + itoa(version.Id) + "/file",
+			Id: version.Id, Library_name: name_for(version.Library_id), File_path: display_path, File_url: "/api/v1/versions/" + itoa(version.Id) + "/file",
 			Size_bytes:       version.Size_bytes,
 			Duration_seconds: version.Duration_seconds, Container: version.Container,
 			Resolution_width: version.Resolution_width, Resolution_height: version.Resolution_height,

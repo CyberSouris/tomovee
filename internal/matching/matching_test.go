@@ -116,7 +116,7 @@ func Test_run_matches_and_enriches_series(t *testing.T) {
 	ctx := context.Background()
 	entry_id, _, _ := add_series(t, store)
 
-	result, err := service.Run(ctx, nil)
+	result, err := service.Run(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -179,7 +179,7 @@ func Test_set_datasets_after_construction_enriches(t *testing.T) {
 
 	ctx := context.Background()
 	entry_id, _, _ := add_series(t, store)
-	result, err := service.Run(ctx, nil)
+	result, err := service.Run(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -215,7 +215,7 @@ func Test_run_leaves_versionless_entries_unmatched(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	result, err := service.Run(ctx, nil)
+	result, err := service.Run(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

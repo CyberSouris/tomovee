@@ -4,8 +4,7 @@
   import Browse from './routes/Browse.svelte';
   import Detail from './routes/Detail.svelte';
   import Unmatched from './routes/Unmatched.svelte';
-  import Scan from './routes/Scan.svelte';
-  import Match from './routes/Match.svelte';
+  import Actions from './routes/Actions.svelte';
   import Settings from './routes/Settings.svelte';
 
   function parse_hash() {
@@ -99,8 +98,7 @@
   const links = [
     ['browse', 'Browse'],
     ['unmatched', 'Unmatched'],
-    ['scan', 'Scan'],
-    ['match', 'Match'],
+    ['scan', 'Scan & Match'],
     ['settings', 'Settings'],
   ];
 
@@ -237,10 +235,8 @@
     {/key}
   {:else if route.name === 'unmatched'}
     <Unmatched />
-  {:else if route.name === 'scan'}
-    <Scan />
-  {:else if route.name === 'match'}
-    <Match />
+  {:else if route.name === 'scan' || route.name === 'match'}
+    <Actions />
   {:else if route.name === 'settings'}
     <Settings />
   {:else}

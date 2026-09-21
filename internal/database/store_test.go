@@ -224,6 +224,47 @@ func Test_list_catalog_entries_filters(t *testing.T) {
 	}
 }
 
+func Test_list_catalog_entries_filtered_by_library(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	if err := store.Upsert_library(ctx, "Movies", "/media/movies", true); err != nil {
+		t.Fatalf("upsert movies: %v", err)
+	}
+	if err := store.Upsert_library(ctx, "Shows", "/media/shows", true); err != nil {
+		t.Fatalf("upsert shows: %v", err)
+	}
+	all, _ := store.List_libraries(ctx)
+	var lib_id = func(name string) int64 {
+		for _, l := range all {
+			if l.Name == name {
+				return l.Id
+			}
+		}
+		return 0
+	}
+
+	movie, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Status: "needs_lookup",
+	})
+	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Breaking Bad", Status: "needs_lookup",
+	})
+	store.Save_version(ctx, Version{Catalog_entry_id: movie, Library_id: lib_id("Movies"), File_path: "matrix.mkv"})
+	store.Save_version(ctx, Version{Catalog_entry_id: series, Library_id: lib_id("Shows"), File_path: "bb.s01e01.mkv"})
+
+	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Libraries: []string{"Movies"}}); len(got) != 1 || got[0].Title != "The Matrix" {
+		t.Errorf("single library filter = %+v, want only The Matrix", got)
+	}
+	both, _ := store.List_catalog_entries(ctx, Catalog_filter{Libraries: []string{"Movies", "Shows"}})
+	if len(both) != 2 {
+		t.Errorf("multi library filter = %d, want 2", len(both))
+	}
+	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Libraries: []string{"Nope"}}); len(got) != 0 {
+		t.Errorf("unknown library filter = %d, want 0", len(got))
+	}
+}
+
 func Test_genre_counts(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()

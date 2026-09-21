@@ -328,7 +328,7 @@
       <input type="text" placeholder="/path/to/movies" bind:value={new_path} on:keydown={enter_add} on:input={on_path_input} list="path-options" />
       <datalist id="path-options">
         {#each path_options as option}
-          <option value={option} />
+          <option value={option}></option>
         {/each}
       </datalist>
       <button class="secondary" on:click={add_library} disabled={!new_name.trim() || !new_path.trim()}>

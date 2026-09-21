@@ -319,11 +319,12 @@
 
   .lib .name {
     font-weight: 600;
-    min-width: 10rem;
+    flex: 1 1 33%;
+    min-width: 0;
   }
 
   .lib .path {
-    flex: 1;
+    flex: 2 1 67%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

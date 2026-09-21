@@ -176,6 +176,7 @@ func (s *Server) handle_catalog_list(w http.ResponseWriter, r *http.Request) {
 		Desc:       r.URL.Query().Get("order") == "desc",
 		Limit:      int_query(r, "limit"),
 		Offset:     int_query(r, "offset"),
+		Library:    r.URL.Query().Get("library"),
 	}
 	if filter.Limit <= 0 || filter.Limit > 500 {
 		filter.Limit = 100

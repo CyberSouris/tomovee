@@ -88,6 +88,25 @@ func (s *Server) handle_library_delete(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusOK, response)
 }
 
+
+func (s *Server) handle_libraries_list(w http.ResponseWriter, r *http.Request) {
+	libraries, err := s.store.List_libraries(r.Context())
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	items := make([]library_item, 0, len(libraries))
+	for _, library := range libraries {
+		items = append(items, library_item{
+			Id:       library.Id,
+			Name:     library.Name,
+			Path:     library.Path,
+			Enabled:  library.Enabled,
+			Last_scan: library.Last_scan,
+		})
+	}
+	write_json(w, http.StatusOK, items)
+}
 func (s *Server) handle_settings_get(w http.ResponseWriter, r *http.Request) {
 	response, err := s.settings(r)
 	if err != nil {

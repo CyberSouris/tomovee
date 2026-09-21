@@ -18,6 +18,16 @@
   let categories = { genres: [], unmatched: 0 };
   let genre = '';
   let category = 'all';
+  let libraries = [];
+  let library = '';
+
+  async function load_libraries() {
+    try {
+      libraries = await api_get('/api/v1/libraries');
+    } catch (err) {
+      libraries = [];
+    }
+  }
 
   async function load_categories() {
     try {
@@ -43,6 +53,7 @@
       if (media_type) params.set('media_type', media_type);
       if (status) params.set('status', status);
       if (genre) params.set('genre', genre);
+      if (library) params.set('library', library);
       if (sort) params.set('sort', sort);
       params.set('limit', String(PAGE));
       params.set('offset', String(reset ? 0 : offset));
@@ -65,6 +76,7 @@
 
   onMount(() => {
     load(true);
+    load_libraries();
     load_categories();
   });
 </script>
@@ -99,6 +111,12 @@
       <option value="matched">Matched</option>
       <option value="needs_lookup">Needs lookup</option>
       <option value="missing">Missing</option>
+    </select>
+    <select bind:value={library}>
+      <option value="">All libraries</option>
+      {#each libraries as lib}
+        <option value={lib.name}>{lib.name}</option>
+      {/each}
     </select>
     <select bind:value={sort}>
       <option value="added">Recently added</option>

@@ -21,6 +21,7 @@ type Catalog_filter struct {
 	Desc       bool
 	Limit      int
 	Offset     int
+	Library    string
 }
 
 // Get_catalog_entry returns one entry with its genres, or (nil, nil) when the
@@ -273,6 +274,12 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 			SELECT 1 FROM version v JOIN audio_track a ON a.version_id = v.id
 			WHERE v.catalog_entry_id = ce.id AND a.language = ?)`)
 		args = append(args, filter.Language)
+	}
+	if filter.Library != "" {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`)
+		args = append(args, filter.Library)
 	}
 	if len(clauses) == 0 {
 		return "", args

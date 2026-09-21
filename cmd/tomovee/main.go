@@ -30,7 +30,8 @@ import (
 	"github.com/cybersouris/tomovee/internal/webui"
 )
 
-const version = "0.1.0"
+// version is stamped at build time via -ldflags "-X main.version=<tag>".
+var version = "0.1.0"
 
 // build_logger returns a text handler logger writing to stderr at the given
 // level (debug, info, warn, error; anything else falls back to info).

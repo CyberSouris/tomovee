@@ -1,0 +1,126 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v0.1.0). Falls back to the last tag or 0.1.0 when empty."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            goarm: ""
+          - goarch: arm64
+            goarm: ""
+          - goarch: riscv64
+            goarm: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          tag=""
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0)"
+          fi
+          echo "tag=${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install asciidoctor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends asciidoctor
+
+      - name: Build documentation
+        run: |
+          mkdir -p dist/docs/html dist/docs/src
+          asciidoctor -b html5 -o dist/docs/html/usage.html docs/tomovee.adoc
+          asciidoctor -b html5 -o dist/docs/html/api.html docs/api.adoc
+          cp docs/tomovee.adoc docs/api.adoc dist/docs/src/
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.version.outputs.tag }}" \
+            -o dist/tomovee \
+            ./cmd/tomovee
+
+      - name: Stage tarball
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          dir="tomovee-${tag#v}-linux-${{ matrix.goarch }}"
+          mkdir -p "dist/pkg/${dir}"
+          cp dist/tomovee "dist/pkg/${dir}/tomovee"
+          cp -r dist/docs "dist/pkg/${dir}/docs"
+          cp README.md SPEC.md config.example.yaml "dist/pkg/${dir}/"
+          tar -C dist/pkg -czf "dist/tomovee-${tag#v}-linux-${{ matrix.goarch }}.tar.gz" "${dir}"
+          sha256sum "dist/tomovee-${tag#v}-linux-${{ matrix.goarch }}.tar.gz" >> "dist/SHA256SUMS-${{ matrix.goarch }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomovee-${{ matrix.goarch }}
+          path: |
+            dist/tomovee-*.tar.gz
+            dist/SHA256SUMS-*-*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: |
+          cat release/SHA256SUMS-* > release/SHA256SUMS
+
+      - name: Combine checksums
+        run: cat release/SHA256SUMS-* > release/SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "${tag}" \
+            --title "tomovee ${tag#v}" \
+            --notes "Automated release build for linux/amd64, linux/arm64 and linux/riscv64. See docs/ and README.md for usage." \
+            release/tomovee-*.tar.gz release/SHA256SUMS || \
+          gh release upload "${tag}" release/tomovee-*.tar.gz release/SHA256SUMS --clobber

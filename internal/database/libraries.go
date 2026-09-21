@@ -112,6 +112,18 @@ func (s *Store) Upsert_library(ctx context.Context, name, path string, enabled b
 		name, path, bool_to_int(enabled))
 }
 
+// Delete_library removes name from the library table along with every version
+// row that belonged to it. Catalog entries are global, so an entry is only
+// dropped when this was the last library holding any version of it; entries
+// still referenced by another library survive untouched, as do all of their
+// episodes and genres (those cascade only when the entry itself goes away).
+func (s *Store) Delete_library(ctx context.Context, name string) error {
+	return s.exec_tx(ctx, `
+		DELETE FROM version WHERE library_id IN (SELECT id FROM library WHERE name = ?);
+		DELETE FROM catalog_entry WHERE id NOT IN (SELECT DISTINCT catalog_entry_id FROM version);
+		DELETE FROM library WHERE name = ?`, name, name)
+}
+
 // Touch_library records the completion time of a watcher's scan.
 func (s *Store) Touch_library(ctx context.Context, name, last_scan string) error {
 	return s.exec_tx(ctx, "UPDATE library SET last_scan = ? WHERE name = ?", last_scan, name)

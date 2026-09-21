@@ -78,6 +78,17 @@
     new_path = '';
   }
 
+  async function remove_library(name) {
+    error = '';
+    try {
+      await api_send(`/api/v1/libraries/${encodeURIComponent(name)}`, 'DELETE', {});
+    } catch (err) {
+      error = err.message;
+    } finally {
+      await load();
+    }
+  }
+
   function enter_add(event) {
     if (event.key === 'Enter') add_library();
   }
@@ -268,6 +279,10 @@
               <td>{library.path}</td>
               <td><input type="checkbox" bind:checked={library.enabled} /></td>
               <td class="muted">{library.last_scan || '—'}</td>
+              <td class="actions"><button type="button" class="remove" on:click={() => remove_library(library.name)}>Remove</button></td>
+              <td class="actions">
+                <button class="remove" on:click={() => remove_library(library.name)} aria-label={`Remove ${library.name}`}>Remove</button>
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -338,6 +353,17 @@
     max-width: 18rem;
   }
 
+  .actions {
+    white-space: nowrap;
+  }
+  
+  .remove {
+    color: var(--bad);
+    border-color: var(--bad);
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+  }
+  
   .field {
     display: flex;
     flex-direction: column;

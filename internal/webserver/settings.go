@@ -14,6 +14,7 @@ import (
 )
 
 type library_item struct {
+	Id        int64  `json:"id"`
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	Enabled   bool   `json:"enabled"`
@@ -62,6 +63,29 @@ type settings_update struct {
 		Path    string `json:"path"`
 		Enabled bool   `json:"enabled"`
 	} `json:"libraries"`
+}
+
+// handle_library_delete removes the named library from the settings list
+// along with the version rows that lived under its root. Catalog entries are
+// global, so an entry is dropped only when the removed library was its last
+// holder. It returns the refreshed settings so the Settings page re-renders
+// the shortened library list immediately.
+func (s *Server) handle_library_delete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		write_error(w, http.StatusBadRequest, "invalid library name")
+		return
+	}
+	if err := s.store.Delete_library(r.Context(), name); err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response, err := s.settings(r)
+	if err != nil {
+		write_error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	write_json(w, http.StatusOK, response)
 }
 
 func (s *Server) handle_settings_get(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +232,7 @@ func (s *Server) settings(r *http.Request) (settings_response, error) {
 	}
 	for _, library := range libraries {
 		response.Libraries = append(response.Libraries, library_item{
-			Name: library.Name, Path: library.Path,
+			Id: library.Id, Name: library.Name, Path: library.Path,
 			Enabled: library.Enabled, Last_scan: library.Last_scan,
 		})
 	}

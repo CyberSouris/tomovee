@@ -119,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/match/stream", s.handle_match_stream)
 	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)
 	s.mux.HandleFunc("PUT /api/v1/settings", s.handle_settings_put)
+	s.mux.HandleFunc("DELETE /api/v1/libraries/{name}", s.handle_library_delete)
 	s.mux.HandleFunc("POST /api/v1/datasets", s.handle_datasets_start)
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
 	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)

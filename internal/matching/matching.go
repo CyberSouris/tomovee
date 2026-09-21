@@ -76,11 +76,12 @@ func (m *Matching) Set_datasets(index *imdb_datasets.Index) {
 // Run matches every catalog entry that is waiting for a lookup and reports
 // per-entry progress. It is safe to call concurrently with scans because it
 // only reads the database and the persisted hashes the scans wrote.
-func (m *Matching) Run(ctx context.Context, progress func(Progress)) (*Result, error) {
+func (m *Matching) Run(ctx context.Context, libraries []string, progress func(Progress)) (*Result, error) {
 	result := &Result{}
 	entries, err := m.store.List_catalog_entries(ctx, database.Catalog_filter{
-		Status: "needs_lookup",
-		Sort:   "added",
+		Status:    "needs_lookup",
+		Sort:      "added",
+		Libraries: libraries,
 	})
 	if err != nil {
 		return nil, err

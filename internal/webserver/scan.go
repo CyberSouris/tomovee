@@ -440,7 +440,7 @@ func (s *Server) Auto_match() {
 		return
 	}
 	_, _ = s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-		return s.matching.Run(ctx, progress)
+		return s.matching.Run(ctx, nil, progress)
 	})
 }
 
@@ -453,8 +453,18 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
 		return
 	}
+	var request struct {
+		Libraries []string `json:"libraries"`
+	}
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			write_error(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
 	job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-		return s.matching.Run(ctx, progress)
+		return s.matching.Run(ctx, request.Libraries, progress)
 	})
 	if err != nil {
 		write_error(w, http.StatusConflict, job_running_error("a matching job is already running", err))

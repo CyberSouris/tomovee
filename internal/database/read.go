@@ -17,6 +17,7 @@ type Catalog_filter struct {
 	Year       int
 	Resolution string
 	Language   string
+	Libraries  []string
 	Sort       string // "title" | "year" | "rating" | "added"
 	Desc       bool
 	Limit      int
@@ -281,6 +282,17 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`)
 		args = append(args, filter.Library)
 	}
+if len(filter.Libraries) > 0 {
+		placeholders := strings.Repeat("?,", len(filter.Libraries))
+		placeholders = strings.TrimSuffix(placeholders, ",")
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+			WHERE v.catalog_entry_id = ce.id AND lib.name IN (`+placeholders+`))`)
+		for _, name := range filter.Libraries {
+			args = append(args, name)
+		}
+	}
+	
 	if len(clauses) == 0 {
 		return "", args
 	}

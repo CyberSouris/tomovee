@@ -19,39 +19,24 @@ SPA handler serves the embedded web UI for everything else.
 [cols="1,2,4",options="header"]
 |===
 |Method |Path |Description
-
 |`GET`
 |`/catalog`
-|List/search entries. Query params: `media_type` (`movie`|`series`), `status`,
-`genre`, `year`, `resolution`, `language`, `sort`, `order`, `limit`, `offset`,
-and `q` for a title search. Returns
-`{"count":N,"entries":[{catalog_item}...]}`.
-
+|List and search the catalog. Query params: `media_type`, `genre`, `year`, `resolution`, `language`, `sort`, and `q` (title search). Response: `{"count":N,"entries":[{catalog_item}]}`.
 |`GET`
 |`/catalog/{id}`
-|Full detail for one entry: overview, genres, rating, all versions with their
-track breakdown (audio/subtitle language+codec+channels, resolution, codecs),
-poster URL, and status. Series entries include their episodes and seasons.
-
+|Full detail for one entry: overview, genres, track breakdown (audio and subtitle language + codec), poster URL, and match status.
 |`GET`
 |`/categories`
-|Browse categories: one row per genre with counts, plus an entry for unmatched
-media — `{"categories":[{media_type,genre,count}...]}`.
-
+|Browse categories. Response: `{"categories":[{media_type,genre,count}]}`.
 |`GET`
 |`/unmatched`
-|Entries awaiting manual review. Same `catalog_item` shape as `/catalog`.
-
+|Entries awaiting manual review. Same shape as `GET /catalog`.
 |`POST`
 |`/catalog/{id}/match`
-|Manually associate an unmatched entry with a candidate. Body:
-`{"tmdb_id":603}` or `{"imdb_id":"tt0133093"}`. On success the entry is updated;
-when the match is ambiguous a `candidates` list is returned.
-
+|Manually associate an entry with a title. Body: `{"tmdb_id":603}` or `{"imdb_id":"tt0133093"}`. Returns a `candidates` list when the match is ambiguous.
 |`POST`
 |`/catalog/{id}/rematch`
 |Re-run the automatic matching pipeline for one entry.
-
 |`POST`
 |`/catalog/{id}/reclassify`
 |Force an entry's media type. Body: `{"media_type":"series"}` or `{"media_type":"movie"}`.

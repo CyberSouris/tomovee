@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,7 +44,7 @@ func Open(dsn_path string) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(runtime.NumCPU())
 	d := &Database{db: db}
 	if err := d.migrate(); err != nil {
 		_ = db.Close()

@@ -182,11 +182,11 @@
         {all_selected() ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>
-      <button class="secondary" on:click={start_match} disabled={busy || selected.length === 0}>
+      <button on:click={start_match} disabled={busy || selected.length === 0}>
         {match_running ? 'Matching…' : 'Match'}
       </button>
-      <button class="secondary" on:click={start_chain} disabled={busy || selected.length === 0}>
-        {chain_match ? 'Scan &amp; Match…' : 'Scan &amp; Match'}
+      <button on:click={start_chain} disabled={busy || selected.length === 0}>
+        {chain_match ? 'Scan & Match…' : 'Scan & Match'}
       </button>
       <button on:click={start_scan} disabled={busy || selected.length === 0}>
         {scan_running ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}

@@ -224,28 +224,25 @@ func (f *flush_writer) Write(p []byte) (int, error) {
 }
 
 // version_file_path resolves the cleaned, safe absolute path of a version's
-// media file. Library-scoped versions are confined to their library's root;
-// legacy absolute paths (rows scanned before libraries existed) are served
-// directly.
+// media file. Only library-scoped versions are servable; they are confined to
+// their library's root. Legacy absolute-path rows (scanned before libraries
+// existed) are never served.
 func (s *Server) version_file_path(ctx context.Context, version database.Version) (string, error) {
-	if version.Library_id > 0 {
-		library, err := s.store.Get_library(ctx, version.Library_id)
-		if err != nil {
-			return "", err
-		}
-		if library == nil {
-			return "", errors.New("media library not found")
-		}
-		path, ok := path_within_root(library.Path, version.File_path)
-		if !ok {
-			return "", errors.New("media file outside library root")
-		}
-		return path, nil
-	}
-	if !filepath.IsAbs(version.File_path) {
+	if version.Library_id <= 0 {
 		return "", errors.New("media file has no library")
 	}
-	return filepath.Clean(version.File_path), nil
+	library, err := s.store.Get_library(ctx, version.Library_id)
+	if err != nil {
+		return "", err
+	}
+	if library == nil {
+		return "", errors.New("media library not found")
+	}
+	path, ok := path_within_root(library.Path, version.File_path)
+	if !ok {
+		return "", errors.New("media file outside library root")
+	}
+	return path, nil
 }
 
 // path_within_root returns the cleaned join of root and relative when the

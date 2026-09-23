@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -330,6 +331,22 @@ func (p *pipeline) reload_sources(logger *slog.Logger, store *database.Store, cf
 	return nil
 }
 
+// listen_address confines loopback-style listen hosts to a concrete loopback
+// address, so a config that asks to listen on the loopback never binds to
+// non-loopback interfaces (e.g. the name "localhost" resolving through a
+// custom resolver or VPN). Explicit all-interface ("", "0.0.0.0", "::") and
+// other concrete addresses are passed through unchanged.
+func listen_address(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
+}
+
 func cmd_serve(logger *slog.Logger, args []string) error {
 	cfg, err := load_config(args)
 	if err != nil {
@@ -423,15 +440,16 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 		}
 	}()
 
+	bind := listen_address(cfg.Listen)
 	http_server := &http.Server{
-		Addr:              cfg.Listen,
+		Addr:              bind,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errs := make(chan error, 1)
 	go func() {
-		logger.Info("serving", "listen", cfg.Listen, "web_ui", true)
+		logger.Info("serving", "listen", cfg.Listen, "bind", bind, "web_ui", true)
 		if err := http_server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 		}

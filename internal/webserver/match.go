@@ -48,7 +48,7 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load catalog entry")
 		return
 	}
 	if entry == nil {
@@ -70,7 +70,7 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		if s.metadata != nil {
 			enriched, err := s.matcher.Enrich_by_tmdb(r.Context(), media_type, request.Tmdb_id)
 			if err != nil {
-				write_error(w, http.StatusBadGateway, err.Error())
+				s.bad_gateway(w, err, "enrich from tmdb")
 				return
 			}
 			result = enriched
@@ -106,12 +106,12 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 	updated := scan.Catalog_entry_from_match(result)
 	updated.Id = id
 	if err := s.store.Update_catalog_entry(r.Context(), id, updated); err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "update catalog entry")
 		return
 	}
 	if result.Matched && s.matching != nil {
 		if err := s.matching.Enrich_episodes(r.Context(), id, result); err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "enrich episodes")
 			return
 		}
 	}
@@ -168,7 +168,7 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load catalog entry")
 		return
 	}
 	if entry == nil {
@@ -211,11 +211,11 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 		return result, nil
 	})
 	if errors.Is(err, Err_job_running) {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running", err))
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
 		return
 	}
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "run matching job")
 		return
 	}
 
@@ -264,7 +264,7 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load catalog entry")
 		return
 	}
 	if entry == nil {
@@ -319,11 +319,11 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		return result, nil
 	})
 	if errors.Is(err, Err_job_running) {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running", err))
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
 		return
 	}
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "run matching job")
 		return
 	}
 

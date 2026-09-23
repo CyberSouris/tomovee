@@ -31,7 +31,7 @@ func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
 	}
 	version, err := s.store.Get_version(r.Context(), version_id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load version")
 		return
 	}
 	if version == nil {
@@ -40,7 +40,8 @@ func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.version_file_path(r.Context(), *version)
 	if err != nil {
-		write_error(w, http.StatusNotFound, err.Error())
+		s.logger.Debug("version file path resolution failed", "version_id", version_id, "error", err)
+		write_error(w, http.StatusNotFound, "media file not found")
 		return
 	}
 	if info, err := os.Stat(path); err != nil || info.IsDir() {

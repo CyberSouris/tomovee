@@ -146,7 +146,7 @@ type category_item struct {
 func (s *Server) handle_categories(w http.ResponseWriter, r *http.Request) {
 	genres, err := s.store.Genre_counts(r.Context(), "matched")
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load genre counts")
 		return
 	}
 	items := make([]category_item, 0, len(genres))
@@ -155,7 +155,7 @@ func (s *Server) handle_categories(w http.ResponseWriter, r *http.Request) {
 	}
 	unmatched, err := s.store.Count_catalog_entries(r.Context(), database.Catalog_filter{Status: "needs_lookup"})
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "count unmatched entries")
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{
@@ -187,12 +187,12 @@ func (s *Server) handle_catalog_list(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := s.store.List_catalog_entries(r.Context(), filter)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "list catalog entries")
 		return
 	}
 	total, err := s.store.Count_catalog_entries(r.Context(), filter)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "count catalog entries")
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{
@@ -220,12 +220,12 @@ func (s *Server) handle_unmatched(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := s.store.List_catalog_entries(r.Context(), filter)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "list unmatched entries")
 		return
 	}
 	total, err := s.store.Count_catalog_entries(r.Context(), filter)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "count unmatched entries")
 		return
 	}
 	items := catalog_items(entries)
@@ -284,7 +284,7 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load catalog entry")
 		return
 	}
 	if entry == nil {
@@ -309,7 +309,7 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 		}
 		episodes, err := s.store.List_episodes(r.Context(), id)
 		if err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "list episodes")
 			return
 		}
 		for _, episode := range episodes {
@@ -324,7 +324,7 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 	} else {
 		versions, err := s.store.List_versions_for_entry(r.Context(), id)
 		if err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "list entry versions")
 			return
 		}
 		response.Versions = s.version_items(r.Context(), versions)

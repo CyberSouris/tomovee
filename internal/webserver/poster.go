@@ -21,7 +21,7 @@ func (s *Server) handle_poster(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load catalog entry for poster")
 		return
 	}
 	if entry == nil || entry.Poster_path == "" {
@@ -64,12 +64,12 @@ func (s *Server) handle_poster_prune(w http.ResponseWriter, r *http.Request) {
 	}
 	referenced, err := s.store.List_poster_refs(r.Context())
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "list poster references")
 		return
 	}
 	removed, err := s.posters.Prune(referenced)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "prune poster cache")
 		return
 	}
 	write_json(w, http.StatusOK, map[string]int{"removed": removed})

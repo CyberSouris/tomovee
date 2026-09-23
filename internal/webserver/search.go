@@ -54,7 +54,7 @@ func (s *Server) handle_search(w http.ResponseWriter, r *http.Request) {
 		if media_type == "series" {
 			results, err := s.metadata.Search_tv(ctx, query, year)
 			if err != nil {
-				write_error(w, http.StatusBadGateway, err.Error())
+				s.bad_gateway(w, err, "tmdb search tv")
 				return
 			}
 			for _, res := range results {
@@ -70,7 +70,7 @@ func (s *Server) handle_search(w http.ResponseWriter, r *http.Request) {
 		} else {
 			results, err := s.metadata.Search_movie(ctx, query, year)
 			if err != nil {
-				write_error(w, http.StatusBadGateway, err.Error())
+				s.bad_gateway(w, err, "tmdb search movie")
 				return
 			}
 			for _, res := range results {
@@ -93,7 +93,7 @@ func (s *Server) handle_search(w http.ResponseWriter, r *http.Request) {
 		}
 		results, err := s.matcher.Search_local_autocomplete(ctx, query, year, media, max_search_results)
 		if err != nil {
-			write_error(w, http.StatusBadGateway, err.Error())
+			s.bad_gateway(w, err, "local autocomplete search")
 			return
 		}
 		for _, cand := range results {

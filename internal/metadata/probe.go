@@ -7,11 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Probe_binary is the ffprobe executable invoked by Probe. It defaults to
 // "ffprobe" (resolved through PATH) and can be overridden for testing.
 var Probe_binary = "ffprobe"
+
+// ffprobe_timeout bounds a single probe run. Media files are treated as
+// untrusted input, so a crafted file that makes ffprobe spin is cut off
+// instead of pinning a core forever.
+const ffprobe_timeout = 15 * time.Second
 
 // Locate_ffprobe returns the absolute path to the ffprobe binary, or an error
 // explaining that ffprobe is unavailable.
@@ -32,7 +38,9 @@ func Probe(ctx context.Context, path string) (*File_info, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cmd := exec.CommandContext(ctx, bin,
+	probe_ctx, cancel := context.WithTimeout(ctx, ffprobe_timeout)
+	defer cancel()
+	cmd := exec.CommandContext(probe_ctx, bin,
 		"-v", "error", "-show_format", "-show_streams", "-of", "json", "--", path)
 	out, err := cmd.Output()
 	if err != nil {

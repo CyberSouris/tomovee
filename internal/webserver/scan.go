@@ -41,6 +41,14 @@ type job_manager[R any, T any] struct {
 // Err_job_running is returned when a job is already in progress.
 var Err_job_running = errors.New("a job is already running")
 
+// Err_too_many_subscribers is returned when an SSE feed already has the
+// maximum number of concurrent subscribers, so a client cannot accumulate
+// unbounded buffered-channel memory.
+var Err_too_many_subscribers = errors.New("too many stream subscribers")
+
+// max_subscribers caps the concurrent SSE connections a job feed admits.
+const max_subscribers = 8
+
 func new_job_manager[R any, T any](logger *slog.Logger) *job_manager[R, T] {
 	return &job_manager[R, T]{logger: logger, subs: make(map[int]chan R)}
 }
@@ -97,14 +105,17 @@ func (jm *job_manager[R, T]) begin() (context.Context, context.CancelFunc, *job[
 }
 
 // finish records the outcome of a finished job and broadcasts a final progress
-// update so SSE subscribers observe the transition.
+// update so SSE subscribers observe the transition. Failures are logged
+// server-side; the surfaced error message stays generic so internal details
+// never reach the API.
 func (jm *job_manager[R, T]) finish(result *T, err error) {
 	jm.mu.Lock()
 	jm.job.Running = false
 	jm.job.Finished_at = time.Now()
 	jm.job.Result = result
 	if err != nil {
-		jm.job.Error = err.Error()
+		jm.logger.Error("background job failed", "job_id", jm.job.Id, "error", err)
+		jm.job.Error = "background job failed"
 	}
 	progress := jm.job.Progress
 	jm.mu.Unlock()
@@ -138,8 +149,12 @@ func (jm *job_manager[R, T]) snapshot_locked() *job[R, T] {
 
 // Subscribe registers a progress channel and returns it with an unsubscribe
 // function. The current progress is delivered immediately when a job exists.
-func (jm *job_manager[R, T]) Subscribe() (<-chan R, func()) {
+func (jm *job_manager[R, T]) Subscribe() (<-chan R, func(), error) {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if len(jm.subs) >= max_subscribers {
+		return nil, nil, Err_too_many_subscribers
+	}
 	id := jm.next
 	jm.next++
 	ch := make(chan R, 32)
@@ -150,7 +165,6 @@ func (jm *job_manager[R, T]) Subscribe() (<-chan R, func()) {
 		default:
 		}
 	}
-	jm.mu.Unlock()
 
 	unsubscribe := func() {
 		jm.mu.Lock()
@@ -160,7 +174,7 @@ func (jm *job_manager[R, T]) Subscribe() (<-chan R, func()) {
 		}
 		jm.mu.Unlock()
 	}
-	return ch, unsubscribe
+	return ch, unsubscribe, nil
 }
 
 func (jm *job_manager[R, T]) report(progress R) {
@@ -266,7 +280,7 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		return s.scanner.Run_libraries(ctx, request.Libraries, progress)
 	})
 	if err != nil {
-		write_error(w, http.StatusConflict, job_running_error("a scan is already running", err))
+		write_error(w, http.StatusConflict, job_running_error("a scan is already running"))
 		return
 	}
 	write_json(w, http.StatusAccepted, job_response_from(job))
@@ -327,7 +341,11 @@ func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe := s.jobs.Subscribe()
+	progress, unsubscribe, err := s.jobs.Subscribe()
+	if err != nil {
+		write_error(w, http.StatusServiceUnavailable, "too many scan stream subscribers")
+		return
+	}
 	defer unsubscribe()
 
 	send := func(event string, payload any) bool {
@@ -467,7 +485,7 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 		return s.matching.Run(ctx, request.Libraries, progress)
 	})
 	if err != nil {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running", err))
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
 		return
 	}
 	write_json(w, http.StatusAccepted, match_job_response_from(job))
@@ -522,7 +540,11 @@ func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe := s.matches.Subscribe()
+	progress, unsubscribe, err := s.matches.Subscribe()
+	if err != nil {
+		write_error(w, http.StatusServiceUnavailable, "too many match stream subscribers")
+		return
+	}
 	defer unsubscribe()
 
 	send := func(event string, payload any) bool {
@@ -568,9 +590,6 @@ func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func job_running_error(message string, err error) string {
-	if errors.Is(err, Err_job_running) {
-		return message
-	}
-	return err.Error()
+func job_running_error(message string) string {
+	return message
 }

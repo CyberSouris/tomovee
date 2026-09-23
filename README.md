@@ -78,6 +78,17 @@ tomovee version
 `serve` listens on `listen` (default `127.0.0.1:8080`) and serves the web UI at
 `/` and the JSON API under `/api/v1/`.
 
+## Security
+
+- Tomovee has **no authentication**: the API is meant to be reached only from
+  your own machine. `localhost` in `listen` is bound strictly to loopback. Bind
+  it to a network interface (`0.0.0.0`, `192.168.1.10`) only on a trusted
+  network.
+- Media files are fed to `ffprobe`/`ffmpeg` (metadata probing, frame posters,
+  remux/transcode) and therefore count as untrusted input. Run the daemon as an
+  unprivileged user; consider a systemd sandbox or container if library folders
+  are writable by others. Individual probe/extract runs are time-boxed.
+
 ## REST API
 
 | Method | Path | Description |

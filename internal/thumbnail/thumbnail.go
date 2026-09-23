@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Local_marker is stored in catalog_entry.poster_path to flag a poster that
@@ -39,6 +40,10 @@ var Ffmpeg_binary = "ffmpeg"
 
 // Err_flat is returned when no candidate frame had enough visual variation.
 var Err_flat = errors.New("thumbnail: no non-uniform frame found")
+
+// frame_timeout bounds one frame-extraction run so a crafted media file that
+// makes ffmpeg spin is cut off instead of pinning a core during the scan.
+const frame_timeout = 30 * time.Second
 
 // Err_no_ffmpeg is returned when the ffmpeg binary cannot be found.
 var Err_no_ffmpeg = errors.New("thumbnail: ffmpeg not available")
@@ -124,6 +129,8 @@ func candidate_times(duration float64) []float64 {
 }
 
 func grab_frame(ctx context.Context, bin, video_path string, at float64, out_path string) error {
+	cmd_ctx, cancel := context.WithTimeout(ctx, frame_timeout)
+	defer cancel()
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin",
 		"-ss", strconv.FormatFloat(at, 'f', 3, 64),
@@ -133,7 +140,7 @@ func grab_frame(ctx context.Context, bin, video_path string, at float64, out_pat
 		"-q:v", "3",
 		"-y", out_path,
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(cmd_ctx, bin, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {

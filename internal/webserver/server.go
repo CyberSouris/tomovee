@@ -185,6 +185,21 @@ func write_error(w http.ResponseWriter, status int, message string) {
 	write_json(w, status, map[string]string{"error": message})
 }
 
+// internal_error logs the real error server-side and returns a generic message
+// to the client, so internal details (paths, filenames, database and command
+// fragments) never leak through the API.
+func (s *Server) internal_error(w http.ResponseWriter, err error, context string) {
+	s.logger.Warn("request failed", "context", context, "error", err)
+	write_error(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+}
+
+// bad_gateway logs a failed upstream (TMDB, OpenSubtitles, ffmpeg) error and
+// returns a generic message to the client without exposing upstream details.
+func (s *Server) bad_gateway(w http.ResponseWriter, err error, context string) {
+	s.logger.Warn("upstream request failed", "context", context, "error", err)
+	write_error(w, http.StatusBadGateway, http.StatusText(http.StatusBadGateway))
+}
+
 func path_id(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {

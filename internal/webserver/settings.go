@@ -77,12 +77,12 @@ func (s *Server) handle_library_delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.Delete_library(r.Context(), name); err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "delete library")
 		return
 	}
 	response, err := s.settings(r)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load settings")
 		return
 	}
 	write_json(w, http.StatusOK, response)
@@ -92,7 +92,7 @@ func (s *Server) handle_library_delete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handle_libraries_list(w http.ResponseWriter, r *http.Request) {
 	libraries, err := s.store.List_libraries(r.Context())
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "list libraries")
 		return
 	}
 	items := make([]library_item, 0, len(libraries))
@@ -110,7 +110,7 @@ func (s *Server) handle_libraries_list(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handle_settings_get(w http.ResponseWriter, r *http.Request) {
 	response, err := s.settings(r)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load settings")
 		return
 	}
 	write_json(w, http.StatusOK, response)
@@ -128,7 +128,7 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 			value = "true"
 		}
 		if err := s.store.Config_set(r.Context(), "watch_enabled", value); err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "persist watch_enabled")
 			return
 		}
 	}
@@ -150,7 +150,7 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := s.store.Config_set(r.Context(), item.key, *item.value); err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "persist setting override")
 			return
 		}
 		*item.dst = *item.value
@@ -160,13 +160,13 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := s.store.Upsert_library(r.Context(), library.Name, library.Path, library.Enabled); err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "upsert library")
 			return
 		}
 	}
 	response, err := s.settings(r)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load settings")
 		return
 	}
 	write_json(w, http.StatusOK, response)
@@ -182,12 +182,12 @@ func (s *Server) handle_sources_reload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.reload(); err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "reload sources")
 		return
 	}
 	response, err := s.settings(r)
 	if err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "load settings")
 		return
 	}
 	write_json(w, http.StatusOK, response)
@@ -297,7 +297,7 @@ func (s *Server) handle_datasets_start(w http.ResponseWriter, r *http.Request) {
 	dir := strings.TrimSpace(body.Path)
 	if dir == "" {
 		if value, ok, err := s.store.Config_get(r.Context(), config.Override_imdb_datasets_path); err != nil {
-			write_error(w, http.StatusInternalServerError, err.Error())
+			s.internal_error(w, err, "read datasets path override")
 			return
 		} else if ok && value != "" {
 			dir = value
@@ -312,12 +312,12 @@ func (s *Server) handle_datasets_start(w http.ResponseWriter, r *http.Request) {
 		dir = abs
 	}
 	if err := s.store.Config_set(r.Context(), config.Override_imdb_datasets_path, dir); err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "persist datasets path override")
 		return
 	}
 	s.cfg.Imdb_datasets_path = dir
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		write_error(w, http.StatusInternalServerError, err.Error())
+		s.internal_error(w, err, "create datasets directory")
 		return
 	}
 	stream := s.stream_datasets

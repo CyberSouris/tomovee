@@ -21,9 +21,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Cypress and browser dependencies
+      - name: Install frontend dependencies
         working-directory: internal/webui
-        run: npx cypress install
+        run: npm ci
+
+      - name: Install Cypress binary
+        working-directory: internal/webui
+        run: npx --no-install cypress install
 
       - name: Build the daemon (embeds the SPA)
         run: go build -o bin/tomovee ./cmd/tomovee

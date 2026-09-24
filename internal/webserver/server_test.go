@@ -786,6 +786,98 @@ func Test_match_job_matches_offline(t *testing.T) {
 	}
 }
 
+// matched_entry_with_version stores an already-matched catalog entry with a
+// version, the starting point of a rematch-all run.
+func matched_entry_with_version(t *testing.T, store *database.Store) int64 {
+	t.Helper()
+	ctx := context.Background()
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
+		Imdb_id: "tt0000000", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv",
+		Size_bytes: 9000, Hash: "hash-1",
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	return id
+}
+
+// wait_for_match_result polls until the match job reports want_matched entries,
+// tolerating an intermediate finished snapshot from a queued run's predecessor.
+func wait_for_match_result(t *testing.T, server *Server, want_matched int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+		body := decode[struct {
+			Job *match_job_response `json:"job"`
+		}](t, status)
+		if body.Job != nil && body.Job.Result != nil && body.Job.Result.Matched == want_matched {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("match job never reported %d matched entries", want_matched)
+}
+
+func Test_rematch_all_re_runs_matched_entries(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	id := matched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 1)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" {
+		t.Fatalf("entry = %+v, want re-matched matrix (imdb tt0133093)", entry)
+	}
+}
+
+func Test_rematch_all_queues_behind_running_job(t *testing.T) {
+	server, _ := new_test_server(t)
+	id := unmatched_entry_with_version(t, server.store)
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	go func() {
+		_, _ = server.matches.Start(func(job_ctx context.Context, _ func(matching.Progress)) (*matching.Result, error) {
+			close(started)
+			<-block
+			return &matching.Result{Total: 1}, nil
+		})
+	}()
+	<-started
+	defer server.matches.Cancel()
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("rematch all while job running = %d, want 202 (queued): %s", start.Code, start.Body)
+	}
+
+	close(block)
+	wait_for_match_result(t, server, 1)
+
+	entry, err := server.store.Get_catalog_entry(context.Background(), id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" {
+		t.Fatalf("entry status = %s, want matched after queued rematch all", entry.Status)
+	}
+}
+
 func Test_auto_match_runs_nonblocking(t *testing.T) {
 	server, _ := new_test_server(t)
 	unmatched_entry_with_version(t, server.store)

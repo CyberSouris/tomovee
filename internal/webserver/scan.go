@@ -132,6 +132,42 @@ func (jm *job_manager[R, T]) Run_sync_queued(run func(context.Context, func(R)) 
 	}
 }
 
+// Start_queued is Start with FIFO queueing: when another job is running the
+// run is appended to the queue instead of being rejected with Err_job_running,
+// and the call returns immediately with a placeholder snapshot so the API can
+// acknowledge the request. The finishing job hands its slot to the next queued
+// run, which then surfaces in the global background status like a normal job.
+func (jm *job_manager[R, T]) Start_queued(run func(context.Context, func(R)) (*T, error)) (*job[R, T], error) {
+	for {
+		snapshot, err := jm.Start(run)
+		if err == nil {
+			return snapshot, nil
+		}
+		if !errors.Is(err, Err_job_running) {
+			return nil, err
+		}
+		pending := &pending_run[R, T]{run: run, done: make(chan pending_result[T], 1)}
+		jm.mu.Lock()
+		if jm.job == nil || !jm.job.Running {
+			// The active job finished between the Start call above and this
+			// enqueue, so nobody will ever drain the queue; retry and claim the
+			// slot directly instead of leaving a run stuck in limbo.
+			jm.mu.Unlock()
+			continue
+		}
+		jm.queue = append(jm.queue, pending)
+		jm.mu.Unlock()
+		break
+	}
+	// Placeholder snapshot so the caller can acknowledge the request; the real
+	// job replaces it in status/SSE once it dequeues.
+	return &job[R, T]{
+		Id:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Started_at: time.Now(),
+		Running:    true,
+	}, nil
+}
+
 // begin claims the job slot for a new job, marking it running, and returns the
 // derived context, its cancel function, and a snapshot suitable for the HTTP
 // response. It returns Err_job_running when another job is in progress.
@@ -571,6 +607,39 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		return s.matching.Run(ctx, request.Libraries, progress)
+	})
+	if err != nil {
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+		return
+	}
+	write_json(w, http.StatusAccepted, match_job_response_from(job))
+}
+
+// handle_rematch_all_start starts a background rematch run over every known
+// entry. It goes through the same job manager as the Match button, so it shares
+// the progress stream, and queues behind a running match job instead of failing
+// with a conflict.
+func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request) {
+	if s.matching == nil || s.matcher == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	if !s.matcher.Has_sources() {
+		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
+		return
+	}
+	var request struct {
+		Libraries []string `json:"libraries"`
+	}
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			write_error(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	job, err := s.matches.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		return s.matching.Run_rematch(ctx, request.Libraries, progress)
 	})
 	if err != nil {
 		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))

@@ -98,6 +98,17 @@
     }
   }
 
+  async function start_rematch() {
+    match_error = '';
+    match_result = null;
+    try {
+      await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice() });
+      match_running = true;
+    } catch (err) {
+      match_error = err.message;
+    }
+  }
+
   async function start_chain() {
     chain_match = true;
     scan_error = '';
@@ -192,6 +203,9 @@
       <span class="spacer"></span>
       <button on:click={start_match} disabled={busy || selected.length === 0}>
         {match_running ? 'Matching…' : 'Match'}
+      </button>
+      <button class="secondary" on:click={start_rematch} disabled={busy || selected.length === 0} title="Re-run the matcher over every known title, already matched ones included">
+        Rematch all
       </button>
       <button on:click={start_chain} disabled={busy || selected.length === 0}>
         {chain_match ? 'Scan & Match…' : 'Scan & Match'}

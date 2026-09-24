@@ -115,6 +115,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/scan/status", s.handle_scan_status)
 	s.mux.HandleFunc("GET /api/v1/scan/stream", s.handle_scan_stream)
 	s.mux.HandleFunc("POST /api/v1/match", s.handle_match_start)
+	s.mux.HandleFunc("POST /api/v1/match/rematch", s.handle_rematch_all_start)
 	s.mux.HandleFunc("GET /api/v1/match/status", s.handle_match_status)
 	s.mux.HandleFunc("GET /api/v1/match/stream", s.handle_match_stream)
 	s.mux.HandleFunc("GET /api/v1/settings", s.handle_settings_get)

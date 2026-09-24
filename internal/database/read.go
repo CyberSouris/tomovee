@@ -12,6 +12,7 @@ import (
 type Catalog_filter struct {
 	Media_type string
 	Status     string
+	Statuses   []string
 	Search     string
 	Genre      string
 	Year       int
@@ -249,6 +250,14 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 	if filter.Status != "" {
 		clauses = append(clauses, "ce.status = ?")
 		args = append(args, filter.Status)
+	}
+	if len(filter.Statuses) > 0 {
+		placeholders := strings.Repeat("?,", len(filter.Statuses))
+		placeholders = strings.TrimSuffix(placeholders, ",")
+		clauses = append(clauses, "ce.status IN ("+placeholders+")")
+		for _, status := range filter.Statuses {
+			args = append(args, status)
+		}
 	}
 	if filter.Search != "" {
 		clauses = append(clauses, "(ce.title LIKE ? OR ce.original_title LIKE ?)")

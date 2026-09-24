@@ -459,6 +459,24 @@ func Test_match_offline_single_candidate(t *testing.T) {
 	}
 }
 
+func Test_match_offline_carries_genres(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt0086759", Title: "Miami Vice", Year: 1984,
+		Media_type: scanner.Series, Genres: []string{"Action", "Crime", "Drama"},
+	}}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path: "/s/Miami.Vice.S01E01.mkv", File_name: "Miami.Vice.S01E01.mkv", Kind: scanner.Series,
+	})
+	if !result.Matched || result.Source != "imdb-datasets" || result.Imdb_id != "tt0086759" {
+		t.Fatalf("expected offline match, got %+v", result)
+	}
+	if len(result.Genres) != 3 || result.Genres[0] != "Action" || result.Genres[1] != "Crime" || result.Genres[2] != "Drama" {
+		t.Errorf("genres = %v, want [Action Crime Drama]", result.Genres)
+	}
+}
+
 func Test_match_offline_ambiguous_leaves_for_review(t *testing.T) {
 	offline := &fake_offline{candidates: []Offline_candidate{
 		{Imdb_id: "tt0000005", Title: "Remake", Year: 2000, Media_type: scanner.Movie},

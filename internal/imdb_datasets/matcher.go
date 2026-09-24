@@ -28,6 +28,7 @@ func (s *Matcher_source) Search(_ context.Context, query string, year int, media
 			Title:      r.Title,
 			Year:       r.Year,
 			Media_type: r.Media_type,
+			Genres:     r.Genres,
 		})
 	}
 	return out, nil
@@ -44,6 +45,7 @@ func (s *Matcher_source) Search_local(_ context.Context, query string, year int,
 			Title:      r.Title,
 			Year:       r.Year,
 			Media_type: r.Media_type,
+			Genres:     r.Genres,
 		})
 	}
 	return out, nil

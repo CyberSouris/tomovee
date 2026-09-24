@@ -10,7 +10,7 @@ PKG := ./cmd/tomovee
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo unknown)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build frontend test vet fmt fmt-check clean version run e2e
+.PHONY: all build frontend test vet fmt fmt-check clean version run e2e coverage
 
 all: frontend build
 
@@ -29,6 +29,24 @@ frontend:
 # the mocked-API rendering specs and then the real-binary smoke specs.
 e2e: build
 	cd internal/webui && npm run e2e:mocked && npm run e2e:smoke
+
+# Instrumented binary and coverage scratch dirs. GOCOVERDIR flushes counter
+# data when the daemon shuts down gracefully (SIGTERM) at the end of the smoke
+# run, so the real-binary e2e specs contribute to the report.
+BIN_CVR := bin/tomovee-cov
+COVER_DIR := tmp/coverage
+
+coverage: $(BIN_CVR)
+	rm -rf $(COVER_DIR) coverage.out
+	mkdir -p $(COVER_DIR)/unit $(COVER_DIR)/e2e $(COVER_DIR)/merged
+	go test -cover ./... -args -test.gocoverdir=$(abspath $(COVER_DIR)/unit)
+	cd internal/webui && GOCOVERDIR=$(abspath $(COVER_DIR)/e2e) TOMOVEE_BIN=$(abspath $(BIN_CVR)) npm run e2e:smoke
+	go tool covdata merge -i=$(abspath $(COVER_DIR)/unit),$(abspath $(COVER_DIR)/e2e) -o=$(abspath $(COVER_DIR)/merged)
+	go tool covdata textfmt -i=$(abspath $(COVER_DIR)/merged) -o=coverage.out
+	rm -rf $(COVER_DIR)
+
+$(BIN_CVR):
+	go build -cover -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_CVR) $(PKG)
 
 test:
 	go test ./...

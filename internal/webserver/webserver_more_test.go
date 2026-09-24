@@ -606,15 +606,16 @@ func Test_job_manager_subscribe_limits(t *testing.T) {
 func Test_job_manager_subscribe_initializes_from_running_job(t *testing.T) {
 	server, _ := new_test_server(t)
 	block := make(chan struct{})
-	defer close(block)
 	started := make(chan struct{})
+	run_done := make(chan error, 1)
 	go func() {
-		server.jobs.Run_sync(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+		_, err := server.jobs.Run_sync(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
 			close(started)
 			<-block
 			progress(scan.Progress{Phase: "done", Files_found: 1})
 			return &scan.Result{}, nil
 		})
+		run_done <- err
 	}()
 	<-started
 
@@ -628,5 +629,15 @@ func Test_job_manager_subscribe_initializes_from_running_job(t *testing.T) {
 		// Initial progress delivered.
 	case <-time.After(time.Second):
 		t.Fatal("no initial progress from a running job")
+	}
+
+	close(block)
+	select {
+	case err := <-run_done:
+		if err != nil {
+			t.Errorf("Run_sync: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run_sync did not finish")
 	}
 }

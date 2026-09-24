@@ -3,6 +3,7 @@
 *.test
 *.out
 coverage.*
+!.github/workflows/coverage.yaml
 
 # Local data
 *.db

@@ -106,26 +106,44 @@
       <option value="movie">Movies</option>
       <option value="series">Series</option>
     </select>
-    <select bind:value={status}>
-      <option value="">Any status</option>
-      <option value="matched">Matched</option>
-      <option value="needs_lookup">Needs lookup</option>
-      <option value="missing">Missing</option>
-    </select>
     <select bind:value={library}>
       <option value="">All libraries</option>
       {#each libraries as lib}
         <option value={lib.name}>{lib.name}</option>
       {/each}
     </select>
-    <select bind:value={sort}>
-      <option value="added">Recently added</option>
-      <option value="title">Title</option>
-      <option value="year">Year</option>
-      <option value="rating">Rating</option>
-    </select>
     <button type="submit" disabled={loading}>Search</button>
   </form>
+
+  <div class="toolbar">
+    <label class="toolbar-field">
+      <span class="muted">Library</span>
+      <select bind:value={library} on:change={() => load(true)}>
+        <option value="">All libraries</option>
+        {#each libraries as lib}
+          <option value={lib.name}>{lib.name}</option>
+        {/each}
+      </select>
+    </label>
+    <label class="toolbar-field">
+      <span class="muted">Status</span>
+      <select bind:value={status} on:change={() => load(true)}>
+        <option value="">Any status</option>
+        <option value="matched">Matched</option>
+        <option value="needs_lookup">Needs lookup</option>
+        <option value="missing">Missing</option>
+      </select>
+    </label>
+    <label class="toolbar-field">
+      <span class="muted">Sort</span>
+      <select bind:value={sort} on:change={() => load(true)}>
+        <option value="added">Recently added</option>
+        <option value="title">Title</option>
+        <option value="year">Year</option>
+        <option value="rating">Rating</option>
+      </select>
+    </label>
+  </div>
 
   {#if error}
     <p class="error">{error}</p>
@@ -177,6 +195,19 @@
   form input {
     flex: 1;
     min-width: 12rem;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+
+  .toolbar-field {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
   .chips {

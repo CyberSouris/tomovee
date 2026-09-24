@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api_get } from './api.js';
+  import logo from './assets/logo.png';
   import Browse from './routes/Browse.svelte';
   import Detail from './routes/Detail.svelte';
   import Unmatched from './routes/Unmatched.svelte';
@@ -218,7 +219,10 @@
 </div>
 
 <header>
-  <div class="brand">Tomovee</div>
+  <a class="brand" href="#/browse">
+    <img class="brand-logo" src={logo} alt="Tomovee logo" />
+    <span>Tomovee</span>
+  </a>
   <nav>
     {#each links as [name, label]}
       <a class:active={route.name === name} href={'#/' + name}>{label}</a>
@@ -405,8 +409,19 @@
   }
 
   .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.02em;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .brand-logo {
+    height: 1.7rem;
+    width: auto;
+    display: block;
   }
 
   nav {

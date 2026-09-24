@@ -4,11 +4,9 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Version to release (e.g. v0.2.0). Creates an annotated tag and publishes the release."
-        required: true
-        type: string
+    # Version is deduced from the conventional commits since the last tag
+    # (see .github/scripts/deduce-version.sh) and the changelog is attached
+    # to the release notes.
 
 permissions:
   contents: write
@@ -31,13 +29,10 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            tag="${GITHUB_REF_NAME}"
+            bash .github/scripts/deduce-version.sh "${GITHUB_REF_NAME}"
           else
-            tag="${{ inputs.tag }}"
+            bash .github/scripts/deduce-version.sh
           fi
-          tag="${tag#v}"
-          echo "tag=${tag}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -58,12 +53,12 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.tag }}" \
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
             -o dist/tomovee ./cmd/tomovee
 
       - name: Stage tarball
         run: |
-          tag="${{ steps.version.outputs.tag }}"
+          tag="${{ steps.version.outputs.version }}"
           dir="tomovee-${tag}-linux-${{ matrix.goarch }}"
           mkdir -p "dist/pkg/${dir}"
           cp dist/tomovee "dist/pkg/${dir}/tomovee"
@@ -97,12 +92,10 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            tag="${GITHUB_REF_NAME}"
+            bash .github/scripts/deduce-version.sh "${GITHUB_REF_NAME}"
           else
-            tag="${{ inputs.tag }}"
+            bash .github/scripts/deduce-version.sh
           fi
-          tag="${tag#v}"
-          echo "version=${tag}" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
@@ -117,11 +110,7 @@ jobs:
       - name: Generate changelog
         run: |
           tag="${{ steps.version.outputs.version }}"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            prev="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
-          else
-            prev="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
-          fi
+          prev="${{ steps.version.outputs.prev_tag }}"
           {
             echo "# Changelog"
             echo

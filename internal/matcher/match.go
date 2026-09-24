@@ -89,6 +89,7 @@ type Offline_candidate struct {
 	Title      string
 	Year       int
 	Media_type scanner.Media_type
+	Genres     []string
 }
 
 // Input describes a single file to identify.
@@ -109,6 +110,7 @@ type Candidate struct {
 	Score       float64
 	Overview    string
 	Poster_path string
+	Genres      []string
 }
 
 // Result is the outcome of matching a single file.
@@ -459,6 +461,7 @@ func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_
 			Title:   c.Title,
 			Year:    c.Year,
 			Score:   score,
+			Genres:  c.Genres,
 		})
 	}
 	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
@@ -486,6 +489,7 @@ func (m *Matcher) match_offline(ctx context.Context, input Input, hint Filename_
 	result.Imdb_id = best.Imdb_id
 	result.Title = best.Title
 	result.Year = best.Year
+	result.Genres = best.Genres
 }
 
 // merge_candidates appends extra candidates to existing, dropping duplicates

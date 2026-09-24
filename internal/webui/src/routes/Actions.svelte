@@ -204,7 +204,7 @@
       <button on:click={start_match} disabled={busy || selected.length === 0}>
         {match_running ? 'Matching…' : 'Match'}
       </button>
-      <button class="secondary" on:click={start_rematch} disabled={busy || selected.length === 0} title="Re-run the matcher over every known title, already matched ones included">
+      <button on:click={start_rematch} disabled={busy || selected.length === 0} title="Re-run the matcher over every known title, already matched ones included">
         Rematch all
       </button>
       <button on:click={start_chain} disabled={busy || selected.length === 0}>

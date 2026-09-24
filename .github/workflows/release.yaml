@@ -182,6 +182,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           tag="v${{ steps.version.outputs.version }}"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "tag ${tag} already exists; skipping creation"

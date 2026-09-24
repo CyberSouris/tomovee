@@ -14,8 +14,20 @@ jobs:
       with:
         go-version-file: go.mod
         cache: true
-    - name: Generate coverage report
-      run: go test ./... -coverprofile=coverage.out -covermode=atomic
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: internal/webui/package-lock.json
+    - name: Install frontend dependencies
+      working-directory: internal/webui
+      run: npm ci
+    - name: Install Cypress binary
+      working-directory: internal/webui
+      run: npx --no-install cypress install
+    - name: Generate coverage report (unit tests + real-binary e2e specs)
+      run: xvfb-run -a make coverage
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v7
       with:

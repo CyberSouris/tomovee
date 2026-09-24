@@ -26,6 +26,9 @@ name.basics.tsv.gz
 node_modules/
 internal/webui/node_modules/
 
+# Local scratch
+tmp/
+
 # Editor/OS
 .idea/
 .vscode/

@@ -799,3 +799,77 @@ func Test_job_manager_run_sync_queued_is_fifo(t *testing.T) {
 		}
 	}
 }
+
+func Test_job_manager_start_queued_queues_behind_active_job(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	var order []string
+	var mu sync.Mutex
+	mark := func(tag string) {
+		mu.Lock()
+		order = append(order, tag)
+		mu.Unlock()
+	}
+
+	go func() {
+		_, _ = server.jobs.Start(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-one")
+			close(started)
+			<-block
+			return &scan.Result{Found: 1}, nil
+		})
+	}()
+	<-started
+
+	queued_started := make(chan struct{})
+	snapshot, err := server.jobs.Start_queued(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+		mark("run-two")
+		close(queued_started)
+		return &scan.Result{New: 2}, nil
+	})
+	if err != nil {
+		t.Fatalf("start_queued: %v", err)
+	}
+	if snapshot == nil || !snapshot.Running {
+		t.Fatalf("queued snapshot = %+v, want a running placeholder", snapshot)
+	}
+
+	select {
+	case <-queued_started:
+		t.Fatal("queued job started while the active job was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(block)
+	select {
+	case <-queued_started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued job never started after the active job finished")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if job := server.jobs.Snapshot(); job != nil && !job.Running && job.Result != nil && job.Result.New == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job := server.jobs.Snapshot(); job == nil || job.Running || job.Result == nil || job.Result.New != 2 {
+		t.Fatalf("queued job never completed, snapshot = %+v", job)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"run-one", "run-two"}
+	if len(order) != len(want) {
+		t.Fatalf("run order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("run order = %v, want %v", order, want)
+			break
+		}
+	}
+}

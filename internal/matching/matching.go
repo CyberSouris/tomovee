@@ -77,7 +77,6 @@ func (m *Matching) Set_datasets(index *imdb_datasets.Index) {
 // per-entry progress. It is safe to call concurrently with scans because it
 // only reads the database and the persisted hashes the scans wrote.
 func (m *Matching) Run(ctx context.Context, libraries []string, progress func(Progress)) (*Result, error) {
-	result := &Result{}
 	entries, err := m.store.List_catalog_entries(ctx, database.Catalog_filter{
 		Status:    "needs_lookup",
 		Sort:      "added",
@@ -86,6 +85,31 @@ func (m *Matching) Run(ctx context.Context, libraries []string, progress func(Pr
 	if err != nil {
 		return nil, err
 	}
+	return m.run_entries(ctx, entries, progress), nil
+}
+
+// Run_rematch re-runs the automatic matcher over every entry that has a known
+// title — matched or waiting for a lookup — so a refreshed or fixed matching
+// source can update metadata (genres included) without waiting for a re-scan.
+// Entries that still match confidently are re-persisted; the rest are left
+// exactly as they were. Truly missing entries (deleted files) are left out so
+// they are not reported as fresh match failures.
+func (m *Matching) Run_rematch(ctx context.Context, libraries []string, progress func(Progress)) (*Result, error) {
+	entries, err := m.store.List_catalog_entries(ctx, database.Catalog_filter{
+		Statuses:  []string{"matched", "needs_lookup"},
+		Sort:      "added",
+		Libraries: libraries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return m.run_entries(ctx, entries, progress), nil
+}
+
+// run_entries matches a bounded worker pool over the given entries and reports
+// per-entry progress.
+func (m *Matching) run_entries(ctx context.Context, entries []database.Catalog_entry, progress func(Progress)) *Result {
+	result := &Result{}
 	result.Total = len(entries)
 
 	// The offline dataset, when attached, is its own SQLite database, so the
@@ -154,7 +178,7 @@ send_loop:
 	}
 	close(jobs)
 	wg.Wait()
-	return result, nil
+	return result
 }
 
 // match_entry identifies one catalog entry and persists the result. It uses

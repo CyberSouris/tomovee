@@ -2,10 +2,10 @@
 
 [![codecov](https://codecov.io/gh/cybersouris/tomovee/branch/main/graph/badge.svg)](https://codecov.io/gh/cybersouris/tomovee)
 [![lint](https://github.com/cybersouris/tomovee/actions/workflows/lint.yaml/badge.svg)](https://github.com/cybersouris/tomovee/actions/workflows/lint.yaml)
+[![golangci-lint](https://img.shields.io/badge/golangci--lint-clean-brightgreen?logo=golang&logoColor=white)](https://github.com/cybersouris/tomovee/actions/workflows/lint.yaml)
 [![release](https://github.com/cybersouris/tomovee/actions/workflows/release.yaml/badge.svg)](https://github.com/cybersouris/tomovee/actions/workflows/release.yaml)
 [![go version](https://img.shields.io/github/go-mod/go-version/cybersouris/tomovee)](https://go.dev/)
 [![release version](https://img.shields.io/github/v/release/cybersouris/tomovee)](https://github.com/cybersouris/tomovee/releases)
-[![go report](https://goreportcard.com/badge/github.com/cybersouris/tomovee)](https://goreportcard.com/report/github.com/cybersouris/tomovee)
 
 Tomovee is a self-hosted catalogue for your movie and TV library. It scans
 media folders, extracts technical metadata with `ffprobe`, matches titles

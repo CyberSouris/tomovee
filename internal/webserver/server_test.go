@@ -878,6 +878,68 @@ func Test_rematch_all_queues_behind_running_job(t *testing.T) {
 	}
 }
 
+// query_capture answers the offline search only for an exact wanted query and
+// records what the matcher asked for, so a test can prove the search was
+// driven by the folder name rather than the episode file name.
+type query_capture struct {
+	want string
+	got  string
+	year int
+}
+
+func (q *query_capture) Search(_ context.Context, query string, year int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	q.got = query
+	q.year = year
+	if !strings.EqualFold(query, q.want) {
+		return nil, nil
+	}
+	return []matcher.Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}, nil
+}
+
+func Test_match_job_searches_series_by_folder(t *testing.T) {
+	capture := &query_capture{want: "The Matrix"}
+	server, store := new_test_server_with_offline(t, capture)
+	ctx := context.Background()
+
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "Whatever", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, File_path: "The.Matrix.1999/Season 1/The.Matrix.S01E01.mkv",
+		Size_bytes: 9000, Hash: "hash-1",
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_job(t, server, 1)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" {
+		t.Fatalf("entry = %+v, want matched matrix", entry)
+	}
+	if !strings.EqualFold(capture.got, "The Matrix") {
+		t.Fatalf("matcher searched %q, want the series folder name 'The Matrix'", capture.got)
+	}
+}
+
 func Test_auto_match_runs_nonblocking(t *testing.T) {
 	server, _ := new_test_server(t)
 	unmatched_entry_with_version(t, server.store)

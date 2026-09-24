@@ -96,18 +96,32 @@ func Catalog_entry_from_match(match *matcher.Result) database.Catalog_entry {
 	}
 }
 
-// catalog_entry_from derives the entry stored during an offline scan from the
-// parsed file name. The media type is taken from the scanner's classification.
+// catalog_entry_from derives the entry stored during an offline scan. The
+// media type comes from the scanner's classification; a series entry is named
+// after its show folder (so every episode file and any extras in that folder
+// group under the same entry) and stores no year, since the folder alone is
+// the grouping key and the matcher fills the real one later.
 func catalog_entry_from(file scanner.Found_file, media_type string) database.Catalog_entry {
 	hint := matcher.Parse_filename(file.Name)
 	title := hint.Title
 	if title == "" {
 		title = strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
 	}
+	release_year := hint.Year
+	if media_type == "series" && file.Series_root != "" {
+		folder := matcher.Parse_foldername(filepath.Base(file.Series_root))
+		if folder.Title != "" {
+			title = folder.Title
+		}
+		release_year = 0
+	}
+	if media_type == "series" {
+		release_year = 0
+	}
 	return database.Catalog_entry{
 		Media_type:   media_type,
 		Title:        title,
-		Release_year: hint.Year,
+		Release_year: release_year,
 		Status:       "needs_lookup",
 	}
 }

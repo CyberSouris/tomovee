@@ -197,11 +197,28 @@ func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry
 	if entry.Media_type == "series" {
 		kind = scanner.Series
 	}
+	// A series is searched by its show folder rather than the episode file
+	// name, so the folder's title drives the lookup even when episode names
+	// are inconsistent. This only applies to library-scanned rows, whose file
+	// paths are stored relative to the library root; for them a parent of "."
+	// (episodes directly in the root) means there is no show folder and the
+	// file name is used. Legacy rows with absolute paths keep the file-name
+	// behaviour, since their root (and thus whether the folder really names a
+	// show) is unknown.
+	file_name := filepath.Base(version.File_path)
+	folder_name := false
+	if entry.Media_type == "series" && !filepath.IsAbs(version.File_path) {
+		if folder := scanner.Series_folder_name(version.File_path); folder != "" {
+			file_name = folder
+			folder_name = true
+		}
+	}
 	match := m.matcher.Match(ctx, matcher.Input{
-		Path:      version.File_path,
-		File_name: filepath.Base(version.File_path),
-		Hash:      version.Hash,
-		Kind:      kind,
+		Path:        version.File_path,
+		File_name:   file_name,
+		Folder_name: folder_name,
+		Hash:        version.Hash,
+		Kind:        kind,
 	})
 	m.logger.Debug("matching: entry done",
 		"title", entry.Title, "matched", match.Matched, "source", match.Source)

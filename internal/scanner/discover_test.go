@@ -82,6 +82,34 @@ func Test_discover_recursive_default(t *testing.T) {
 	}
 }
 
+func Test_discover_sets_series_root(t *testing.T) {
+	root := t.TempDir()
+	write_file(t, filepath.Join(root, "Show.Name", "Season 1", "Show.S01E01.mkv"), 2048)
+	write_file(t, filepath.Join(root, "Flat.Show.S01E02.mkv"), 2048)
+
+	files, err := Discover(context.Background(), Discover_options{Root: root})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+
+	with_root := 0
+	for _, f := range files {
+		if f.Name == "Show.S01E01.mkv" {
+			with_root++
+			want := filepath.Join(root, "Show.Name")
+			if f.Series_root != want {
+				t.Errorf("Series_root = %q, want %q", f.Series_root, want)
+			}
+		}
+		if f.Name == "Flat.Show.S01E02.mkv" && f.Series_root != "" {
+			t.Errorf("flat episode at library root should have no series root, got %q", f.Series_root)
+		}
+	}
+	if with_root != 1 {
+		t.Fatalf("nested episode not discovered, files = %v", names_of(files))
+	}
+}
+
 func Test_discover_skips_hidden_and_junk(t *testing.T) {
 	root := build_tree(t)
 	files, err := Discover(context.Background(), Discover_options{Root: root})

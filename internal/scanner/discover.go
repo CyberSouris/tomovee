@@ -31,6 +31,11 @@ type Found_file struct {
 	Episode    *Episode_hint
 	Media_type Media_type
 	Is_special bool
+	// Series_root is the directory that names the series containing this file
+	// (its show folder, outside any Season/Specials folders). Empty when the
+	// file lives directly in the library root, meaning the title comes from the
+	// file name instead.
+	Series_root string
 }
 
 // Discover walks Root and returns all files classified as usable content
@@ -97,14 +102,21 @@ func Discover(ctx context.Context, opts Discover_options) ([]Found_file, error) 
 		if classified.Kind != Video {
 			return nil
 		}
+		series_root := ""
+		if classified.Type == Series {
+			if root := Series_root_of(path); root != opts.Root {
+				series_root = root
+			}
+		}
 		files = append(files, Found_file{
-			Path:       path,
-			Name:       name,
-			Size_bytes: info.Size(),
-			Mtime:      info.ModTime(),
-			Episode:    classified.Episode,
-			Media_type: classified.Type,
-			Is_special: classified.Episode != nil && classified.Episode.Is_special,
+			Path:        path,
+			Name:        name,
+			Size_bytes:  info.Size(),
+			Mtime:       info.ModTime(),
+			Episode:     classified.Episode,
+			Media_type:  classified.Type,
+			Is_special:  classified.Episode != nil && classified.Episode.Is_special,
+			Series_root: series_root,
 		})
 		return nil
 	}

@@ -56,6 +56,13 @@ func write_file(t *testing.T, dir, name string, size int) string {
 	return path
 }
 
+func mkdir_all(t *testing.T, dir, sub string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", sub, err)
+	}
+}
+
 func Test_run_groups_versions(t *testing.T) {
 	dir := t.TempDir()
 	write_file(t, dir, "The.Matrix.1999.1080p.mkv", 1000)
@@ -358,5 +365,67 @@ func Test_run_series_episodes(t *testing.T) {
 	versions, _ := store.List_versions_for_episode(context.Background(), episodes[0].Id)
 	if len(versions) != 1 {
 		t.Fatalf("versions = %+v", versions)
+	}
+}
+
+func Test_run_series_grouped_by_folder(t *testing.T) {
+	dir := t.TempDir()
+	mkdir_all(t, dir, "Breaking.Bad/Season 1")
+	mkdir_all(t, dir, "Lego.Movie.2014")
+	write_file(t, dir, "Breaking.Bad/Season 1/Breaking.Bad.S01E01.mkv", 1000)
+	write_file(t, dir, "Breaking.Bad/Season 1/Breaking.Bad.S01E02.mkv", 1100)
+	write_file(t, dir, "Breaking.Bad/Season 1/Breaking.Bad.First.Look.mkv", 1200)
+	write_file(t, dir, "Lego.Movie.2014/Lego.Movie.2014.mkv", 1300)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 4 || result.Found != 4 {
+		t.Fatalf("result = %+v, want 4 found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != "Breaking Bad" {
+		t.Fatalf("series entries = %+v, want one Breaking Bad", series)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %+v, want the 2 numbered episodes", episodes)
+	}
+	direct, _ := store.List_versions_for_entry(context.Background(), series[0].Id)
+	if len(direct) != 1 {
+		t.Fatalf("series-level versions = %d, want the folded extra attached to the show", len(direct))
+	}
+
+	movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"})
+	if len(movies) != 1 || movies[0].Title != "Lego Movie" {
+		t.Fatalf("movie entries = %+v, want one Lego Movie untouched", movies)
+	}
+}
+
+func Test_run_series_folder_groups_across_even_scan(t *testing.T) {
+	dir := t.TempDir()
+	mkdir_all(t, dir, "The.Office/Season 1")
+	mkdir_all(t, dir, "The.Office/Season 2")
+	write_file(t, dir, "The.Office/Season 1/The.Office.S01E01.mkv", 1000)
+	write_file(t, dir, "The.Office/Season 2/The.Office.S02E01.mkv", 1100)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != "The Office" {
+		t.Fatalf("series = %+v, want one The Office across season folders", series)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %+v, want episodes from both seasons grouped", episodes)
 	}
 }

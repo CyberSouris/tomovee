@@ -117,3 +117,54 @@ func Test_classify(t *testing.T) {
 		}
 	}
 }
+
+func Test_series_folder_helpers(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		want_root string
+		want_name string
+	}{
+		{"nested season", "Show.Name/Season 1/S01E01.mkv", "Show.Name", "Show.Name"},
+		{"flat show", "Show.Name/S01E01.mkv", "Show.Name", "Show.Name"},
+		{"nested specials", "Show.Name/Specials/Show.S00E01.mkv", "Show.Name", "Show.Name"},
+		{"season s1", "Show.Name/S1/f.mkv", "Show.Name", "Show.Name"},
+		{"two levels", "Show.Name/Season 1/Special Features/x.mkv", "Show.Name", "Show.Name"},
+		{"flat in library root", "S01E01.mkv", ".", ""},
+		{"flat season in library root", "Season 1/S01E01.mkv", ".", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Series_root_of(tc.path); got != tc.want_root {
+				t.Errorf("Series_root_of(%q) = %q, want %q", tc.path, got, tc.want_root)
+			}
+			if got := Series_folder_name(tc.path); got != tc.want_name {
+				t.Errorf("Series_folder_name(%q) = %q, want %q", tc.path, got, tc.want_name)
+			}
+		})
+	}
+
+	for _, folder := range []string{"Season 1", "Season 12", "s3", "S4", "Specials", "Specials", "Extras", "Bonus", "Special Features", "Deleted Scenes", "Behind the Scenes", "Trailers", "Interviews"} {
+		if !Skip_series_folder(folder) {
+			t.Errorf("Skip_series_folder(%q) = false, want true", folder)
+		}
+	}
+	for _, folder := range []string{"Breaking Bad", "The.Office", "Santorini", "Extras The Show"} {
+		if Skip_series_folder(folder) {
+			t.Errorf("Skip_series_folder(%q) = true, want false", folder)
+		}
+	}
+}
+
+func Test_series_folder_patterns(t *testing.T) {
+	cases := map[string]bool{
+		"Season 1": true, "season 2": true, "Season.3": true, "S07": true, "s8": true,
+		"Specials": true, "Special": true, "Extras": true, "Features": false,
+		"Breaking.Bad": false,
+	}
+	for folder, want := range cases {
+		if got := Skip_series_folder(folder); got != want {
+			t.Errorf("Skip_series_folder(%q) = %v, want %v", folder, got, want)
+		}
+	}
+}

@@ -282,7 +282,7 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`)
 		args = append(args, filter.Library)
 	}
-if len(filter.Libraries) > 0 {
+	if len(filter.Libraries) > 0 {
 		placeholders := strings.Repeat("?,", len(filter.Libraries))
 		placeholders = strings.TrimSuffix(placeholders, ",")
 		clauses = append(clauses, `EXISTS (
@@ -292,7 +292,7 @@ if len(filter.Libraries) > 0 {
 			args = append(args, name)
 		}
 	}
-	
+
 	if len(clauses) == 0 {
 		return "", args
 	}

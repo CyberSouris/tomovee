@@ -2,6 +2,7 @@ package imdb_datasets
 
 import (
 	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -447,7 +448,7 @@ func Test_normalize_title(t *testing.T) {
 
 func Test_matcher_source_adapter(t *testing.T) {
 	source := New_matcher_source(must_index(t))
-	got, err := source.Search(nil, "The Matrix", 1999, scanner.Movie)
+	got, err := source.Search(context.TODO(), "The Matrix", 1999, scanner.Movie)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -468,7 +469,7 @@ func Test_matcher_source_offline_lookup(t *testing.T) {
 	index.Index_ratings(ratings)
 
 	source := New_matcher_source(index)
-	result, ok := source.Lookup(nil, "tt0133093")
+	result, ok := source.Lookup(context.TODO(), "tt0133093")
 	if !ok {
 		t.Fatal("lookup reported not found for known id")
 	}
@@ -482,7 +483,7 @@ func Test_matcher_source_offline_lookup(t *testing.T) {
 		t.Errorf("rating/votes = %v/%d", result.Rating, result.Vote_count)
 	}
 
-	if _, ok := source.Lookup(nil, "tt9999999"); ok {
+	if _, ok := source.Lookup(context.TODO(), "tt9999999"); ok {
 		t.Error("lookup reported found for unknown id")
 	}
 }

@@ -190,15 +190,21 @@ func Test_list_catalog_entries_filters(t *testing.T) {
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "matched",
 		Rating: 8.2, Genres: []string{"Action"},
 	})
-	store.Upsert_catalog_entry(ctx, Catalog_entry{
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "series", Title: "Breaking Bad", Release_year: 2008, Status: "matched",
 		Genres: []string{"Drama"},
-	})
-	store.Upsert_catalog_entry(ctx, Catalog_entry{
+	}); err != nil {
+		t.Fatalf("upsert series: %v", err)
+	}
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "Mystery Film", Release_year: 2020, Status: "needs_lookup",
-	})
-	store.Save_version(ctx, Version{Catalog_entry_id: matrix, File_path: "/m/matrix.mkv", Resolution_label: "1080p",
-		Audio: []Audio_track{{Language: "eng"}}})
+	}); err != nil {
+		t.Fatalf("upsert mystery film: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: matrix, File_path: "/m/matrix.mkv", Resolution_label: "1080p",
+		Audio: []Audio_track{{Language: "eng"}}}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
 
 	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Media_type: "movie"}); len(got) != 2 {
 		t.Errorf("movie filter = %d, want 2", len(got))
@@ -250,8 +256,12 @@ func Test_list_catalog_entries_filtered_by_library(t *testing.T) {
 	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "series", Title: "Breaking Bad", Status: "needs_lookup",
 	})
-	store.Save_version(ctx, Version{Catalog_entry_id: movie, Library_id: lib_id("Movies"), File_path: "matrix.mkv"})
-	store.Save_version(ctx, Version{Catalog_entry_id: series, Library_id: lib_id("Shows"), File_path: "bb.s01e01.mkv"})
+	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: movie, Library_id: lib_id("Movies"), File_path: "matrix.mkv"}); err != nil {
+		t.Fatalf("save movie version: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: series, Library_id: lib_id("Shows"), File_path: "bb.s01e01.mkv"}); err != nil {
+		t.Fatalf("save series version: %v", err)
+	}
 
 	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Libraries: []string{"Movies"}}); len(got) != 1 || got[0].Title != "The Matrix" {
 		t.Errorf("single library filter = %+v, want only The Matrix", got)
@@ -269,18 +279,24 @@ func Test_genre_counts(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
-	store.Upsert_catalog_entry(ctx, Catalog_entry{
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Status: "matched",
 		Genres: []string{"Action"},
-	})
-	store.Upsert_catalog_entry(ctx, Catalog_entry{
+	}); err != nil {
+		t.Fatalf("upsert matrix: %v", err)
+	}
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "Alien", Status: "matched",
 		Genres: []string{"Action", "Science Fiction"},
-	})
-	store.Upsert_catalog_entry(ctx, Catalog_entry{
+	}); err != nil {
+		t.Fatalf("upsert alien: %v", err)
+	}
+	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "Unmatched Drama", Status: "needs_lookup",
 		Genres: []string{"Drama"},
-	})
+	}); err != nil {
+		t.Fatalf("upsert unmatched drama: %v", err)
+	}
 
 	matched, err := store.Genre_counts(ctx, "matched")
 	if err != nil {

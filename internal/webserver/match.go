@@ -151,10 +151,12 @@ func (s *Server) offline_from_candidate(ctx context.Context, entry_id int64, tmd
 
 // handle_rematch re-runs the automatic matcher for one catalog entry through
 // the same job manager as a full matching run, so the rematch shows up in the
-// global background status and SSE feed. When the matcher applies a match it
-// clears any stored candidates; when the match stays ambiguous it persists the
-// candidate shortlist for the entry so both the Unmatched screen and the title
-// detail page can offer a chooser.
+// global background status and SSE feed. When a matching job is already in
+// progress the rematch is queued behind it instead of being rejected, so the
+// entry is still processed as soon as the current pass finishes. When the
+// matcher applies a match it clears any stored candidates; when the match
+// stays ambiguous it persists the candidate shortlist for the entry so both
+// the Unmatched screen and the title detail page can offer a chooser.
 func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 	if s.matching == nil {
 		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
@@ -178,7 +180,7 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 
 	var applied bool
 	var candidates []matcher.Candidate
-	_, err = s.matches.Run_sync(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		var run_err error
 		applied, candidates, run_err = s.matching.Rematch_one(ctx, id)
 		if run_err != nil {
@@ -286,7 +288,7 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 
 	var applied bool
 	var candidates []matcher.Candidate
-	_, err = s.matches.Run_sync(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		var run_err error
 		applied, candidates, run_err = s.matching.Reclassify(ctx, id, as_series)
 		if run_err != nil {

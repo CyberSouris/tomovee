@@ -71,10 +71,9 @@ func (fake_offline) Search(_ context.Context, _ string, _ int, _ scanner.Media_t
 	}}, nil
 }
 
-// fake_local extends fake_offline so the search box can also answer from the
-// local IMDb index, like the real Matcher_source-backed server.
+// fake_local supplies the search box from the local IMDb index, like the real
+// Matcher_source-backed server.
 type fake_local struct {
-	fake_offline
 	hits []matcher.Offline_candidate
 }
 

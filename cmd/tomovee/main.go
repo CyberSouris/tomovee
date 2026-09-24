@@ -62,9 +62,9 @@ func main() {
 	case "version", "--version":
 		fmt.Printf("tomovee %s\n", version)
 	case "serve":
-		err = cmd_serve(logger, os.Args[2:])
+		err = cmd_serve(os.Args[2:])
 	case "scan":
-		err = cmd_scan(logger, os.Args[2:])
+		err = cmd_scan(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -116,15 +116,13 @@ func load_config(args []string, extra_flags ...func(*flag.FlagSet)) (*config.Con
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	cfg := config.Defaults()
 	if *config_path == "" {
 		*config_path = config.Default_config_path()
 	}
-	loaded, err := config.Load(*config_path)
+	cfg, err := config.Load(*config_path)
 	if err != nil {
 		return nil, err
 	}
-	cfg = loaded
 	if *log_level != "" {
 		cfg.Log_level = *log_level
 	}
@@ -347,12 +345,12 @@ func listen_address(addr string) string {
 	return addr
 }
 
-func cmd_serve(logger *slog.Logger, args []string) error {
+func cmd_serve(args []string) error {
 	cfg, err := load_config(args)
 	if err != nil {
 		return err
 	}
-	logger = build_logger(cfg.Log_level)
+	logger := build_logger(cfg.Log_level)
 	db, err := open_database(cfg)
 	if err != nil {
 		return err
@@ -484,7 +482,7 @@ func cmd_serve(logger *slog.Logger, args []string) error {
 	return shutdown_err
 }
 
-func cmd_scan(logger *slog.Logger, args []string) error {
+func cmd_scan(args []string) error {
 	var libraries string_list
 	cfg, err := load_config(args, func(fs *flag.FlagSet) {
 		fs.Var(&libraries, "library", "scan only the named library (repeatable)")
@@ -492,7 +490,7 @@ func cmd_scan(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger = build_logger(cfg.Log_level)
+	logger := build_logger(cfg.Log_level)
 	db, err := open_database(cfg)
 	if err != nil {
 		return err

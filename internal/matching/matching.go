@@ -144,11 +144,12 @@ func (m *Matching) Run(ctx context.Context, libraries []string, progress func(Pr
 			}
 		}()
 	}
+send_loop:
 	for _, entry := range entries {
 		select {
 		case jobs <- entry:
 		case <-ctx.Done():
-			break
+			break send_loop
 		}
 	}
 	close(jobs)

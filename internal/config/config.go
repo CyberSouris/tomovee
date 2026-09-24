@@ -25,15 +25,15 @@ type Config struct {
 	// Watch_enabled is the default for newly registered libraries and the
 	// master switch for the folder watcher. Individual libraries persist their
 	// own enabled state to the database and can be changed from the web UI.
-	Watch_enabled bool        `yaml:"watch_enabled"`
+	Watch_enabled bool `yaml:"watch_enabled"`
 	// Match_on_start controls whether the server runs a full background
 	// matching pass over the catalog at boot. Building the IMDb datasets
 	// index and hitting TMDB for every unmatched entry is expensive, so
 	// this is opt-in: leave it false to just start serving and launch a
 	// matching run from the web UI or the API when convenient.
-	Match_on_start bool        `yaml:"match_on_start"`
-	Stream Stream_config        `yaml:"stream"`
-	Scan          Scan_config `yaml:"scan"`
+	Match_on_start bool          `yaml:"match_on_start"`
+	Stream         Stream_config `yaml:"stream"`
+	Scan           Scan_config   `yaml:"scan"`
 	// Imdb_datasets_path optionally points at a directory holding IMDb dataset
 	// exports (title.basics.tsv.gz with optional title.akas.tsv.gz,
 	// title.episode.tsv.gz, and title.ratings.tsv.gz) used for offline,

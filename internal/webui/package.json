@@ -6,10 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e": "node e2e/run.mjs",
+    "e2e:mocked": "node e2e/run.mjs mocked",
+    "e2e:smoke": "node e2e/run.mjs smoke"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "cypress": "^16.1.0",
     "svelte": "^5.57.0",
     "vite": "^8.3.0"
   }

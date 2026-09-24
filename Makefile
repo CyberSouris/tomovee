@@ -10,7 +10,7 @@ PKG := ./cmd/tomovee
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo unknown)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build frontend test vet fmt fmt-check clean version run
+.PHONY: all build frontend test vet fmt fmt-check clean version run e2e
 
 all: frontend build
 
@@ -23,6 +23,12 @@ version:
 # Rebuild the embedded Svelte SPA (requires Node.js and npm).
 frontend:
 	cd internal/webui && npm ci && npm run build
+
+# End-to-end tests for the web UI. Requires Node.js, the Cypress browser
+# dependencies (Xvfb on headless machines), and a freshly built binary; runs
+# the mocked-API rendering specs and then the real-binary smoke specs.
+e2e: build
+	cd internal/webui && npm run e2e:mocked && npm run e2e:smoke
 
 test:
 	go test ./...

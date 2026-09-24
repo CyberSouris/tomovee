@@ -1,0 +1,37 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  webui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: internal/webui/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Cypress and browser dependencies
+        working-directory: internal/webui
+        run: npx cypress install
+
+      - name: Build the daemon (embeds the SPA)
+        run: go build -o bin/tomovee ./cmd/tomovee
+
+      - name: Mocked-API rendering specs
+        working-directory: internal/webui
+        run: xvfb-run -a npm run e2e:mocked
+
+      - name: Real-binary smoke specs
+        working-directory: internal/webui
+        run: xvfb-run -a npm run e2e:smoke

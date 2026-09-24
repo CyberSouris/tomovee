@@ -34,10 +34,42 @@ function run(command, args, options = {}) {
   });
 }
 
-async function cypress_run(spec) {
-  return run('npx', ['--no-install', 'cypress', 'run', '--spec', spec],
+// spawn_server launches a long-lived server in its own process group so it can
+// be torn down together with any children it spawned. The vite CLI is spawned
+// directly (not through the npm wrapper) so the group leader is the server
+// process itself.
+function spawn_server(command, args, options = {}) {
+  return spawn(command, args, { stdio: 'inherit', detached: true, ...options });
+}
+
+async function stop_server(child) {
+  if (!child || child.pid === undefined) return;
+  const group = -child.pid;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  try {
+    process.kill(group, 'SIGTERM');
+  } catch {
+    return;
+  }
+  const done = await Promise.race([exited.then(() => true), sleep(1500).then(() => false)]);
+  if (!done) {
+    try {
+      process.kill(group, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+    await exited;
+  }
+}
+
+async function cypress_run(spec, base_url) {
+  return run('npx',
+    ['--no-install', 'cypress', 'run', '--spec', spec, '--config', `baseUrl=${base_url}`],
     { cwd: webui });
 }
+
+const node_bin = process.execPath;
+const vite_cli = path.join(webui, 'node_modules', 'vite', 'bin', 'vite.js');
 
 async function wait_http(url, timeout_ms) {
   const deadline = Date.now() + timeout_ms;
@@ -70,16 +102,17 @@ async function run_mocked() {
   if (build !== 0) fail('vite build failed');
 
   const port = 4173;
-  const preview = spawn('npm', ['run', 'preview', '--', '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
-    { cwd: webui, stdio: 'inherit' });
+  const preview = spawn_server(
+    node_bin,
+    [vite_cli, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
+    { cwd: webui });
   try {
     await wait_http(`http://127.0.0.1:${port}/`, 30000);
     console.log(`Serving built SPA at http://127.0.0.1:${port}`);
-    const code = await cypress_run('e2e/mocked/**/*.cy.js');
+    const code = await cypress_run('e2e/mocked/**/*.cy.js', `http://127.0.0.1:${port}`);
     if (code !== 0) process.exitCode = code;
   } finally {
-    preview.kill('SIGTERM');
-    await sleep(200);
+    await stop_server(preview);
   }
 }
 
@@ -104,16 +137,14 @@ async function run_smoke() {
   ].join('\n'));
 
   console.log(`Launching ${binary} on 127.0.0.1:${port}…`);
-  const server = spawn(binary, ['serve', '--config', config_path, '--log-level', 'warn'],
-    { stdio: 'inherit' });
+  const server = spawn_server(binary, ['serve', '--config', config_path, '--log-level', 'warn']);
   try {
     await wait_http(`http://127.0.0.1:${port}/api/v1/settings`, 30000);
     console.log(`tomovee serve is up at http://127.0.0.1:${port}`);
-    const code = await cypress_run('e2e/smoke/**/*.cy.js');
+    const code = await cypress_run('e2e/smoke/**/*.cy.js', `http://127.0.0.1:${port}`);
     if (code !== 0) process.exitCode = code;
   } finally {
-    server.kill('SIGTERM');
-    await sleep(300);
+    await stop_server(server);
     rmSync(tmp, { recursive: true, force: true });
     rmSync(media, { recursive: true, force: true });
   }

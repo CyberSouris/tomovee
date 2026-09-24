@@ -969,23 +969,48 @@ func Test_rematch_applied_path_clears_candidates(t *testing.T) {
 	}
 }
 
-func Test_rematch_conflicts_with_running_job(t *testing.T) {
+func Test_rematch_queues_behind_running_job(t *testing.T) {
 	server, _ := new_test_server(t)
 	id := unmatched_entry_with_version(t, server.store)
 
+	block := make(chan struct{})
 	started := make(chan struct{})
 	go func() {
 		_, _ = server.matches.Start(func(job_ctx context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 			close(started)
-			<-job_ctx.Done()
+			<-block
 			return &matching.Result{Total: 1}, nil
 		})
 	}()
 	<-started
 	defer server.matches.Cancel()
 
-	response := do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
-	if response.Code != http.StatusConflict {
-		t.Fatalf("rematch under running job = %d, want 409: %s", response.Code, response.Body)
+	response_ch := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response_ch <- do_request(t, server, http.MethodPost, fmt.Sprintf("/api/v1/catalog/%d/rematch", id), "")
+	}()
+
+	select {
+	case <-response_ch:
+		t.Fatal("rematch answered while a matching job was running instead of queueing")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(block)
+	select {
+	case response := <-response_ch:
+		if response.Code != http.StatusOK {
+			t.Fatalf("queued rematch = %d, want 200: %s", response.Code, response.Body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued rematch did not finish after the running job stopped")
+	}
+
+	entry, err := server.store.Get_catalog_entry(context.Background(), id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" {
+		t.Fatalf("entry status = %s, want matched after queued rematch", entry.Status)
 	}
 }

@@ -27,12 +27,27 @@ type job[R any, T any] struct {
 	Error       string
 }
 
+// pending_result carries the outcome of a queued run to the goroutine that
+// submitted it.
+type pending_result[T any] struct {
+	result *T
+	err    error
+}
+
+// pending_run is one queued job waiting for the manager's single slot. It is
+// executed in FIFO order once the active job finishes.
+type pending_run[R any, T any] struct {
+	run  func(context.Context, func(R)) (*T, error)
+	done chan pending_result[T]
+}
+
 // job_manager serializes background jobs of one kind and fans progress out to
 // SSE subscribers.
 type job_manager[R any, T any] struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	job    *job[R, T]
+	queue  []*pending_run[R, T]
 	cancel context.CancelFunc
 	subs   map[int]chan R
 	next   int
@@ -83,6 +98,40 @@ func (jm *job_manager[R, T]) Run_sync(run func(context.Context, func(R)) (*T, er
 	return result, run_err
 }
 
+// Run_sync_queued is Run_sync with queueing: when another job is in progress
+// the run is appended to the manager's FIFO queue instead of being rejected
+// with Err_job_running, and the call blocks until the queued run actually
+// completes so the caller receives its real result. The finishing job hands
+// its slot to the next queued run, so queued work always runs after everything
+// that preceded it while still surfacing in the global background status.
+func (jm *job_manager[R, T]) Run_sync_queued(run func(context.Context, func(R)) (*T, error)) (*T, error) {
+	for {
+		ctx, cancel, _, err := jm.begin()
+		if err == nil {
+			result, run_err := run(ctx, jm.report)
+			jm.finish(result, run_err)
+			cancel()
+			return result, run_err
+		}
+		if !errors.Is(err, Err_job_running) {
+			return nil, err
+		}
+		pending := &pending_run[R, T]{run: run, done: make(chan pending_result[T], 1)}
+		jm.mu.Lock()
+		if jm.job == nil || !jm.job.Running {
+			// The active job finished between the begin call above and this
+			// enqueue, so nobody will ever drain the queue; retry and claim the
+			// slot directly instead of waiting forever.
+			jm.mu.Unlock()
+			continue
+		}
+		jm.queue = append(jm.queue, pending)
+		jm.mu.Unlock()
+		outcome := <-pending.done
+		return outcome.result, outcome.err
+	}
+}
+
 // begin claims the job slot for a new job, marking it running, and returns the
 // derived context, its cancel function, and a snapshot suitable for the HTTP
 // response. It returns Err_job_running when another job is in progress.
@@ -107,19 +156,58 @@ func (jm *job_manager[R, T]) begin() (context.Context, context.CancelFunc, *job[
 // finish records the outcome of a finished job and broadcasts a final progress
 // update so SSE subscribers observe the transition. Failures are logged
 // server-side; the surfaced error message stays generic so internal details
-// never reach the API.
+// never reach the API. When queued runs are waiting, the slot is handed to the
+// next one in the same critical section, so a concurrent Start or Run_sync can
+// never observe the free slot ahead of the queue.
 func (jm *job_manager[R, T]) finish(result *T, err error) {
 	jm.mu.Lock()
-	jm.job.Running = false
-	jm.job.Finished_at = time.Now()
-	jm.job.Result = result
-	if err != nil {
-		jm.logger.Error("background job failed", "job_id", jm.job.Id, "error", err)
-		jm.job.Error = "background job failed"
+	done := jm.job
+	if done == nil {
+		jm.mu.Unlock()
+		return
 	}
-	progress := jm.job.Progress
+	done.Running = false
+	done.Finished_at = time.Now()
+	done.Result = result
+	if err != nil {
+		jm.logger.Error("background job failed", "job_id", done.Id, "error", err)
+		done.Error = "background job failed"
+	}
+	progress := done.Progress
+
+	next := jm.next_pending_locked()
+	if next == nil {
+		jm.mu.Unlock()
+		jm.broadcast(progress)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	jm.cancel = cancel
+	var zero R
+	jm.job = &job[R, T]{
+		Id:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Started_at: time.Now(),
+		Running:    true,
+		Progress:   zero,
+	}
 	jm.mu.Unlock()
 	jm.broadcast(progress)
+
+	queued_result, queued_err := next.run(ctx, jm.report)
+	next.done <- pending_result[T]{result: queued_result, err: queued_err}
+	jm.finish(queued_result, queued_err)
+	cancel()
+}
+
+// next_pending_locked pops the oldest queued run, or nil when the queue is
+// empty. It must be called with mu held.
+func (jm *job_manager[R, T]) next_pending_locked() *pending_run[R, T] {
+	if len(jm.queue) == 0 {
+		return nil
+	}
+	next := jm.queue[0]
+	jm.queue = jm.queue[1:]
+	return next
 }
 
 // Cancel requests cancellation of the running job, if any.

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -322,20 +323,39 @@ func Test_handle_reclassify_validation(t *testing.T) {
 	}
 }
 
-func Test_handle_reclassify_conflict_while_running(t *testing.T) {
+func Test_handle_reclassify_queues_behind_running_job(t *testing.T) {
 	server, store := new_test_server(t)
 	id := unmatched_entry_with_version(t, store)
 	block := make(chan struct{})
-	defer close(block)
+	started := make(chan struct{})
 	if _, err := server.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		close(started)
 		<-block
 		return &matching.Result{}, nil
 	}); err != nil {
 		t.Fatalf("start job: %v", err)
 	}
-	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
-	if rec.Code != http.StatusConflict {
-		t.Errorf("conflict = %d, want 409", rec.Code)
+	<-started
+
+	rec_ch := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec_ch <- do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
+	}()
+
+	select {
+	case <-rec_ch:
+		t.Fatal("reclassify answered while a matching job was running instead of queueing")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(block)
+	select {
+	case rec := <-rec_ch:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("queued reclassify = %d, want 200: %s", rec.Code, rec.Body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued reclassify did not finish after the running job stopped")
 	}
 }
 
@@ -639,5 +659,143 @@ func Test_job_manager_subscribe_initializes_from_running_job(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Run_sync did not finish")
+	}
+}
+
+func Test_job_manager_run_sync_queued_waits_for_active_job(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var order []string
+	var mu sync.Mutex
+	mark := func(tag string) {
+		mu.Lock()
+		order = append(order, tag)
+		mu.Unlock()
+	}
+
+	go func() {
+		_, _ = server.jobs.Run_sync(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-one")
+			close(started)
+			<-release
+			return &scan.Result{Found: 1}, nil
+		})
+	}()
+	<-started
+
+	queued_started := make(chan struct{})
+	queued_done := make(chan error, 1)
+	go func() {
+		_, err := server.jobs.Run_sync_queued(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-two")
+			close(queued_started)
+			return &scan.Result{New: 2}, nil
+		})
+		queued_done <- err
+	}()
+
+	select {
+	case <-queued_started:
+		t.Fatal("queued run started while the active job was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-queued_done:
+		if err != nil {
+			t.Fatalf("queued run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued run never completed after the active job finished")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "run-one" || order[1] != "run-two" {
+		t.Errorf("run order = %v, want [run-one run-two]", order)
+	}
+}
+
+func Test_job_manager_run_sync_queued_is_fifo(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	hold := make(chan struct{})
+	started := make(chan struct{})
+	var order []string
+	var mu sync.Mutex
+	mark := func(tag string) {
+		mu.Lock()
+		order = append(order, tag)
+		mu.Unlock()
+	}
+
+	go func() {
+		_, _ = server.jobs.Run_sync(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-one")
+			close(started)
+			<-hold
+			return &scan.Result{Found: 1}, nil
+		})
+	}()
+	<-started
+
+	unblock_two := make(chan struct{})
+	two_started := make(chan struct{})
+	two_done := make(chan error, 1)
+	go func() {
+		_, err := server.jobs.Run_sync_queued(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-two")
+			close(two_started)
+			<-unblock_two
+			return &scan.Result{}, nil
+		})
+		two_done <- err
+	}()
+
+	// Let run-one finish so run-two claims the slot and starts.
+	close(hold)
+	select {
+	case <-two_started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first queued run never started")
+	}
+
+	// Enqueue run-three while run-two still holds the slot, so the queue order
+	// is deterministic: run-two then run-three.
+	three_done := make(chan error, 1)
+	go func() {
+		_, err := server.jobs.Run_sync_queued(func(context.Context, func(scan.Progress)) (*scan.Result, error) {
+			mark("run-three")
+			return &scan.Result{}, nil
+		})
+		three_done <- err
+	}()
+
+	close(unblock_two)
+	for _, done := range []chan error{two_done, three_done} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("queued run: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("queued run never completed")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"run-one", "run-two", "run-three"}
+	if len(order) != len(want) {
+		t.Fatalf("run order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("run order = %v, want %v", order, want)
+			break
+		}
 	}
 }

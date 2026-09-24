@@ -15,6 +15,8 @@
   let manual_ok = '';
   let rematch_busy = false;
   let rematch_error = '';
+  let reclassify_busy = false;
+  let reclassify_error = '';
   let playing = null;
   let open_episodes = new Set();
 
@@ -77,6 +79,20 @@
       rematch_error = err.message;
     } finally {
       rematch_busy = false;
+    }
+  }
+
+  async function reclassify(media_type) {
+    reclassify_busy = true;
+    reclassify_error = '';
+    try {
+      await api_send('/api/v1/catalog/' + data.entry.id + '/reclassify', 'POST', { media_type });
+      manual_ok = '';
+      await load();
+    } catch (err) {
+      reclassify_error = err.message;
+    } finally {
+      reclassify_busy = false;
     }
   }
 
@@ -195,6 +211,18 @@
       </ul>
     {/if}
     {#if rematch_error}<p class="result error">{rematch_error}</p>{/if}
+
+    <p class="divider">Type is wrong?</p>
+    {#if data.entry.media_type === 'series'}
+      <button class="secondary" on:click={() => reclassify('movie')} disabled={reclassify_busy}>
+        {reclassify_busy ? 'Reclassifying…' : 'This is a movie, not a series'}
+      </button>
+    {:else}
+      <button class="secondary" on:click={() => reclassify('series')} disabled={reclassify_busy}>
+        {reclassify_busy ? 'Reclassifying…' : 'This is a series, not a movie'}
+      </button>
+    {/if}
+    {#if reclassify_error}<p class="result error">{reclassify_error}</p>{/if}
 
     <p class="muted">
       {data.entry.status === 'matched'

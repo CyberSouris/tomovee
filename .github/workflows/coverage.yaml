@@ -1,0 +1,23 @@
+name: coverage
+'on':
+  push: null
+  pull_request: null
+  workflow_dispatch: null
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: Generate coverage report
+      run: go test ./... -coverprofile=coverage.out -covermode=atomic
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        files: coverage.out
+        fail_ci_if_error: true

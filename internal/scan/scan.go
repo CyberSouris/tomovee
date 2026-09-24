@@ -175,6 +175,7 @@ func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 		}
+		s.group_series_files(files)
 		result.Found += len(files)
 		s.report(Progress{Phase: "discover", Path: library.Name, Files_found: result.Found})
 
@@ -195,6 +196,53 @@ func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
 		Errors:      len(result.Errors),
 	})
 	return result, nil
+}
+
+// group_series_files folds plain video files that sit inside a series' show
+// folder into that series, so extras and oddly named files belong to the show
+// instead of becoming separate movie entries. Files whose episode pattern was
+// recognized already carry their Series_root; any movie below such a folder is
+// reclassified as a series member (given that folder as its root, so it groups
+// by the folder title) and its version attaches directly to the show.
+func (s *Scanner) group_series_files(files []scanner.Found_file) {
+	roots := make([]string, 0, 8)
+	for _, file := range files {
+		if file.Media_type == scanner.Series && file.Series_root != "" && !contains_root(roots, file.Series_root) {
+			roots = append(roots, file.Series_root)
+		}
+	}
+	if len(roots) == 0 {
+		return
+	}
+	for i := range files {
+		file := &files[i]
+		if file.Media_type != scanner.Movie {
+			continue
+		}
+		if root := covering_root(filepath.Dir(file.Path), roots); root != "" {
+			file.Media_type = scanner.Series
+			file.Series_root = root
+		}
+	}
+}
+
+func contains_root(roots []string, root string) bool {
+	for _, r := range roots {
+		if r == root {
+			return true
+		}
+	}
+	return false
+}
+
+// covering_root returns the first series root that contains path, or "".
+func covering_root(path string, roots []string) string {
+	for _, root := range roots {
+		if under_any_root(path, []string{root}) {
+			return root
+		}
+	}
+	return ""
 }
 
 func (s *Scanner) process_file(ctx context.Context, library database.Library, root string, file scanner.Found_file, result *Result) {

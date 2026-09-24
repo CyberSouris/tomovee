@@ -94,10 +94,15 @@ type Offline_candidate struct {
 
 // Input describes a single file to identify.
 type Input struct {
-	Path      string
+	Path string
+	// File_name is the file (or folder) name whose title drives the lookup.
 	File_name string
-	Hash      string
-	Kind      scanner.Media_type
+	// Folder_name marks File_name as a folder name: it is parsed without the
+	// extension stripping normally applied to media file names, so dotted show
+	// folders ("The.Office") resolve to the right title.
+	Folder_name bool
+	Hash        string
+	Kind        scanner.Media_type
 }
 
 // Candidate is one possible match, kept for manual review.
@@ -236,6 +241,9 @@ func (m *Matcher) Has_sources() bool {
 func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	sub, meta := m.source()
 	hint := Parse_filename(input.File_name)
+	if input.Folder_name {
+		hint = Parse_foldername(input.File_name)
+	}
 	m.logger.Debug("match: start",
 		"file", input.File_name, "kind", input.Kind,
 		"title", hint.Title, "year", hint.Year,

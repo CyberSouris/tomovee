@@ -78,3 +78,24 @@ func Test_clean_title(t *testing.T) {
 		}
 	}
 }
+
+func Test_parse_foldername(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		year  int
+	}{
+		{"The.Office", "The Office", 0},
+		{"Breaking.Bad", "Breaking Bad", 0},
+		{"The.Matrix.1999", "The Matrix", 1999},
+		{"Chernobyl.2019", "Chernobyl", 2019},
+		{"Stranger Things", "Stranger Things", 0},
+		{"Dont Breathe", "Dont Breathe", 0},
+	}
+	for _, c := range cases {
+		got := Parse_foldername(c.name)
+		if got.Title != c.title || got.Year != c.year {
+			t.Errorf("Parse_foldername(%q) = %q (%d), want %q (%d)", c.name, got.Title, got.Year, c.title, c.year)
+		}
+	}
+}

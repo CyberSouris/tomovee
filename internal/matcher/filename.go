@@ -83,6 +83,25 @@ func Parse_filename(name string) Filename_hint {
 	return Filename_hint{Title: title, Year: year}
 }
 
+// Parse_foldername extracts a title/year from a media folder name. Unlike
+// Parse_filename it does not strip an extension, because show folders
+// legitimately contain dots ("The.Office", "Breaking.Bad") that would
+// otherwise be eaten as a file extension.
+func Parse_foldername(name string) Filename_hint {
+	year, loc := last_year(name)
+	cutoff := len(name)
+	if loc != nil && loc[0] > 0 {
+		cutoff = loc[0]
+	} else {
+		year = 0
+	}
+	title := clean_title(name[:cutoff])
+	if title == "" {
+		title = clean_title(name)
+	}
+	return Filename_hint{Title: title, Year: year}
+}
+
 // last_year returns the last plausible release year in s and the location of
 // its match, or 0/nil when none is found.
 func last_year(s string) (int, []int) {

@@ -155,3 +155,58 @@ func Classify(name string, size_bytes int64, min_size_bytes int64) Classified {
 	}
 	return Classified{Kind: Video, Type: Movie}
 }
+
+// series_folder_patterns matches directory names that hold episodes for a show
+// rather than naming the show itself: season folders, specials, extras, and
+// similar containers. A series' identity is the folder above these.
+var series_folder_patterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^season\s*[\s._-]*\d+$`),
+	regexp.MustCompile(`(?i)^s\d+$`),
+	regexp.MustCompile(`(?i)^specials?$`),
+	regexp.MustCompile(`(?i)^extras?$`),
+	regexp.MustCompile(`(?i)^bonus(\s*\w*)$`),
+	regexp.MustCompile(`(?i)^(featurettes?|special\s+features?|deleted\s+scenes)$`),
+	regexp.MustCompile(`(?i)^(behind\s+the\s+scenes|interviews?|trailers?)$`),
+	regexp.MustCompile(`(?i)^season.*extra$`),
+}
+
+// Skip_series_folder reports whether a directory base name is a container
+// inside a show's folder tree (Season 1, Specials, Extras, ...) rather than
+// the show title itself.
+func Skip_series_folder(name string) bool {
+	for _, re := range series_folder_patterns {
+		if re.MatchString(strings.Trim(name, " ._-")) {
+			return true
+		}
+	}
+	return false
+}
+
+// Series_root_of returns the directory that names the series for a file at
+// path, stepping out of season/special/extras folders. When the immediate
+// parent is a plain show folder that folder is returned unchanged; trailing
+// container folders are peeled until the first non-container one. File paths
+// may be absolute or relative to a library root.
+func Series_root_of(path string) string {
+	dir := filepath.Dir(path)
+	for Skip_series_folder(filepath.Base(dir)) {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return dir
+}
+
+// Series_folder_name returns the base name of the directory that names the
+// series for a file at path, or "" when the path has no usable series folder
+// (episodes sat directly in the library root, next to nothing to step out
+// into). Callers fall back to the file name when this is empty.
+func Series_folder_name(path string) string {
+	name := filepath.Base(Series_root_of(path))
+	if name == "." || name == "" || name == string(filepath.Separator) || name == "/" {
+		return ""
+	}
+	return name
+}

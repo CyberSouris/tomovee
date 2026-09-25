@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
@@ -245,6 +246,153 @@ func candidates_to_db(media_type string, candidates []matcher.Candidate) []datab
 		})
 	}
 	return rows
+}
+
+// handle_version_episode attaches a stored file to the episode a user chose for
+// it. The season and episode numbers come from the request body, so files whose
+// names did not parse as episodes find their place by hand. The owning entry
+// must be a series; the episode row is created on demand.
+func (s *Server) handle_version_episode(w http.ResponseWriter, r *http.Request) {
+	if s.matching == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	version_id, err := strconv.ParseInt(r.PathValue("version_id"), 10, 64)
+	if err != nil || version_id <= 0 {
+		write_error(w, http.StatusBadRequest, "invalid version id")
+		return
+	}
+	version, err := s.store.Get_version(r.Context(), version_id)
+	if err != nil {
+		s.internal_error(w, err, "load version")
+		return
+	}
+	if version == nil {
+		write_error(w, http.StatusNotFound, "version not found")
+		return
+	}
+	var request episode_assign_request
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		write_error(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if request.Season < 0 || request.Episode <= 0 {
+		write_error(w, http.StatusBadRequest, "season must be >= 0 and episode must be >= 1")
+		return
+	}
+	episode_id, err := s.matching.Assign_version_to_episode(r.Context(), version_id, request.Season, request.Episode)
+	if err != nil {
+		s.internal_error(w, err, "assign version to episode")
+		return
+	}
+	if episode_id == 0 {
+		write_error(w, http.StatusNotFound, "version not found")
+		return
+	}
+	write_json(w, http.StatusOK, map[string]any{"ok": true, "episode_id": episode_id})
+}
+
+// episode_assign_request carries the target episode a user picks for a stored
+// file on the series detail page.
+type episode_assign_request struct {
+	Season  int `json:"season"`
+	Episode int `json:"episode"`
+}
+
+// handle_version_split cuts one stored file out of its current entry and turns
+// it into a movie of its own. It runs through the same job manager as a rematch
+// so the newly created movie is immediately matched and the correction shows up
+// in the global status and SSE feed. The response carries the new entry, like a
+// manual match response, so the UI can follow it.
+func (s *Server) handle_version_split(w http.ResponseWriter, r *http.Request) {
+	if s.matching == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return
+	}
+	version_id, err := strconv.ParseInt(r.PathValue("version_id"), 10, 64)
+	if err != nil || version_id <= 0 {
+		write_error(w, http.StatusBadRequest, "invalid version id")
+		return
+	}
+	version, err := s.store.Get_version(r.Context(), version_id)
+	if err != nil {
+		s.internal_error(w, err, "load version")
+		return
+	}
+	if version == nil {
+		write_error(w, http.StatusNotFound, "version not found")
+		return
+	}
+
+	var applied bool
+	var candidates []matcher.Candidate
+	var new_id int64
+	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		var run_err error
+		new_id, run_err = s.matching.Split_version_to_movie(ctx, version_id)
+		if run_err != nil {
+			return nil, run_err
+		}
+		if new_id == 0 {
+			return nil, nil
+		}
+		title := ""
+		fresh, get_err := s.store.Get_catalog_entry(ctx, new_id)
+		if get_err != nil {
+			return nil, get_err
+		}
+		if fresh != nil {
+			title = fresh.Title
+			applied, candidates, run_err = s.matching.Rematch_one(ctx, new_id)
+			if run_err != nil {
+				return nil, run_err
+			}
+		}
+		result := &matching.Result{Total: 1}
+		if applied {
+			result.Matched = 1
+			if err := s.store.Clear_candidates(ctx, new_id); err != nil {
+				return nil, err
+			}
+		} else {
+			result.Unmatched = 1
+			if len(candidates) > 0 {
+				result.Candidates = len(candidates)
+				if err := s.store.Replace_candidates(ctx, new_id, candidates_to_db("movie", candidates)); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if progress != nil {
+			progress(matching.Progress{
+				Phase: "file", Title: title, Total: 1, Done: 1,
+				Matched: result.Matched, Unmatched: result.Unmatched,
+			})
+		}
+		return result, nil
+	})
+	if errors.Is(err, Err_job_running) {
+		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+		return
+	}
+	if err != nil {
+		s.internal_error(w, err, "run matching job")
+		return
+	}
+	if new_id == 0 {
+		write_error(w, http.StatusNotFound, "version not found")
+		return
+	}
+	fresh, err := s.store.Get_catalog_entry(r.Context(), new_id)
+	if err != nil || fresh == nil {
+		write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
+		return
+	}
+	write_json(w, http.StatusOK, map[string]any{
+		"applied":    applied,
+		"entry":      catalog_item_from(*fresh),
+		"candidates": candidate_items(candidates, "movie"),
+	})
 }
 
 // handle_reclassify forces a catalog entry to the opposite media type the

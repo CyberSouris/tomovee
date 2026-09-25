@@ -329,6 +329,17 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 		}
 		response.Versions = s.version_items(r.Context(), versions)
 	}
+	if entry.Media_type == "series" {
+		// Files the folder grouping could not turn into numbered episodes stay
+		// attached to the show entry instead of an episode row. Surface them so
+		// the episodes view can offer placing them by hand.
+		versions, err := s.store.List_versions_for_entry(r.Context(), id)
+		if err != nil {
+			s.internal_error(w, err, "list unassigned series versions")
+			return
+		}
+		response.Versions = s.version_items(r.Context(), versions)
+	}
 	write_json(w, http.StatusOK, response)
 }
 

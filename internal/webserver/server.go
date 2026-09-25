@@ -127,6 +127,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/posters/{id}", s.handle_poster)
 	s.mux.HandleFunc("POST /api/v1/posters/prune", s.handle_poster_prune)
 	s.mux.HandleFunc("GET /api/v1/versions/{version_id}/file", s.handle_version_file)
+	s.mux.HandleFunc("POST /api/v1/versions/{version_id}/split", s.handle_version_split)
+	s.mux.HandleFunc("POST /api/v1/versions/{version_id}/episode", s.handle_version_episode)
 	s.mux.HandleFunc("POST /api/v1/settings/reload", s.handle_sources_reload)
 	s.mux.HandleFunc("/", s.handle_spa)
 }

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -430,7 +431,8 @@ func (m *Matching) Reclassify(ctx context.Context, entry_id int64, as_series boo
 // is drained into it. Movies that still own files outside the root survive.
 // Versions that parse as numbered episodes land in episode rows — exactly what
 // a scan's folder grouping would have produced — so the series' largest-episode
-// matching walk still works.
+// matching walk still works. Whatever is left over is numbered into episode rows
+// as well, so the re-typed show owns episodes rather than loose files.
 func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int64, error) {
 	libraries, err := m.store.List_libraries(ctx)
 	if err != nil {
@@ -442,25 +444,27 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 	}
 
 	roots := make([]string, 0, 1)
-	if versions, err := m.store.List_versions_for_entry(ctx, entry_id); err != nil {
+	anchor_versions, err := m.store.List_versions_for_entry(ctx, entry_id)
+	if err != nil {
 		return entry_id, err
-	} else {
-		for _, version := range versions {
-			path := root_by_library[version.Library_id]
-			if path == "" {
-				continue
-			}
-			root := scanner.Series_root_of(filepath.Join(path, version.File_path))
-			if root == filepath.Clean(path) {
-				continue // no show folder, files sit directly in the library root
-			}
-			if !contains_path(roots, root) {
-				roots = append(roots, root)
-			}
+	}
+	for _, version := range anchor_versions {
+		path := root_by_library[version.Library_id]
+		if path == "" {
+			continue
+		}
+		root := scanner.Series_root_of(filepath.Join(path, version.File_path))
+		if root == filepath.Clean(path) {
+			continue // no show folder, files sit directly in the library root
+		}
+		if !contains_path(roots, root) {
+			roots = append(roots, root)
 		}
 	}
 	if len(roots) == 0 {
-		return entry_id, nil
+		// No show folder to group around: the re-typed entry's own files still
+		// have to end up as episodes.
+		return entry_id, m.number_series_versions(ctx, entry_id, anchor_versions)
 	}
 
 	owned, err := m.store.List_owned_versions(ctx)
@@ -519,14 +523,25 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 	}
 
 	// Fold every file of a drained entry, plus the anchor's own files when it
-	// re-uses the freshly flipped row, into the target series.
+	// re-uses the freshly flipped row, into the target series. Files the target
+	// already placed on its episodes are left where the user or a scan put them.
+	loose := make([]database.Version, 0, 8)
 	for id, b := range owners {
 		if id != target && !drain[id] {
 			continue
 		}
 		for _, version := range b.versions {
-			if err := m.fold_series_version(ctx, target, version); err != nil {
+			if id == target && version.Episode_id != 0 {
+				continue
+			}
+			numbered, err := m.fold_series_version(ctx, target, version)
+			if err != nil {
 				return entry_id, err
+			}
+			if !numbered {
+				loose = append(loose, database.Version{
+					Id: version.Version_id, File_path: version.File_path, Mtime: version.Mtime,
+				})
 			}
 		}
 	}
@@ -560,13 +575,17 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			}
 		}
 	}
+	if err := m.number_series_versions(ctx, target, loose); err != nil {
+		return entry_id, err
+	}
 	return target, nil
 }
 
 // fold_series_version moves one stored file under a series' show folder. Files
 // that parse as numbered episodes become episode rows; everything else attaches
-// directly to the show, mirroring the scanner's folder grouping.
-func (m *Matching) fold_series_version(ctx context.Context, target_id int64, version database.Owned_version) error {
+// directly to the show, mirroring the scanner's folder grouping. It reports
+// whether the file ended up on an episode row.
+func (m *Matching) fold_series_version(ctx context.Context, target_id int64, version database.Owned_version) (bool, error) {
 	hint := matcher.Parse_filename(filepath.Base(version.File_path))
 	if hint.Is_series && hint.Episode > 0 {
 		episode_id, err := m.store.Upsert_episode(ctx, database.Episode{
@@ -577,11 +596,145 @@ func (m *Matching) fold_series_version(ctx context.Context, target_id int64, ver
 			Status:           "needs_lookup",
 		})
 		if err != nil {
-			return err
+			return false, err
 		}
-		return m.store.Move_version_to_episode(ctx, version.Version_id, episode_id)
+		return true, m.store.Move_version_to_episode(ctx, version.Version_id, episode_id)
 	}
-	return m.store.Move_version_to_entry(ctx, version.Version_id, target_id)
+	return false, m.store.Move_version_to_entry(ctx, version.Version_id, target_id)
+}
+
+// default_series_season is the season a show's files are numbered into when
+// they sit straight in the show folder, which names no season of its own.
+const default_series_season = 1
+
+// number_series_versions gives episode rows to files that carry no episode
+// number of their own, so a title re-typed into a series owns episodes instead
+// of loose files. Nothing can say which episode a file is, so the numbers are a
+// best guess: files keep the order they were added in (modification time, then
+// natural file name), take the season their folder declares, and continue after
+// the highest number the season already uses so no numbered episode is
+// overwritten. Files under an extras or specials folder become season 0. The
+// guess is only a starting point — the user can move a file to the right
+// episode afterwards.
+func (m *Matching) number_series_versions(ctx context.Context, entry_id int64, versions []database.Version) error {
+	if len(versions) == 0 {
+		return nil
+	}
+	episodes, err := m.store.List_episodes(ctx, entry_id)
+	if err != nil {
+		return err
+	}
+	next := make(map[int]int)
+	for _, episode := range episodes {
+		if number := episode.Episode_number + 1; number > next[episode.Season_number] {
+			next[episode.Season_number] = number
+		}
+	}
+
+	by_season := make(map[int][]database.Version)
+	seasons := make([]int, 0, 2)
+	for _, version := range versions {
+		season := series_season_of(version.File_path)
+		if _, seen := by_season[season]; !seen {
+			seasons = append(seasons, season)
+			if next[season] < 1 {
+				next[season] = 1
+			}
+		}
+		by_season[season] = append(by_season[season], version)
+	}
+	sort.Ints(seasons)
+	for _, season := range seasons {
+		files := by_season[season]
+		sort.Slice(files, func(i, j int) bool { return ordered_before(files[i], files[j]) })
+		for _, version := range files {
+			episode_id, err := m.store.Upsert_episode(ctx, database.Episode{
+				Catalog_entry_id: entry_id,
+				Season_number:    season,
+				Episode_number:   next[season],
+				Is_special:       season == 0,
+				Status:           "needs_lookup",
+			})
+			if err != nil {
+				return err
+			}
+			next[season]++
+			if err := m.store.Move_version_to_episode(ctx, version.Id, episode_id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// series_season_of returns the season a file of a re-typed show belongs to: the
+// one its container folder names, or the show's first season for files that sit
+// in the show folder itself.
+func series_season_of(file_path string) int {
+	if season, ok := scanner.Season_of(file_path); ok {
+		return season
+	}
+	return default_series_season
+}
+
+// ordered_before reports whether the file a comes before the file b when a
+// show's episodes are numbered. Files added earlier come first; files sharing a
+// modification time fall back to their name, compared the way a human reads it
+// so that "part 2" sorts before "part 10". Files with no recorded time keep
+// their name order, after the ones that have a time.
+func ordered_before(a, b database.Version) bool {
+	if a.Mtime != b.Mtime {
+		switch {
+		case a.Mtime == "":
+			return false
+		case b.Mtime == "":
+			return true
+		default:
+			return a.Mtime < b.Mtime
+		}
+	}
+	return natural_before(a.File_path, b.File_path)
+}
+
+// natural_before compares two paths the way a human reads them: digit runs
+// count as numbers rather than as text, so episode 2 comes before episode 10.
+func natural_before(a, b string) bool {
+	for a != "" && b != "" {
+		if is_digit(a[0]) && is_digit(b[0]) {
+			a_digits, b_digits := leading_digits(a), leading_digits(b)
+			if a_digits != b_digits {
+				return less_number(a_digits, b_digits)
+			}
+			a, b = a[len(a_digits):], b[len(b_digits):]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return a == "" && b != ""
+}
+
+func is_digit(c byte) bool { return c >= '0' && c <= '9' }
+
+func leading_digits(s string) string {
+	i := 0
+	for i < len(s) && is_digit(s[i]) {
+		i++
+	}
+	return s[:i]
+}
+
+// less_number compares two digit runs by value, ignoring leading zeros and the
+// length they would otherwise give a shorter run.
+func less_number(a, b string) bool {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
 }
 
 // Split_version_to_movie cuts one stored file out of the entry or episode that

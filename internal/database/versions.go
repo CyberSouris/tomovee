@@ -197,6 +197,13 @@ type Owned_version struct {
 	Entry_title      string
 	Library_id       int64
 	File_path        string
+	// Mtime is the file's modification time, empty when it was never recorded.
+	// Reclassify numbering uses it to order files with no episode number.
+	Mtime string
+	// Episode_id is the episode owning the version, or 0 when the file
+	// attaches to its catalog entry directly. Reclassify grouping uses it to
+	// tell a show's own episode files from loose files it may renumber.
+	Episode_id int64
 }
 
 // List_owned_versions returns every stored version together with the catalog
@@ -208,7 +215,9 @@ func (s *Store) List_owned_versions(ctx context.Context) ([]Owned_version, error
 		       COALESCE(ce.media_type, ''),
 		       COALESCE(ce.title, ''),
 		       COALESCE(v.library_id, 0),
-		       v.file_path
+		       v.file_path,
+		       COALESCE(v.mtime, ''),
+		       COALESCE(v.episode_id, 0)
 		FROM version v
 		LEFT JOIN episode ep ON ep.id = v.episode_id
 		LEFT JOIN catalog_entry ce ON ce.id = COALESCE(v.catalog_entry_id, ep.catalog_entry_id, 0)`)
@@ -220,7 +229,7 @@ func (s *Store) List_owned_versions(ctx context.Context) ([]Owned_version, error
 	for rows.Next() {
 		var owned Owned_version
 		if err := rows.Scan(&owned.Version_id, &owned.Entry_id, &owned.Entry_media_type,
-			&owned.Entry_title, &owned.Library_id, &owned.File_path); err != nil {
+			&owned.Entry_title, &owned.Library_id, &owned.File_path, &owned.Mtime, &owned.Episode_id); err != nil {
 			return nil, err
 		}
 		out = append(out, owned)

@@ -682,8 +682,8 @@ func Test_reclassify_movie_to_series_groups_show_folder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list episodes: %v", err)
 	}
-	if len(episodes) != 2 {
-		t.Fatalf("episodes = %d, want the two folded episode rows", len(episodes))
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %d, want the two folded episode rows plus the numbered interview file", len(episodes))
 	}
 	var episode_versions int
 	for _, episode := range episodes {
@@ -693,15 +693,15 @@ func Test_reclassify_movie_to_series_groups_show_folder(t *testing.T) {
 		}
 		episode_versions += len(versions)
 	}
-	if episode_versions != 2 {
-		t.Errorf("versions on episodes = %d, want 2", episode_versions)
+	if episode_versions != 3 {
+		t.Errorf("versions on episodes = %d, want 3", episode_versions)
 	}
 	extra, err := store.List_versions_for_entry(ctx, anchor_id)
 	if err != nil {
 		t.Fatalf("list extra versions: %v", err)
 	}
-	if len(extra) != 1 {
-		t.Errorf("extra versions on the show = %d, want 1", len(extra))
+	if len(extra) != 0 {
+		t.Errorf("extra versions on the show = %d, want none left loose", len(extra))
 	}
 }
 
@@ -764,15 +764,148 @@ func Test_reclassify_movie_to_series_merges_into_existing_series(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list episodes: %v", err)
 	}
-	if len(episodes) != 1 {
-		t.Errorf("episodes = %d, want the untouched episode row", len(episodes))
+	if len(episodes) != 2 {
+		t.Errorf("episodes = %d, want the untouched episode row plus the numbered interview file", len(episodes))
 	}
 	extras, err := store.List_versions_for_entry(ctx, series_id)
 	if err != nil {
 		t.Fatalf("list extra versions: %v", err)
 	}
-	if len(extras) != 1 {
-		t.Errorf("extras = %d, want the folded interview file", len(extras))
+	if len(extras) != 0 {
+		t.Errorf("extras = %d, want the interview file numbered as an episode", len(extras))
+	}
+}
+
+func Test_reclassify_movie_to_series_numbers_unnumbered_files(t *testing.T) {
+	service, store := new_movie_service(t, fake_series_hit{})
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	files := []struct {
+		path  string
+		mtime string
+	}{
+		{"The.Office/Part 10.mkv", "2024-01-01T00:00:03Z"},
+		{"The.Office/Part 2.mkv", "2024-01-01T00:00:04Z"},
+		{"The.Office/Part 1.mkv", "2024-01-01T00:00:01Z"},
+		{"The.Office/Season 1/The.Office.S01E01.mkv", ""},
+		{"The.Office/Specials/Bloopers.mkv", "2024-01-01T00:00:05Z"},
+		{"The.Office/Season 3/Chapter One.mkv", "2024-01-01T00:00:06Z"},
+	}
+	for i, file := range files {
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: entry_id, Library_id: lib, File_path: file.path,
+			Size_bytes: int64(1000 + i), Mtime: file.mtime,
+		}); err != nil {
+			t.Fatalf("save version: %v", err)
+		}
+	}
+
+	if _, _, _, err := service.Reclassify(ctx, entry_id, true); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+	numbers := map[string][2]int{}
+	episodes, err := store.List_episodes(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("list episodes: %v", err)
+	}
+	for _, episode := range episodes {
+		versions, err := store.List_versions_for_episode(ctx, episode.Id)
+		if err != nil {
+			t.Fatalf("episode versions: %v", err)
+		}
+		if len(versions) != 1 {
+			t.Fatalf("episode %d has %d versions, want one", episode.Id, len(versions))
+		}
+		numbers[versions[0].File_path] = [2]int{episode.Season_number, episode.Episode_number}
+	}
+	want := map[string][2]int{
+		// The numbered file keeps the number its name gave it.
+		"The.Office/Season 1/The.Office.S01E01.mkv": {1, 1},
+		// Files with no number are numbered in the order they were added in,
+		// continuing after the season's highest number.
+		"The.Office/Part 1.mkv":  {1, 2},
+		"The.Office/Part 10.mkv": {1, 3},
+		// Two files added at the same time fall back to their names, read the
+		// way a human reads them: part 2 before part 10.
+		"The.Office/Part 2.mkv":               {1, 4},
+		"The.Office/Season 3/Chapter One.mkv": {3, 1},
+		// Extras land in the specials season instead of shifting the show's.
+		"The.Office/Specials/Bloopers.mkv": {0, 1},
+	}
+	if len(numbers) != len(want) {
+		t.Fatalf("episodes = %v, want %v", numbers, want)
+	}
+	for path, expected := range want {
+		got, ok := numbers[path]
+		if !ok {
+			t.Errorf("%s is not on an episode", path)
+			continue
+		}
+		if got != expected {
+			t.Errorf("%s = S%02dE%02d, want S%02dE%02d", path, got[0], got[1], expected[0], expected[1])
+		}
+	}
+	loose, err := store.List_versions_for_entry(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("list loose versions: %v", err)
+	}
+	if len(loose) != 0 {
+		t.Errorf("loose versions = %d, want none", len(loose))
+	}
+}
+
+func Test_reclassify_movie_to_series_keeps_assigned_episodes(t *testing.T) {
+	service, store := new_movie_service(t, fake_series_hit{})
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "matched", Imdb_id: "tt0386676",
+	})
+	if err != nil {
+		t.Fatalf("upsert series: %v", err)
+	}
+	// An episode a user placed by hand, on a file whose name says S01E01.
+	assigned_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: series_id, Season_number: 2, Episode_number: 5, Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: assigned_id, Library_id: lib, File_path: "The.Office/Season 1/The.Office.S01E01.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save series version: %v", err)
+	}
+
+	movie_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Office S01E02", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert movie: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: movie_id, Library_id: lib, File_path: "The.Office/Season 1/The.Office.S01E02.mkv", Size_bytes: 1100,
+	}); err != nil {
+		t.Fatalf("save movie version: %v", err)
+	}
+
+	if _, _, _, err := service.Reclassify(ctx, movie_id, true); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+	versions, err := store.List_versions_for_episode(ctx, assigned_id)
+	if err != nil {
+		t.Fatalf("assigned episode versions: %v", err)
+	}
+	if len(versions) != 1 || versions[0].File_path != "The.Office/Season 1/The.Office.S01E01.mkv" {
+		t.Errorf("assigned episode = %+v, want the show's own file left in place", versions)
 	}
 }
 

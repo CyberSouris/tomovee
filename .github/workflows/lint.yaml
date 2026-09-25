@@ -3,6 +3,8 @@ name: lint
   push: null
   pull_request: null
   workflow_dispatch: null
+permissions:
+  contents: read
 jobs:
   lint:
     runs-on: ubuntu-latest

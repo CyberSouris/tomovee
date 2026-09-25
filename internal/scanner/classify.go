@@ -182,6 +182,28 @@ func Skip_series_folder(name string) bool {
 	return false
 }
 
+// season_folder_re matches the container folders that name a season: "Season 2",
+// "Season.2" and the short "S2" spelling.
+var season_folder_re = regexp.MustCompile(`(?i)^(?:season\s*[\s._-]*|s)(\d{1,3})$`)
+
+// Season_of returns the season the container folder of the file at path
+// declares: "Season 3" and "S3" give 3, while specials and extras containers
+// ("Specials", "Extras", "Behind the Scenes", ...) give 0, the season specials
+// live in. ok is false when the file sits directly in the show folder, which
+// names no season, so the caller keeps its own default.
+func Season_of(path string) (season int, ok bool) {
+	name := strings.Trim(filepath.Base(filepath.Dir(path)), " ._-")
+	if match := season_folder_re.FindStringSubmatch(name); match != nil {
+		if number, err := strconv.Atoi(match[1]); err == nil {
+			return number, true
+		}
+	}
+	if Skip_series_folder(name) {
+		return 0, true
+	}
+	return 0, false
+}
+
 // Series_root_of returns the directory that names the series for a file at
 // path, stepping out of season/special/extras folders. When the immediate
 // parent is a plain show folder that folder is returned unchanged; trailing

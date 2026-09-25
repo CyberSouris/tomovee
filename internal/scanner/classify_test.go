@@ -168,3 +168,27 @@ func Test_series_folder_patterns(t *testing.T) {
 		}
 	}
 }
+
+func Test_season_of(t *testing.T) {
+	cases := []struct {
+		path        string
+		want_season int
+		want_ok     bool
+	}{
+		{"The.Office/Season 2/S01E01.mkv", 2, true},
+		{"The.Office/Season.10/Part 1.mkv", 10, true},
+		{"The.Office/s3/Part 1.mkv", 3, true},
+		{"The.Office/S04/Part 1.mkv", 4, true},
+		{"The.Office/Specials/Bloopers.mkv", 0, true},
+		{"The.Office/Extras/Behind the Scenes.mkv", 0, true},
+		{"The.Office/Part 1.mkv", 0, false},
+		{"S01E01.mkv", 0, false},
+		{"The.Office/Season One/Part 1.mkv", 0, false},
+	}
+	for _, tc := range cases {
+		season, ok := Season_of(tc.path)
+		if season != tc.want_season || ok != tc.want_ok {
+			t.Errorf("Season_of(%q) = %d, %v, want %d, %v", tc.path, season, ok, tc.want_season, tc.want_ok)
+		}
+	}
+}

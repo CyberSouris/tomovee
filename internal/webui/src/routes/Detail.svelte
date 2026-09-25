@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api_get, api_send, format_bytes, format_duration } from '../api.js';
   import TitleSearch from '../TitleSearch.svelte';
+  import VersionActions from '../VersionActions.svelte';
 
   export let id;
 
@@ -17,6 +18,9 @@
   let rematch_error = '';
   let reclassify_busy = false;
   let reclassify_error = '';
+  let version_busy = 0;
+  let version_error = '';
+  let version_ok = '';
   let playing = null;
   let open_episodes = new Set();
 
@@ -51,6 +55,46 @@
 
   function file_name(version) {
     return (version.file_path || 'video').split('/').pop();
+  }
+
+  // Cutting a file out of this title makes a movie of its own and matches it
+  // right away, so follow the new entry; the title left behind may be gone.
+  async function split_version(version) {
+    version_busy = version.id;
+    version_error = '';
+    version_ok = '';
+    try {
+      const body = await api_send('/api/v1/versions/' + version.id + '/split', 'POST', {});
+      if (body && body.entry) {
+        window.location.hash = '#/title/' + body.entry.id;
+        return;
+      }
+      await load();
+    } catch (err) {
+      version_error = err.message;
+    } finally {
+      version_busy = null;
+    }
+  }
+
+  // Place a file on the episode the user names. The show itself picks these
+  // numbers when it cannot read them off the file name; this is the correction.
+  async function assign_version(detail) {
+    version_busy = detail.version.id;
+    version_error = '';
+    version_ok = '';
+    try {
+      await api_send('/api/v1/versions/' + detail.version.id + '/episode', 'POST', {
+        season: detail.season,
+        episode: detail.episode,
+      });
+      version_ok = file_name(detail.version) + ' is now S' + detail.season + 'E' + detail.episode + '.';
+      await load();
+    } catch (err) {
+      version_error = err.message;
+    } finally {
+      version_busy = null;
+    }
   }
 
   async function match_body(body) {
@@ -309,10 +353,15 @@
                     <td>{tracks_label(version.audio)}</td>
                     <td>{tracks_label(version.subtitles)}</td>
                     <td class="actions">
-                      <button class="secondary" on:click={() => (playing = playing === version ? null : version)}>
-                        {playing === version ? 'Playing…' : 'Play'}
-                      </button>
-                      <a class="download" href={version.file_url} download={file_name(version)}>Download</a>
+                      <VersionActions
+                        {version}
+                        series={data.entry.media_type === 'series'}
+                        playing={playing === version}
+                        busy={version_busy === version.id}
+                        on:play={(event) => (playing = playing === event.detail ? null : event.detail)}
+                        on:split={(event) => split_version(event.detail)}
+                        on:assign={assign_version}
+                      />
                     </td>
                   </tr>
                 {/each}
@@ -322,7 +371,13 @@
         </div>
       {/each}
     {/if}
-    <h2>Series versions ({data.versions.length})</h2>
+    <h2>Files outside episodes ({data.versions.length})</h2>
+    {#if data.versions.length > 0}
+      <p class="muted">
+        These files sit in the show folder without a readable episode number.
+        Give each one the episode it belongs to, or split it into its own movie.
+      </p>
+    {/if}
   {:else}
     <h2>Versions ({data.versions.length})</h2>
   {/if}
@@ -373,16 +428,24 @@
             <td>{tracks_label(version.audio)}</td>
             <td>{tracks_label(version.subtitles)}</td>
             <td class="actions">
-              <button class="secondary" on:click={() => (playing = playing === version ? null : version)}>
-                {playing === version ? 'Playing…' : 'Play'}
-              </button>
-              <a class="download" href={version.file_url} download={file_name(version)}>Download</a>
+              <VersionActions
+                {version}
+                series={data.entry.media_type === 'series'}
+                playing={playing === version}
+                busy={version_busy === version.id}
+                on:play={(event) => (playing = playing === event.detail ? null : event.detail)}
+                on:split={(event) => split_version(event.detail)}
+                on:assign={assign_version}
+              />
             </td>
           </tr>
         {/each}
       </tbody>
     </table>
   {/if}
+
+  {#if version_error}<p class="result error">{version_error}</p>{/if}
+  {#if version_ok}<p class="result ok">{version_ok}</p>{/if}
 {/if}
 
 <style>
@@ -557,10 +620,5 @@
 
   .actions {
     white-space: nowrap;
-  }
-
-  .actions .download {
-    margin-left: 0.7rem;
-    font-size: 0.85rem;
   }
 </style>

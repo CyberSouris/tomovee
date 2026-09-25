@@ -3,6 +3,8 @@ name: coverage
   push: null
   pull_request: null
   workflow_dispatch: null
+permissions:
+  contents: read
 jobs:
   coverage:
     runs-on: ubuntu-latest

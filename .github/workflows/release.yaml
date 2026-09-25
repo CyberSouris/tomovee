@@ -63,7 +63,7 @@ jobs:
           mkdir -p "dist/pkg/${dir}"
           cp dist/tomovee "dist/pkg/${dir}/tomovee"
           cp -r dist/docs "dist/pkg/${dir}/docs"
-          cp README.md SPEC.md config.example.yaml "dist/pkg/${dir}/"
+          cp README.adoc SPEC.md config.example.yaml "dist/pkg/${dir}/"
           tar -C dist/pkg -czf "dist/${dir}.tar.gz" "${dir}"
           sha256sum "dist/${dir}.tar.gz" \
             > "dist/SHA256SUMS-${{ matrix.goarch }}"
@@ -73,7 +73,7 @@ jobs:
         with:
           name: tomovee-${{ matrix.goarch }}
           path: |
-            dist/tomovee-*.linux-*.tar.gz
+            dist/tomovee-*-linux-*.tar.gz
             dist/SHA256SUMS-*
           if-no-files-found: error
 
@@ -183,7 +183,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           tag="v${{ steps.version.outputs.version }}"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "tag ${tag} already exists; skipping creation"
@@ -197,16 +197,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          find release
           tag="v${{ steps.version.outputs.version }}"
           gh release create "${tag}" \
             --title "tomovee ${tag}" \
             --notes-file release-notes.md \
-            release/tomovee-*.linux-*.tar.gz \
+            release/tomovee-*-linux-*.tar.gz \
             release/tomovee-*-src.tar.gz \
             release/SHA256SUMS \
             CHANGELOG.md || \
           gh release upload "${tag}" \
-            release/tomovee-*.linux-*.tar.gz \
+            release/tomovee-*-linux-*.tar.gz \
             release/tomovee-*-src.tar.gz \
             release/SHA256SUMS \
             CHANGELOG.md \

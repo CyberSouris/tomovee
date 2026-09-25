@@ -16,9 +16,11 @@ import (
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/matcher"
 	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/poster_cache"
 	"github.com/cybersouris/tomovee/internal/scan"
+	"github.com/cybersouris/tomovee/internal/scanner"
 	"github.com/cybersouris/tomovee/internal/thumbnail"
 )
 
@@ -430,6 +432,82 @@ func Test_handle_reclassify_series_to_movie_applied(t *testing.T) {
 	}
 	if entry.Media_type != "movie" || entry.Status != "matched" {
 		t.Errorf("entry = %+v, want matched movie", entry)
+	}
+}
+
+// fake_series_offline answers the offline IPTV lookup with one confident series
+// hit, so a re-type to a series resolves during the automatic pass.
+type fake_series_offline struct{}
+
+func (fake_series_offline) Search(_ context.Context, _ string, _ int, kind scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	if kind != scanner.Series {
+		return nil, nil
+	}
+	return []matcher.Offline_candidate{
+		{Imdb_id: "tt0386676", Title: "The Office", Year: 2005, Media_type: scanner.Series},
+	}, nil
+}
+
+func Test_handle_reclassify_movie_to_series_returns_the_merged_series(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_series_offline{})
+	ctx := context.Background()
+	if err := store.Ensure_library(ctx, "TV", t.TempDir(), true); err != nil {
+		t.Fatalf("ensure library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil {
+		t.Fatalf("list libraries: %v", err)
+	}
+	lib := libraries[0].Id
+
+	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert series: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib, File_path: "The.Office/Season 1/The.Office.S01E01.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save series version: %v", err)
+	}
+	movie_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Office Interviews", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert movie: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: movie_id, Library_id: lib, File_path: "The.Office/Season 1/Interviews.mkv", Size_bytes: 900,
+	}); err != nil {
+		t.Fatalf("save movie version: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(movie_id)+"/reclassify", `{"media_type":"series"}`)
+	if rec.Code != 200 {
+		t.Fatalf("reclassify = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Applied bool          `json:"applied"`
+		Entry   *catalog_item `json:"entry"`
+	}](t, rec)
+	if !body.Applied || body.Entry == nil {
+		t.Fatalf("body = %+v, want the merged series applied", body)
+	}
+	if body.Entry.Id != series_id {
+		t.Errorf("response entry id = %d, want the existing series %d", body.Entry.Id, series_id)
+	}
+	if body.Entry.Media_type != "series" || body.Entry.Imdb_id != "tt0386676" {
+		t.Errorf("entry = %+v, want the matched series", body.Entry)
+	}
+	if entry, err := store.Get_catalog_entry(ctx, movie_id); err != nil || entry != nil {
+		t.Errorf("re-typed movie entry not drained: entry=%+v err=%v", entry, err)
 	}
 }
 

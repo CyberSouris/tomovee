@@ -111,6 +111,30 @@ func replace_subtitle_tracks_tx(ctx context.Context, tx *sql.Tx, version_id int6
 	return nil
 }
 
+// Move_version_to_entry reassigns a stored version to a catalog entry,
+// detaching it from any episode. It is used by reclassification grouping to
+// fold files of a re-typed entry under one series.
+func (s *Store) Move_version_to_entry(ctx context.Context, version_id, catalog_entry_id int64) error {
+	if _, err := s.db.db.ExecContext(ctx, `
+		UPDATE version SET catalog_entry_id = ?, episode_id = NULL, updated_at = datetime('now')
+		WHERE id = ?`, catalog_entry_id, version_id); err != nil {
+		return fmt.Errorf("move version %d to entry %d: %w", version_id, catalog_entry_id, err)
+	}
+	return nil
+}
+
+// Move_version_to_episode reassigns a stored version to an episode row,
+// detaching it from its catalog entry. It is used by reclassification grouping
+// when a folded movie file turns out to be a numbered episode.
+func (s *Store) Move_version_to_episode(ctx context.Context, version_id, episode_id int64) error {
+	if _, err := s.db.db.ExecContext(ctx, `
+		UPDATE version SET episode_id = ?, catalog_entry_id = NULL, updated_at = datetime('now')
+		WHERE id = ?`, episode_id, version_id); err != nil {
+		return fmt.Errorf("move version %d to episode %d: %w", version_id, episode_id, err)
+	}
+	return nil
+}
+
 // Find_version_in_library returns the re-scan reference for a file path within
 // a library, if it is already catalogued. A zero library_id matches legacy
 // rows stored with absolute paths. The returned status reflects the owning
@@ -159,6 +183,47 @@ func (s *Store) List_version_refs(ctx context.Context) ([]Version_ref, error) {
 			return nil, err
 		}
 		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// Owned_version ties a stored file to the catalog entry it backs, whether the
+// version attaches directly or through an episode. It is used by reclassify
+// grouping to find the other entries living under a series' show folder.
+type Owned_version struct {
+	Version_id       int64
+	Entry_id         int64
+	Entry_media_type string
+	Entry_title      string
+	Library_id       int64
+	File_path        string
+}
+
+// List_owned_versions returns every stored version together with the catalog
+// entry that owns it.
+func (s *Store) List_owned_versions(ctx context.Context) ([]Owned_version, error) {
+	rows, err := s.db.db.QueryContext(ctx, `
+		SELECT v.id,
+		       COALESCE(v.catalog_entry_id, ep.catalog_entry_id, 0),
+		       COALESCE(ce.media_type, ''),
+		       COALESCE(ce.title, ''),
+		       COALESCE(v.library_id, 0),
+		       v.file_path
+		FROM version v
+		LEFT JOIN episode ep ON ep.id = v.episode_id
+		LEFT JOIN catalog_entry ce ON ce.id = COALESCE(v.catalog_entry_id, ep.catalog_entry_id, 0)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Owned_version
+	for rows.Next() {
+		var owned Owned_version
+		if err := rows.Scan(&owned.Version_id, &owned.Entry_id, &owned.Entry_media_type,
+			&owned.Entry_title, &owned.Library_id, &owned.File_path); err != nil {
+			return nil, err
+		}
+		out = append(out, owned)
 	}
 	return out, rows.Err()
 }

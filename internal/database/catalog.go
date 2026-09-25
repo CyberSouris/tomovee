@@ -159,6 +159,17 @@ func (s *Store) Update_catalog_entry(ctx context.Context, id int64, entry Catalo
 	})
 }
 
+// Delete_catalog_entry removes a catalog entry and everything attached to it.
+// Dependent rows (episodes, metadata, candidates, genre links, and any version
+// still pointing at the entry) are dropped by their ON DELETE CASCADE foreign
+// keys. Callers must move surviving versions elsewhere first.
+func (s *Store) Delete_catalog_entry(ctx context.Context, id int64) error {
+	if _, err := s.db.db.ExecContext(ctx, "DELETE FROM catalog_entry WHERE id = ?", id); err != nil {
+		return fmt.Errorf("delete catalog entry %d: %w", id, err)
+	}
+	return nil
+}
+
 // Set_catalog_status updates the status flag of one catalog entry.
 func (s *Store) Set_catalog_status(ctx context.Context, id int64, status string) error {
 	return s.exec_tx(ctx,

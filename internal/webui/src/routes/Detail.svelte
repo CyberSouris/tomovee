@@ -86,8 +86,14 @@
     reclassify_busy = true;
     reclassify_error = '';
     try {
-      await api_send('/api/v1/catalog/' + data.entry.id + '/reclassify', 'POST', { media_type });
+      const body = await api_send('/api/v1/catalog/' + data.entry.id + '/reclassify', 'POST', { media_type });
       manual_ok = '';
+      // Grouping a movie into a series may absorb the entry into an existing
+      // show and delete it; follow the response to the entry that survived.
+      if (body && body.entry && String(body.entry.id) !== String(data.entry.id)) {
+        window.location.hash = '#/title/' + body.entry.id;
+        return;
+      }
       await load();
     } catch (err) {
       reclassify_error = err.message;

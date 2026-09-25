@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -376,20 +377,23 @@ func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied boo
 }
 
 // Reclassify flips a single catalog entry between series and movie (or the
-// other way around) and immediately re-runs automatic matching for it under
-// the new media type, persisting the new classification exactly like a
-// background pass would. It is what the web UI calls when the user decides a
-// catalog title was recorded with the wrong media type: the entry is re-typed,
-// any stale episode rows are dropped (movie has none), and the automatic
-// matcher runs once against the flipped kind. Confident matches are persisted;
-// ambiguous ones return the candidate shortlist for the user to pick from.
-func (m *Matching) Reclassify(ctx context.Context, entry_id int64, as_series bool) (applied bool, candidates []matcher.Candidate, err error) {
+// other way around) and immediately re-runs automatic matching under the new
+// media type, persisting the new classification exactly like a background pass
+// would. It is what the web UI calls when the user decides a catalog title was
+// recorded with the wrong media type. Flipping a movie into a series first
+// groups it with the rest of its show folder: sibling movie entries that sit
+// under the same directory tree are folded into one series and the drained
+// entries are dropped. Confident matches are persisted; ambiguous ones return
+// the candidate shortlist for the user to pick from. The returned target_id is
+// the catalog entry that ended up as the series (it can differ from entry_id
+// when an existing show entry absorbed the re-typed one).
+func (m *Matching) Reclassify(ctx context.Context, entry_id int64, as_series bool) (target_id int64, applied bool, candidates []matcher.Candidate, err error) {
 	entry, err := m.store.Get_catalog_entry(ctx, entry_id)
 	if err != nil {
-		return false, nil, err
+		return entry_id, false, nil, err
 	}
 	if entry == nil {
-		return false, nil, nil
+		return entry_id, false, nil, nil
 	}
 	flipped := *entry
 	flipped.Media_type = "movie"
@@ -397,15 +401,207 @@ func (m *Matching) Reclassify(ctx context.Context, entry_id int64, as_series boo
 		flipped.Media_type = "series"
 	}
 	if entry.Media_type == flipped.Media_type {
-		return false, nil, nil
+		return entry_id, false, nil, nil
 	}
 	if err := m.store.Update_catalog_entry(ctx, entry_id, flipped); err != nil {
-		return false, nil, err
+		return entry_id, false, nil, err
 	}
-	if !as_series {
+	target_id = entry_id
+	if as_series {
+		target_id, err = m.group_folder_series(ctx, entry_id)
+		if err != nil {
+			return entry_id, false, nil, err
+		}
+	} else {
 		if err := m.store.Delete_episodes(ctx, entry_id); err != nil {
-			return false, nil, err
+			return entry_id, false, nil, err
 		}
 	}
-	return m.Rematch_one(ctx, entry_id)
+	applied, candidates, err = m.Rematch_one(ctx, target_id)
+	return target_id, applied, candidates, err
+}
+
+// group_folder_series folds a re-typed series entry together with every other
+// entry whose files live under the same show folder, so the folder becomes one
+// series instead of many loose titles. The show root is derived from the
+// flipped entry's own versions (stepping out of season/special folders); files
+// directly in a library root are left alone. When an existing series already
+// owns files under the root it becomes the merge target and the re-typed entry
+// is drained into it. Movies that still own files outside the root survive.
+// Versions that parse as numbered episodes land in episode rows — exactly what
+// a scan's folder grouping would have produced — so the series' largest-episode
+// matching walk still works.
+func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int64, error) {
+	libraries, err := m.store.List_libraries(ctx)
+	if err != nil {
+		return entry_id, err
+	}
+	root_by_library := make(map[int64]string, len(libraries))
+	for _, library := range libraries {
+		root_by_library[library.Id] = library.Path
+	}
+
+	roots := make([]string, 0, 1)
+	if versions, err := m.store.List_versions_for_entry(ctx, entry_id); err != nil {
+		return entry_id, err
+	} else {
+		for _, version := range versions {
+			path := root_by_library[version.Library_id]
+			if path == "" {
+				continue
+			}
+			root := scanner.Series_root_of(filepath.Join(path, version.File_path))
+			if root == filepath.Clean(path) {
+				continue // no show folder, files sit directly in the library root
+			}
+			if !contains_path(roots, root) {
+				roots = append(roots, root)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return entry_id, nil
+	}
+
+	owned, err := m.store.List_owned_versions(ctx)
+	if err != nil {
+		return entry_id, err
+	}
+	type bucket struct {
+		versions []database.Owned_version
+		series   bool
+	}
+	owners := make(map[int64]*bucket)
+	for _, version := range owned {
+		path := root_by_library[version.Library_id]
+		if path == "" {
+			continue
+		}
+		if !under_any_root(filepath.Join(path, version.File_path), roots) {
+			continue
+		}
+		if version.Entry_id == 0 {
+			continue
+		}
+		b := owners[version.Entry_id]
+		if b == nil {
+			b = &bucket{}
+			owners[version.Entry_id] = b
+		}
+		b.versions = append(b.versions, version)
+		if version.Entry_media_type == "series" {
+			b.series = true
+		}
+	}
+	if len(owners) == 0 {
+		return entry_id, nil
+	}
+
+	target := entry_id
+	drain := make(map[int64]bool)
+	for id, b := range owners {
+		if b.series && id != entry_id && len(b.versions) > 0 {
+			target = id
+		}
+	}
+	for id, b := range owners {
+		if b.series || id == entry_id {
+			continue
+		}
+		drain[id] = true
+	}
+	if target != entry_id {
+		for id := range owners {
+			if id != target {
+				drain[id] = true
+			}
+		}
+	}
+
+	// Fold every file of a drained entry, plus the anchor's own files when it
+	// re-uses the freshly flipped row, into the target series.
+	for id, b := range owners {
+		if id != target && !drain[id] {
+			continue
+		}
+		for _, version := range b.versions {
+			if err := m.fold_series_version(ctx, target, version); err != nil {
+				return entry_id, err
+			}
+		}
+	}
+
+	for id := range drain {
+		versions, err := m.store.List_versions_for_entry(ctx, id)
+		if err != nil {
+			return entry_id, err
+		}
+		if len(versions) > 0 {
+			continue // the entry still owns files outside the folder, leave it alone
+		}
+		if err := m.store.Delete_catalog_entry(ctx, id); err != nil {
+			return entry_id, err
+		}
+	}
+
+	if target == entry_id {
+		// The flipped entry becomes the show-wide entry; name it after the
+		// folder so re-scans group it again instead of spawning a duplicate.
+		anchor, err := m.store.Get_catalog_entry(ctx, target)
+		if err != nil {
+			return entry_id, err
+		}
+		folder := matcher.Parse_foldername(filepath.Base(roots[0]))
+		if anchor != nil && folder.Title != "" && anchor.Title != folder.Title {
+			anchor.Title = folder.Title
+			anchor.Release_year = 0
+			if err := m.store.Update_catalog_entry(ctx, target, *anchor); err != nil {
+				return entry_id, err
+			}
+		}
+	}
+	return target, nil
+}
+
+// fold_series_version moves one stored file under a series' show folder. Files
+// that parse as numbered episodes become episode rows; everything else attaches
+// directly to the show, mirroring the scanner's folder grouping.
+func (m *Matching) fold_series_version(ctx context.Context, target_id int64, version database.Owned_version) error {
+	hint := matcher.Parse_filename(filepath.Base(version.File_path))
+	if hint.Is_series && hint.Episode > 0 {
+		episode_id, err := m.store.Upsert_episode(ctx, database.Episode{
+			Catalog_entry_id: target_id,
+			Season_number:    hint.Season,
+			Episode_number:   hint.Episode,
+			Is_special:       hint.Season == 0,
+			Status:           "needs_lookup",
+		})
+		if err != nil {
+			return err
+		}
+		return m.store.Move_version_to_episode(ctx, version.Version_id, episode_id)
+	}
+	return m.store.Move_version_to_entry(ctx, version.Version_id, target_id)
+}
+
+func contains_path(paths []string, candidate string) bool {
+	for _, path := range paths {
+		if path == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func under_any_root(path string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

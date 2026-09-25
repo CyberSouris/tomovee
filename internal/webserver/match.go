@@ -288,26 +288,27 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 
 	var applied bool
 	var candidates []matcher.Candidate
+	var result_id int64
 	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		var run_err error
-		applied, candidates, run_err = s.matching.Reclassify(ctx, id, as_series)
+		result_id, applied, candidates, run_err = s.matching.Reclassify(ctx, id, as_series)
 		if run_err != nil {
 			return nil, run_err
 		}
 		result := &matching.Result{Total: 1}
 		if applied {
 			result.Matched = 1
-			if err := s.store.Clear_candidates(ctx, id); err != nil {
+			if err := s.store.Clear_candidates(ctx, result_id); err != nil {
 				return nil, err
 			}
 		} else {
 			result.Unmatched = 1
 			result.Candidates = len(candidates)
-			if err := s.store.Replace_candidates(ctx, id, candidates_to_db(media_type, candidates)); err != nil {
+			if err := s.store.Replace_candidates(ctx, result_id, candidates_to_db(media_type, candidates)); err != nil {
 				return nil, err
 			}
 			if len(candidates) > 0 && entry.Status != "needs_lookup" {
-				if err := s.store.Set_catalog_status(ctx, id, "needs_lookup"); err != nil {
+				if err := s.store.Set_catalog_status(ctx, result_id, "needs_lookup"); err != nil {
 					return nil, err
 				}
 			}
@@ -330,7 +331,7 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if applied {
-		fresh, err := s.store.Get_catalog_entry(r.Context(), id)
+		fresh, err := s.store.Get_catalog_entry(r.Context(), result_id)
 		if err != nil || fresh == nil {
 			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
 			return
@@ -339,5 +340,13 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := candidate_items(candidates, media_type)
-	write_json(w, http.StatusOK, map[string]any{"applied": false, "candidates": views})
+	body := map[string]any{"applied": false, "candidates": views}
+	// When the re-typed entry was absorbed into an existing series it no longer
+	// exists, so the UI needs the surviving entry to follow.
+	if result_id != id {
+		if fresh, err := s.store.Get_catalog_entry(r.Context(), result_id); err == nil && fresh != nil {
+			body["entry"] = catalog_item_from(*fresh)
+		}
+	}
+	write_json(w, http.StatusOK, body)
 }

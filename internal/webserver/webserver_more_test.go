@@ -951,3 +951,106 @@ func Test_job_manager_start_queued_queues_behind_active_job(t *testing.T) {
 		}
 	}
 }
+
+func Test_handle_version_split_into_movie(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 9000,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/split", "")
+	if rec.Code != 200 {
+		t.Fatalf("split = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Applied bool          `json:"applied"`
+		Entry   *catalog_item `json:"entry"`
+	}](t, rec)
+	if !body.Applied || body.Entry == nil {
+		t.Fatalf("body = %+v, want the new movie matched", body)
+	}
+	if body.Entry.Media_type != "movie" || body.Entry.Title != "The Matrix" {
+		t.Errorf("new entry = %+v", body.Entry)
+	}
+	if entry, err := store.Get_catalog_entry(ctx, entry_id); err != nil || entry != nil {
+		t.Errorf("drained series still exists: %+v, %v", entry, err)
+	}
+	versions, err := store.List_versions_for_entry(ctx, body.Entry.Id)
+	if err != nil || len(versions) != 1 || versions[0].Id != version_id {
+		t.Errorf("split entry versions = %+v, %v", versions, err)
+	}
+}
+
+func Test_handle_version_episode_assignment(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Office/Interviews.mkv", Size_bytes: 900,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/episode", `{"season":1,"episode":9}`)
+	if rec.Code != 200 {
+		t.Fatalf("assign = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Ok        bool  `json:"ok"`
+		EpisodeId int64 `json:"episode_id"`
+	}](t, rec)
+	if !body.Ok || body.EpisodeId == 0 {
+		t.Fatalf("body = %+v", body)
+	}
+	episode, err := store.Get_episode(ctx, body.EpisodeId)
+	if err != nil || episode == nil {
+		t.Fatalf("episode: %v, %v", episode, err)
+	}
+	if episode.Season_number != 1 || episode.Episode_number != 9 || episode.Catalog_entry_id != entry_id {
+		t.Errorf("episode = %+v", episode)
+	}
+	if version, err := store.Get_version(ctx, version_id); err != nil || version == nil {
+		t.Fatalf("version: %v, %v", version, err)
+	} else if version.Episode_id != body.EpisodeId || version.Catalog_entry_id != 0 {
+		t.Errorf("version = %+v, want entry moved onto the episode", version)
+	}
+}
+
+func Test_handle_version_episode_rejects_bad_numbers(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Office/Interviews.mkv", Size_bytes: 900,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	if rec := do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/episode", `{"season":1,"episode":0}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("episode 0 = %d, want 400", rec.Code)
+	}
+	if rec := do_request(t, server, http.MethodPost, "/api/v1/versions/999999/episode", `{"season":1,"episode":1}`); rec.Code != http.StatusNotFound {
+		t.Errorf("missing version = %d, want 404", rec.Code)
+	}
+}

@@ -243,6 +243,12 @@ func (s *Store) Delete_episodes(ctx context.Context, catalog_entry_id int64) err
 	return s.exec_tx(ctx, "DELETE FROM episode WHERE catalog_entry_id = ?", catalog_entry_id)
 }
 
+// Delete_episode removes a single episode row. It is used to clean up an
+// episode that lost its last version after a manual re-assignment.
+func (s *Store) Delete_episode(ctx context.Context, id int64) error {
+	return s.exec_tx(ctx, "DELETE FROM episode WHERE id = ?", id)
+}
+
 func set_genres_tx(ctx context.Context, tx *sql.Tx, entry_id int64, genres []string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entry_genre WHERE catalog_entry_id = ?", entry_id); err != nil {
 		return err

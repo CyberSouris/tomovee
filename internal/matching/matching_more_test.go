@@ -427,6 +427,191 @@ func library_id(t *testing.T, store *database.Store, name, path string) int64 {
 	return 0
 }
 
+func Test_split_version_to_movie_from_series_entry(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 1234,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	new_id, err := service.Split_version_to_movie(ctx, version_id)
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+	if new_id == 0 {
+		t.Fatal("split returned no new entry")
+	}
+	entry, err := store.Get_catalog_entry(ctx, new_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get split entry: %v", err)
+	}
+	if entry.Media_type != "movie" || entry.Title != "The Matrix" || entry.Release_year != 1999 || entry.Status != "needs_lookup" {
+		t.Errorf("split entry = %+v", entry)
+	}
+	versions, err := store.List_versions_for_entry(ctx, new_id)
+	if err != nil {
+		t.Fatalf("list new versions: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Id != version_id {
+		t.Errorf("new entry versions = %+v, want the split file", versions)
+	}
+	if entry, err := store.Get_catalog_entry(ctx, entry_id); err != nil || entry != nil {
+		t.Errorf("drained series still exists: %+v, %v", entry, err)
+	}
+}
+
+func Test_split_version_to_movie_from_episode_drains_owner(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	entry_id, ep1_id, _ := add_series(t, store)
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: ep1_id, File_path: "/media/Breaking.Bad.S01E01.720p.mkv", Size_bytes: 4000,
+	}); err != nil {
+		t.Fatalf("save second version: %v", err)
+	}
+	versions, err := store.List_versions_for_episode(ctx, ep1_id)
+	if err != nil || len(versions) != 2 {
+		t.Fatalf("episode versions = %v, %v", versions, err)
+	}
+	target := versions[0]
+
+	new_id, err := service.Split_version_to_movie(ctx, target.Id)
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+	// The episode keeps its second version, and the entry keeps the other
+	// episode, so nothing is drained yet.
+	if entry, err := store.Get_catalog_entry(ctx, entry_id); err != nil || entry == nil {
+		t.Fatalf("series drained too early: %v, %v", entry, err)
+	}
+	// Split the episode's remaining file: the episode disappears.
+	remaining, err := store.List_versions_for_episode(ctx, ep1_id)
+	if err != nil || len(remaining) != 1 {
+		t.Fatalf("remaining versions = %v, %v", remaining, err)
+	}
+	if _, err := service.Split_version_to_movie(ctx, remaining[0].Id); err != nil {
+		t.Fatalf("split remaining: %v", err)
+	}
+	if episode, err := store.Get_episode(ctx, ep1_id); err != nil || episode != nil {
+		t.Errorf("emptied episode not deleted: %+v, %v", episode, err)
+	}
+	if new_id == 0 {
+		t.Error("split returned no new entry")
+	}
+}
+
+func Test_assign_version_to_episode_from_series(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Office/Interviews.mkv", Size_bytes: 1234,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	episode_id, err := service.Assign_version_to_episode(ctx, version_id, 1, 3)
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	episode, err := store.Get_episode(ctx, episode_id)
+	if err != nil || episode == nil {
+		t.Fatalf("get episode: %v, %v", episode, err)
+	}
+	if episode.Catalog_entry_id != entry_id || episode.Season_number != 1 || episode.Episode_number != 3 {
+		t.Errorf("episode = %+v", episode)
+	}
+	versions, err := store.List_versions_for_episode(ctx, episode_id)
+	if err != nil || len(versions) != 1 || versions[0].Id != version_id {
+		t.Errorf("episode versions = %+v, %v", versions, err)
+	}
+	entry := store_entry(t, store, entry_id)
+	if entry != nil && entry.Media_type != "series" {
+		t.Errorf("series flipped = %+v", entry)
+	}
+	if entry, err := store.Get_catalog_entry(ctx, entry_id); err != nil || entry == nil {
+		t.Errorf("series lost its entry: %v, %v", entry, err)
+	}
+}
+
+func Test_assign_version_to_episode_rejects_movies(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	store_entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: store_entry_id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 1234,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	if _, err := service.Assign_version_to_episode(ctx, version_id, 1, 1); err == nil {
+		t.Error("assigning a movie file to an episode succeeded")
+	}
+}
+
+func Test_assign_version_to_episode_moves_within_series(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	entry_id, ep1_id, _ := add_series(t, store)
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: ep1_id, File_path: "/media/Breaking.Bad.S01E01.720p.mkv", Size_bytes: 4000,
+	}); err != nil {
+		t.Fatalf("save second version: %v", err)
+	}
+	versions, err := store.List_versions_for_episode(ctx, ep1_id)
+	if err != nil || len(versions) != 2 {
+		t.Fatalf("episode versions = %v, %v", versions, err)
+	}
+	target := versions[0]
+	other_episode, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 2, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert other episode: %v", err)
+	}
+	// ep1 keeps its other file, so it survives; the version lands on the new one.
+	episode_id, err := service.Assign_version_to_episode(ctx, target.Id, 2, 1)
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if episode_id != other_episode {
+		t.Errorf("episode id = %d, want %d", episode_id, other_episode)
+	}
+	if episode, err := store.Get_episode(ctx, ep1_id); err != nil || episode == nil {
+		t.Errorf("still-populated episode deleted: %+v, %v", episode, err)
+	}
+}
+
+func store_entry(t *testing.T, store *database.Store, id int64) *database.Catalog_entry {
+	t.Helper()
+	entry, err := store.Get_catalog_entry(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	return entry
+}
+
 func Test_reclassify_movie_to_series_groups_show_folder(t *testing.T) {
 	service, store := new_movie_service(t, fake_series_hit{})
 	ctx := context.Background()

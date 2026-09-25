@@ -39,7 +39,7 @@ SPA handler serves the embedded web UI for everything else.
 |Re-run the automatic matching pipeline for one entry.
 |`POST`
 |`/catalog/{id}/reclassify`
-|Force an entry's media type. Body: `{"media_type":"series"}` or `{"media_type":"movie"}`.
+|Force an entry's media type. Body: `{"media_type":"series"}` or `{"media_type":"movie"}`. Re-typing a movie into a series groups it with the rest of its show folder, numbering the files whose names carry no episode number into episode rows of their own.
 |===
 
 === Search
@@ -141,6 +141,17 @@ the background cache.
 |`/versions/{version_id}/file`
 |Stream a version's media file to the browser, applying the configured
 `stream.transcode` mode. Supports HTTP range requests.
+|`POST`
+|`/versions/{version_id}/split`
+|Cut one stored file out of the title that owns it and match it as a movie of
+its own. Body is empty. Runs behind the matching job manager (`409` while a job
+is running) and returns `{"applied":bool,"entry":{catalog_item},"candidates":[…]}`;
+the entry or episode the file left behind is dropped when it ran out of files.
+|`POST`
+|`/versions/{version_id}/episode`
+|Attach one stored file to an episode of the series that owns it. Body:
+`{"season":1,"episode":9}`. The episode row is created on demand; season `0`
+marks a special. Returns `{"ok":true,"episode_id":N}`.
 |===
 
 === Datasets

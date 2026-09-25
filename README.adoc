@@ -106,6 +106,9 @@ tomovee version
 |`GET` |`/api/v1/catalog` |List/search entries (`q`, `media_type`, `genre`, `year`, `resolution`, `language`, `status`, `sort`, `order`, `limit`, `offset`)
 |`GET` |`/api/v1/catalog/{id}` |Entry detail with series data, episodes, versions and tracks
 |`POST` |`/api/v1/catalog/{id}/match` |Manual re-match (`{"tmdb_id": 603}` or `{"imdb_id": "tt0133093"}`)
+|`POST` |`/api/v1/catalog/{id}/reclassify` |Force the media type (`{"media_type": "series"}` or `{"media_type": "movie"}`)
+|`POST` |`/api/v1/versions/{version_id}/split` |Cut one file out and match it as a movie of its own
+|`POST` |`/api/v1/versions/{version_id}/episode` |Attach one file to an episode (`{"season": 1, "episode": 9}`)
 |`GET` |`/api/v1/unmatched` |Entries awaiting manual review
 |`POST` |`/api/v1/scan` |Start a background scan
 |`GET` |`/api/v1/scan/status` |Current scan job

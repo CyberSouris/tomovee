@@ -172,11 +172,14 @@ _unmatched_ list for manual matching.
 
 Matching is layered: OpenSubtitles file hash first, then a TMDB search parsed
 from the filename, then the offline IMDb dataset index as enrichment and
-fallback. Entries that fail are marked `needs_lookup` and appear under
-_Unmatched_ in the UI, where you can pick a TMDB/IMDb candidate manually or
-re-run automatic matching per entry. `imdb_datasets_path` (or the background
-IMDb dataset import) enables the offline pass; `api.tmdb_key` enables the TMDB
-passened including autocomplete search.
+fallback. A series is not searched by an episode's filename — that names an
+episode, not a show — but by the folder the show lives in, falling back to the
+title the catalog recorded for the entry. Entries that fail are marked
+`needs_lookup` and appear under _Unmatched_ in the UI, where you can pick a
+TMDB/IMDb candidate manually or re-run automatic matching per entry.
+`imdb_datasets_path` (or the background IMDb dataset import) enables the
+offline pass; `api.tmdb_key` enables the TMDB pass including autocomplete
+search.
 
 === Reclassification
 
@@ -185,4 +188,29 @@ type. The web UI lets you force an entry to `movie` or `series` via
 `POST /api/v1/catalog/{id}/reclassify` with `{"media_type":"series"}` (or
 `"movie"`). When candidates are ambiguous the response lists them for a manual
 pick; otherwise the reclassification is applied immediately.
+
+Re-typing a movie into a series also groups it with the rest of its show
+folder, so the folder becomes one show instead of many loose titles. Files
+whose names parse as episodes keep those numbers. The rest — the files the
+detector could not read a number out of — become episodes anyway, since a series
+with loose files cannot be matched or browsed as a series: they take the season
+their folder declares (extras and specials folders become season `0`), are
+ordered by the time they were added, and continue after the highest number
+their season already uses. Nothing can say which episode such a file really is,
+so the numbers are only a starting point.
+
+=== Correcting a detection
+
+Two per-file actions fix what the detection got wrong, from a title's detail
+page:
+
+`POST /api/v1/versions/{version_id}/split` cuts one stored file out of the
+title that owns it and matches it as a movie of its own, for files several
+movies were grouped under one title. The title (or episode) the file left
+behind is dropped once it has no files left.
+
+`POST /api/v1/versions/{version_id}/episode` with `{"season":1,"episode":9}`
+attaches one stored file to an episode of the series that owns it, creating the
+episode row when it does not exist yet. This is how a user corrects the guessed
+numbers above, or places a file the scanner had no episode for.
 

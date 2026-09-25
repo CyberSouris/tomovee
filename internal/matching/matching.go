@@ -584,6 +584,154 @@ func (m *Matching) fold_series_version(ctx context.Context, target_id int64, ver
 	return m.store.Move_version_to_entry(ctx, version.Version_id, target_id)
 }
 
+// Split_version_to_movie cuts one stored file out of the entry or episode that
+// currently owns it and gives it a movie entry of its own, so files that were
+// grouped under the wrong title can be separated into distinct movies. The new
+// entry starts waiting for a lookup and the caller is expected to rematch it.
+// When the split drains the last file out of the old owner, the owner is
+// dropped (its episodes included, since they lost their files too) so the
+// catalog does not keep empty ghost rows. It returns the id of the new movie
+// entry, or 0 when the version does not exist.
+func (m *Matching) Split_version_to_movie(ctx context.Context, version_id int64) (int64, error) {
+	version, err := m.store.Get_version(ctx, version_id)
+	if err != nil {
+		return 0, err
+	}
+	if version == nil {
+		return 0, nil
+	}
+	owner_id, err := m.version_owner(ctx, version)
+	if err != nil {
+		return 0, err
+	}
+	hint := matcher.Parse_filename(filepath.Base(version.File_path))
+	title := hint.Title
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(version.File_path), filepath.Ext(version.File_path))
+	}
+	new_id, err := m.store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type:   "movie",
+		Title:        title,
+		Release_year: hint.Year,
+		Status:       "needs_lookup",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := m.store.Move_version_to_entry(ctx, version_id, new_id); err != nil {
+		return 0, err
+	}
+	if err := m.cleanup_old_owner(ctx, version, owner_id, new_id); err != nil {
+		return 0, err
+	}
+	return new_id, nil
+}
+
+// Assign_version_to_episode attaches a stored file to the episode a user chose
+// for it. The user enters the season and episode numbers directly, so files
+// whose names did not parse as episodes can still be placed under a show. The
+// owning entry must be a series; the episode row is created on demand and the
+// version is moved onto it. It returns the id of the episode, or 0 when the
+// version does not exist.
+func (m *Matching) Assign_version_to_episode(ctx context.Context, version_id int64, season, episode int) (int64, error) {
+	version, err := m.store.Get_version(ctx, version_id)
+	if err != nil {
+		return 0, err
+	}
+	if version == nil {
+		return 0, nil
+	}
+	owner_id, err := m.version_owner(ctx, version)
+	if err != nil {
+		return 0, err
+	}
+	if owner_id == 0 {
+		return 0, nil
+	}
+	entry, err := m.store.Get_catalog_entry(ctx, owner_id)
+	if err != nil {
+		return 0, err
+	}
+	if entry == nil {
+		return 0, nil
+	}
+	if entry.Media_type != "series" {
+		return 0, fmt.Errorf("cannot assign version %d to an episode of the %s %q", version_id, entry.Media_type, entry.Title)
+	}
+	episode_id, err := m.store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: owner_id,
+		Season_number:    season,
+		Episode_number:   episode,
+		Is_special:       season == 0,
+		Status:           "needs_lookup",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := m.store.Move_version_to_episode(ctx, version_id, episode_id); err != nil {
+		return 0, err
+	}
+	if err := m.cleanup_old_owner(ctx, version, owner_id, owner_id); err != nil {
+		return 0, err
+	}
+	return episode_id, nil
+}
+
+// version_owner returns the catalog entry a version currently backs, resolving
+// episode-owned files through their episode row.
+func (m *Matching) version_owner(ctx context.Context, version *database.Version) (int64, error) {
+	if version.Catalog_entry_id != 0 {
+		return version.Catalog_entry_id, nil
+	}
+	if version.Episode_id == 0 {
+		return 0, nil
+	}
+	episode, err := m.store.Get_episode(ctx, version.Episode_id)
+	if err != nil {
+		return 0, err
+	}
+	if episode == nil {
+		return 0, nil
+	}
+	return episode.Catalog_entry_id, nil
+}
+
+// cleanup_old_owner removes the empty remains of a version's previous owner
+// after it was moved out: an episode that lost its only file, and a catalog
+// entry that ended up with neither versions nor episodes. Entries that still
+// own files or episodes are left untouched.
+func (m *Matching) cleanup_old_owner(ctx context.Context, version *database.Version, owner_id, new_id int64) error {
+	if version.Episode_id != 0 {
+		versions, err := m.store.List_versions_for_episode(ctx, version.Episode_id)
+		if err != nil {
+			return err
+		}
+		if len(versions) == 0 {
+			if err := m.store.Delete_episode(ctx, version.Episode_id); err != nil {
+				return err
+			}
+		}
+	}
+	if owner_id == 0 || owner_id == new_id {
+		return nil
+	}
+	versions, err := m.store.List_versions_for_entry(ctx, owner_id)
+	if err != nil {
+		return err
+	}
+	if len(versions) > 0 {
+		return nil
+	}
+	episodes, err := m.store.List_episodes(ctx, owner_id)
+	if err != nil {
+		return err
+	}
+	if len(episodes) > 0 {
+		return nil
+	}
+	return m.store.Delete_catalog_entry(ctx, owner_id)
+}
+
 func contains_path(paths []string, candidate string) bool {
 	for _, path := range paths {
 		if path == candidate {

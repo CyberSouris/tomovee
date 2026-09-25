@@ -115,6 +115,29 @@ func (s *Store) List_episodes(ctx context.Context, catalog_entry_id int64) ([]Ep
 	return out, rows.Err()
 }
 
+// Get_episode returns a single episode row by id, or nil when it does not
+// exist.
+func (s *Store) Get_episode(ctx context.Context, id int64) (*Episode, error) {
+	var episode Episode
+	var special int
+	err := s.db.db.QueryRowContext(ctx, `
+		SELECT id, catalog_entry_id, COALESCE(season_number, 0), COALESCE(episode_number, 0),
+		       COALESCE(title, ''), COALESCE(overview, ''), COALESCE(airdate, ''),
+		       is_special, status
+		FROM episode WHERE id = ?`, id).
+		Scan(&episode.Id, &episode.Catalog_entry_id, &episode.Season_number,
+			&episode.Episode_number, &episode.Title, &episode.Overview, &episode.Airdate,
+			&special, &episode.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	episode.Is_special = special == 1
+	return &episode, nil
+}
+
 // Get_series_metadata returns the show-level record, or (nil, nil) if absent.
 func (s *Store) Get_series_metadata(ctx context.Context, catalog_entry_id int64) (*Series_metadata, error) {
 	var meta Series_metadata

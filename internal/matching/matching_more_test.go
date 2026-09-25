@@ -409,6 +409,182 @@ func (fake_series_hit) Search(context.Context, string, int, scanner.Media_type) 
 	}, nil
 }
 
+// recording_offline remembers the title the IMDb datasets were queried with and
+// only answers with its hit when that title is the one the caller was expected
+// to use.
+type recording_offline struct {
+	queries []string
+	expect  string
+	hit     matcher.Offline_candidate
+}
+
+func new_recording_offline(expect string, hit matcher.Offline_candidate) *recording_offline {
+	return &recording_offline{expect: expect, hit: hit}
+}
+
+func (r *recording_offline) Search(_ context.Context, query string, _ int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	r.queries = append(r.queries, query)
+	if query != r.expect {
+		return nil, nil
+	}
+	return []matcher.Offline_candidate{r.hit}, nil
+}
+
+func office_offline() *recording_offline {
+	return new_recording_offline("The Office", matcher.Offline_candidate{
+		Imdb_id: "tt0386676", Title: "The Office", Year: 2005, Media_type: scanner.Series,
+	})
+}
+
+func Test_series_is_looked_up_by_its_show_name(t *testing.T) {
+	source := office_offline()
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 3, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	// An episode file name that names nothing: neither the show nor its season.
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib,
+		File_path: "The Office/Season 1/Part 3.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	applied, _, err := service.Rematch_one(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("rematch: %v", err)
+	}
+	if !applied {
+		t.Fatalf("rematch did not match, queries = %v", source.queries)
+	}
+	entry, err := store.Get_catalog_entry(ctx, entry_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v, %v", entry, err)
+	}
+	if entry.Imdb_id != "tt0386676" {
+		t.Errorf("entry = %+v, want tt0386676", entry)
+	}
+}
+
+func Test_run_looks_series_up_by_its_show_name(t *testing.T) {
+	source := office_offline()
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "Some Wrong Name", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 2, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib,
+		File_path: "The Office/Season 2/Some.Show.S02E01.1080p.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	result, err := service.Run(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Matched != 1 {
+		t.Fatalf("result = %+v, want one matched, queries = %v", result, source.queries)
+	}
+	entry, err := store.Get_catalog_entry(ctx, entry_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v, %v", entry, err)
+	}
+	if entry.Imdb_id != "tt0386676" {
+		t.Errorf("entry = %+v, want tt0386676", entry)
+	}
+}
+
+func Test_series_without_show_folder_uses_its_title(t *testing.T) {
+	source := office_offline()
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	// Episodes sitting straight in the library root: no folder names the show,
+	// so the title recorded on the entry has to.
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib,
+		File_path: "Part 1.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	applied, _, err := service.Rematch_one(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("rematch: %v", err)
+	}
+	if !applied {
+		t.Fatalf("rematch did not match, queries = %v", source.queries)
+	}
+}
+
+func Test_movies_are_still_looked_up_by_file_name(t *testing.T) {
+	source := new_recording_offline("The Matrix", matcher.Offline_candidate{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	})
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "Movies", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix Collection", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, Library_id: lib,
+		File_path: "The Matrix/The.Matrix.1999.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	applied, _, err := service.Rematch_one(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("rematch: %v", err)
+	}
+	if !applied {
+		t.Fatalf("rematch did not match, queries = %v", source.queries)
+	}
+}
+
 func library_id(t *testing.T, store *database.Store, name, path string) int64 {
 	t.Helper()
 	if err := store.Ensure_library(context.Background(), name, path, true); err != nil {

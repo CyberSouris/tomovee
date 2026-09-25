@@ -199,26 +199,11 @@ func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry
 	if entry.Media_type == "series" {
 		kind = scanner.Series
 	}
-	// A series is searched by its show folder rather than the episode file
-	// name, so the folder's title drives the lookup even when episode names
-	// are inconsistent. This only applies to library-scanned rows, whose file
-	// paths are stored relative to the library root; for them a parent of "."
-	// (episodes directly in the root) means there is no show folder and the
-	// file name is used. Legacy rows with absolute paths keep the file-name
-	// behaviour, since their root (and thus whether the folder really names a
-	// show) is unknown.
-	file_name := filepath.Base(version.File_path)
-	folder_name := false
-	if entry.Media_type == "series" && !filepath.IsAbs(version.File_path) {
-		if folder := scanner.Series_folder_name(version.File_path); folder != "" {
-			file_name = folder
-			folder_name = true
-		}
-	}
+	name, from_folder := lookup_name(entry, version)
 	match := m.matcher.Match(ctx, matcher.Input{
 		Path:        version.File_path,
-		File_name:   file_name,
-		Folder_name: folder_name,
+		File_name:   name,
+		Folder_name: from_folder,
 		Hash:        version.Hash,
 		Kind:        kind,
 	})
@@ -240,6 +225,32 @@ func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry
 		}
 	}
 	return true, nil
+}
+
+// lookup_name returns the string that names an entry for the matcher, and
+// whether it should be read as a folder name. A movie is named by its own file.
+// A series is not: an episode file name says nothing about the show ("Part 3",
+// "S01E07.mkv", a scene release of one episode), so the show is looked up by the
+// folder it lives in, which is what actually names it, and by the title the
+// catalog already recorded for the entry — the scanner derives that title from
+// the same folder. This only applies to library-scanned rows, whose file paths
+// are stored relative to the library root; for them a parent of "." (episodes
+// directly in the root) means there is no show folder. Legacy rows with
+// absolute paths keep the entry title, since their root — and thus whether the
+// parent folder really names a show — is unknown.
+func lookup_name(entry database.Catalog_entry, version database.Version) (name string, from_folder bool) {
+	if entry.Media_type != "series" {
+		return filepath.Base(version.File_path), false
+	}
+	if !filepath.IsAbs(version.File_path) {
+		if folder := scanner.Series_folder_name(version.File_path); folder != "" {
+			return folder, true
+		}
+	}
+	if entry.Title != "" {
+		return entry.Title, true
+	}
+	return filepath.Base(version.File_path), false
 }
 
 // largest_version picks the biggest stored file for an entry, walking series
@@ -352,11 +363,13 @@ func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied boo
 	if entry.Media_type == "series" {
 		kind = scanner.Series
 	}
+	name, from_folder := lookup_name(*entry, version)
 	result := m.matcher.Match(ctx, matcher.Input{
-		Path:      version.File_path,
-		File_name: filepath.Base(version.File_path),
-		Hash:      version.Hash,
-		Kind:      kind,
+		Path:        version.File_path,
+		File_name:   name,
+		Folder_name: from_folder,
+		Hash:        version.Hash,
+		Kind:        kind,
 	})
 	if result == nil || !result.Matched {
 		if result == nil {

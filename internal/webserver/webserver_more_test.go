@@ -1054,3 +1054,153 @@ func Test_handle_version_episode_rejects_bad_numbers(t *testing.T) {
 		t.Errorf("missing version = %d, want 404", rec.Code)
 	}
 }
+
+func Test_handle_version_actions_reject_bad_requests(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Office/Interviews.mkv", Size_bytes: 900,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	path := "/api/v1/versions/" + itoa(version_id)
+
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+		want int
+	}{
+		{"split with an unparseable id", "/api/v1/versions/abc/split", "", http.StatusBadRequest},
+		{"split with a zero id", "/api/v1/versions/0/split", "", http.StatusBadRequest},
+		{"split of a version that is gone", "/api/v1/versions/999999/split", "", http.StatusNotFound},
+		{"episode with an unparseable id", "/api/v1/versions/abc/episode", `{"season":1,"episode":1}`, http.StatusBadRequest},
+		{"episode with a negative season", path + "/episode", `{"season":-1,"episode":1}`, http.StatusBadRequest},
+		{"episode with a broken body", path + "/episode", `{"season":`, http.StatusBadRequest},
+	} {
+		rec := do_request(t, server, http.MethodPost, tc.path, tc.body)
+		if rec.Code != tc.want {
+			t.Errorf("%s = %d, want %d (%s)", tc.name, rec.Code, tc.want, rec.Body.String())
+		}
+	}
+
+	// Without a matching service neither action can run, whatever it is asked
+	// to do.
+	server.matching = nil
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"split", path + "/split"},
+		{"episode", path + "/episode"},
+	} {
+		rec := do_request(t, server, http.MethodPost, tc.path, `{"season":1,"episode":1}`)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s without matching = %d, want 503", tc.name, rec.Code)
+		}
+	}
+}
+
+// Splitting a file out of a title and finding nothing for it leaves the new
+// movie waiting with its candidates, exactly like any other unmatched entry.
+func Test_handle_version_split_persists_candidates_when_unmatched(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Matrix Collection", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 9000,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/split", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("split = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Applied    bool             `json:"applied"`
+		Entry      *catalog_item    `json:"entry"`
+		Candidates []candidate_item `json:"candidates"`
+	}](t, rec)
+	if body.Applied || body.Entry == nil {
+		t.Fatalf("body = %+v, want the new movie left unmatched", body)
+	}
+	if len(body.Candidates) != 1 || body.Candidates[0].Imdb_id != "tt9999999" {
+		t.Fatalf("candidates = %+v", body.Candidates)
+	}
+	persisted, err := store.List_candidates(ctx, body.Entry.Id)
+	if err != nil {
+		t.Fatalf("list persisted candidates: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].Title != "Completely Different" {
+		t.Errorf("persisted candidates = %+v", persisted)
+	}
+	// The file is on the new movie either way: the split happened, only the
+	// match did not.
+	versions, err := store.List_versions_for_entry(ctx, body.Entry.Id)
+	if err != nil || len(versions) != 1 || versions[0].Id != version_id {
+		t.Errorf("new entry versions = %+v, %v", versions, err)
+	}
+}
+
+// A split joins the queue of a matching job that is already running instead of
+// being turned away, so the request comes back with the result of the real run.
+func Test_handle_version_split_waits_for_a_running_job(t *testing.T) {
+	server, store := new_test_server(t)
+	entry_id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
+		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	version_id, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: entry_id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 9000,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	block := make(chan struct{})
+	if _, err := server.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		<-block
+		return &matching.Result{}, nil
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/split", "")
+	}()
+
+	select {
+	case rec := <-done:
+		t.Fatalf("split answered %d while a job was running, want it to wait", rec.Code)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(block)
+
+	rec := <-done
+	if rec.Code != http.StatusOK {
+		t.Fatalf("split = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Applied bool          `json:"applied"`
+		Entry   *catalog_item `json:"entry"`
+	}](t, rec)
+	if !body.Applied || body.Entry == nil || body.Entry.Media_type != "movie" {
+		t.Fatalf("body = %+v, want the new movie matched", body)
+	}
+}

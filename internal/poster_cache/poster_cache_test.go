@@ -106,3 +106,30 @@ func Test_ensure_rejects_non_200(t *testing.T) {
 		t.Fatal("expected error for non-200 response")
 	}
 }
+
+func Test_ensure_sends_the_configured_user_agent(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		_, _ = w.Write([]byte("image-bytes"))
+	}))
+	defer server.Close()
+
+	cache := New(Options{Dir: t.TempDir(), Base_url: server.URL, User_agent: "tomovee/test"})
+	if _, err := cache.Ensure(context.Background(), 7, "/poster.jpg"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if got != "tomovee/test" {
+		t.Errorf("user agent = %q, want tomovee/test", got)
+	}
+}
+
+func Test_ensure_reports_an_unreachable_server(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	cache := New(Options{Dir: t.TempDir(), Base_url: server.URL})
+	server.Close()
+
+	if _, err := cache.Ensure(context.Background(), 1, "/poster.jpg"); err == nil {
+		t.Fatal("expected an error when the image server is gone")
+	}
+}

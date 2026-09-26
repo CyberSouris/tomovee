@@ -14,9 +14,13 @@ describe('tomovee serve smoke test', () => {
   });
 
   it('loads the browse page against the real API', () => {
-    cy.visit('/#/browse');
-    // An empty database still serves a valid, countable empty catalog.
-    cy.contains('p', '0 titles', { timeout: 10000 });
+    // corrections.cy.js scans the fixture before this runs, so the count the
+    // page shows has to come from the API rather than being spelled out here.
+    cy.request('/api/v1/catalog?limit=1').then((api) => {
+      const total = api.body.total;
+      cy.visit('/#/browse');
+      cy.contains('p', `${total} title${total === 1 ? '' : 's'}`, { timeout: 10000 });
+    });
   });
 
   it('exposes the settings API', () => {

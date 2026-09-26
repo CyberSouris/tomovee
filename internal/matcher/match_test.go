@@ -615,3 +615,117 @@ func Test_resolve_by_imdb_offline_requires_resolver(t *testing.T) {
 		t.Error("resolve must be false when the offline source cannot look up by id")
 	}
 }
+
+// fake_local_offline is an offline source that can also answer the search box,
+// the way the local IMDb index does.
+type fake_local_offline struct {
+	fake_offline
+	queries []string
+}
+
+func (f *fake_local_offline) Search_local(_ context.Context, query string, _ int, _ scanner.Media_type, _ int) ([]Offline_candidate, error) {
+	f.queries = append(f.queries, query)
+	return []Offline_candidate{{
+		Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie,
+	}}, nil
+}
+
+func Test_has_local_search_needs_a_searchable_source(t *testing.T) {
+	if New(Options{}).Has_local_search() {
+		t.Error("matcher without an offline source reports local search")
+	}
+	plain := New(Options{Offline: &fake_offline{}})
+	if plain.Has_local_search() {
+		t.Error("a source that cannot search locally must not report local search")
+	}
+	if !New(Options{Offline: &fake_local_offline{}}).Has_local_search() {
+		t.Error("a searchable source did not report local search")
+	}
+}
+
+func Test_search_local_autocomplete(t *testing.T) {
+	ctx := context.Background()
+	if got, err := New(Options{}).Search_local_autocomplete(ctx, "matrix", 0, scanner.Movie, 5); err != nil || got != nil {
+		t.Errorf("without a source = %+v, %v, want nothing", got, err)
+	}
+	plain := New(Options{Offline: &fake_offline{}})
+	if got, err := plain.Search_local_autocomplete(ctx, "matrix", 0, scanner.Movie, 5); err != nil || got != nil {
+		t.Errorf("with a plain source = %+v, %v, want nothing", got, err)
+	}
+	local := &fake_local_offline{}
+	m := New(Options{Offline: local})
+	got, err := m.Search_local_autocomplete(ctx, "matrix", 0, scanner.Movie, 5)
+	if err != nil {
+		t.Fatalf("autocomplete: %v", err)
+	}
+	if len(got) != 1 || got[0].Imdb_id != "tt0133093" {
+		t.Fatalf("candidates = %+v", got)
+	}
+	if len(local.queries) != 1 || local.queries[0] != "matrix" {
+		t.Errorf("queries = %v, want the user's query passed through", local.queries)
+	}
+}
+
+func Test_enrich_by_imdb_movie(t *testing.T) {
+	meta := &fake_metadata{
+		find:    &tmdb.Find_result{Movie_results: []tmdb.Movie_search_result{{Id: 603, Title: "The Matrix"}}},
+		details: map[int]any{603: matrix_movie_details()},
+	}
+	result, err := New(Options{Metadata: meta}).Enrich_by_imdb(context.Background(), scanner.Movie, "tt0133093")
+	if err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+	if !result.Matched || result.Source != "manual" || result.Confidence != 1 {
+		t.Errorf("result = %+v", result)
+	}
+	if result.Title != "The Matrix" || result.Tmdb_id != 603 || result.Media_type != scanner.Movie {
+		t.Errorf("identity = %+v", result)
+	}
+}
+
+func Test_enrich_by_imdb_series(t *testing.T) {
+	meta := &fake_metadata{
+		find:    &tmdb.Find_result{Tv_results: []tmdb.Tv_search_result{{Id: 1396, Name: "Breaking Bad"}}},
+		details: map[int]any{1396: breaking_bad_tv_details()},
+	}
+	result, err := New(Options{Metadata: meta}).Enrich_by_imdb(context.Background(), scanner.Series, "tt0903747")
+	if err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+	if result.Title != "Breaking Bad" || result.Media_type != scanner.Series {
+		t.Errorf("result = %+v", result)
+	}
+	if result.Number_of_seasons != 5 || result.Number_of_episodes != 62 {
+		t.Errorf("series data = %+v", result)
+	}
+}
+
+// A series asked for by IMDb id, where TMDB only knows the movie of the same id,
+// still resolves as a movie rather than reporting nothing.
+func Test_enrich_by_imdb_series_falls_back_to_the_movie(t *testing.T) {
+	meta := &fake_metadata{
+		find:    &tmdb.Find_result{Movie_results: []tmdb.Movie_search_result{{Id: 603, Title: "The Matrix"}}},
+		details: map[int]any{603: matrix_movie_details()},
+	}
+	result, err := New(Options{Metadata: meta}).Enrich_by_imdb(context.Background(), scanner.Series, "tt0133093")
+	if err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+	if result.Title != "The Matrix" || result.Media_type != scanner.Movie {
+		t.Errorf("result = %+v", result)
+	}
+}
+
+func Test_enrich_by_imdb_without_a_tmdb_match(t *testing.T) {
+	m := New(Options{Metadata: &fake_metadata{find: &tmdb.Find_result{}}})
+	if _, err := m.Enrich_by_imdb(context.Background(), scanner.Movie, "tt9999999"); err == nil {
+		t.Fatal("expected an error for an id TMDB does not know")
+	}
+}
+
+func Test_enrich_by_imdb_reports_lookup_failures(t *testing.T) {
+	m := New(Options{Metadata: &fake_metadata{find_err: context.Canceled}})
+	if _, err := m.Enrich_by_imdb(context.Background(), scanner.Movie, "tt0133093"); err == nil {
+		t.Fatal("expected the lookup error to surface")
+	}
+}

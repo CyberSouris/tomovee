@@ -3,7 +3,6 @@ package webserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -213,10 +212,6 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 		}
 		return result, nil
 	})
-	if errors.Is(err, Err_job_running) {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
-		return
-	}
 	if err != nil {
 		s.internal_error(w, err, "run matching job")
 		return
@@ -371,10 +366,6 @@ func (s *Server) handle_version_split(w http.ResponseWriter, r *http.Request) {
 		}
 		return result, nil
 	})
-	if errors.Is(err, Err_job_running) {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
-		return
-	}
 	if err != nil {
 		s.internal_error(w, err, "run matching job")
 		return
@@ -469,10 +460,6 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		}
 		return result, nil
 	})
-	if errors.Is(err, Err_job_running) {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
-		return
-	}
 	if err != nil {
 		s.internal_error(w, err, "run matching job")
 		return

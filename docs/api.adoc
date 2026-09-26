@@ -144,8 +144,10 @@ the background cache.
 |`POST`
 |`/versions/{version_id}/split`
 |Cut one stored file out of the title that owns it and match it as a movie of
-its own. Body is empty. Runs behind the matching job manager (`409` while a job
-is running) and returns `{"applied":bool,"entry":{catalog_item},"candidates":[…]}`;
+its own. Body is empty. It joins the matching job queue, so a job that is
+already running finishes first and this one runs after it, rather than being
+rejected; the request therefore waits for the result. Returns
+`{"applied":bool,"entry":{catalog_item},"candidates":[…]}`;
 the entry or episode the file left behind is dropped when it ran out of files.
 |`POST`
 |`/versions/{version_id}/episode`

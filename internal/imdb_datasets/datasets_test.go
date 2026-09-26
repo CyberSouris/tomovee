@@ -3,6 +3,7 @@ package imdb_datasets
 import (
 	"compress/gzip"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +241,87 @@ func Test_open_gzip(t *testing.T) {
 	}
 	if got := index.Search("The Matrix", 1999, scanner.Movie); len(got) != 1 || got[0].Id != "tt0133093" {
 		t.Errorf("search = %+v", got)
+	}
+}
+
+func Test_autocomplete_matches_the_last_token_as_a_prefix(t *testing.T) {
+	index := must_index(t)
+	// Every token has to match, but the one being typed is still incomplete.
+	got := index.Search_autocomplete("matrix relo", 0, scanner.Movie, 0)
+	if len(got) != 1 || got[0].Id != "tt0234215" {
+		t.Fatalf("autocomplete = %+v, want the reloaded matrix", got)
+	}
+	if got[0].Title != "The Matrix Reloaded" || got[0].Year != 2003 {
+		t.Errorf("result = %+v", got[0])
+	}
+	// A token that matches nothing rules the whole query out.
+	if got := index.Search_autocomplete("matrix missing", 0, scanner.Movie, 0); len(got) != 0 {
+		t.Errorf("unmatched token = %+v, want nothing", got)
+	}
+}
+
+func Test_autocomplete_filters_by_media_type_and_year(t *testing.T) {
+	index := must_index(t)
+	if got := index.Search_autocomplete("breaking", 0, scanner.Movie, 0); len(got) != 0 {
+		t.Errorf("movie autocomplete found a series: %+v", got)
+	}
+	got := index.Search_autocomplete("breaking", 0, scanner.Series, 0)
+	if len(got) != 1 || got[0].Id != "tt0903747" || got[0].Media_type != scanner.Series {
+		t.Fatalf("series autocomplete = %+v", got)
+	}
+	// A year the title does not carry filters it out, and one it ends on keeps
+	// it: Breaking Bad ran until 2013.
+	if got := index.Search_autocomplete("breaking", 1994, scanner.Series, 0); len(got) != 0 {
+		t.Errorf("wrong year = %+v, want nothing", got)
+	}
+	if got := index.Search_autocomplete("breaking", 2013, scanner.Series, 0); len(got) != 1 {
+		t.Errorf("end year = %+v, want the series", got)
+	}
+	// Callers only ask for a movie or a series; any other value means "no
+	// filter", which is what the search box asks for before the user picks a
+	// type. "The" is on a movie and nothing else, so an unfiltered search finds
+	// the movie and a movie search does too, but the type is not what decides.
+	if got := index.Search_autocomplete("the", 0, scanner.Media_type(-1), 0); len(got) == 0 {
+		t.Error("unfiltered autocomplete found nothing")
+	}
+}
+
+func Test_autocomplete_honours_the_limit(t *testing.T) {
+	index := must_index(t)
+	// The dataset has two "Remake" movies; a limit of one must pick one.
+	if got := index.Search_autocomplete("remake", 0, scanner.Movie, 1); len(got) != 1 {
+		t.Fatalf("limited autocomplete = %+v, want one result", got)
+	}
+	// A limit outside the accepted range falls back to the default instead of
+	// returning everything or nothing.
+	if got := index.Search_autocomplete("remake", 0, scanner.Movie, 0); len(got) != 2 {
+		t.Errorf("default limit = %+v, want both remakes", got)
+	}
+}
+
+func Test_autocomplete_without_an_index_or_query(t *testing.T) {
+	if got := New_index(nil).Search_autocomplete("matrix", 0, scanner.Movie, 0); got != nil {
+		t.Errorf("autocomplete on an empty index = %+v, want nothing", got)
+	}
+	if got := must_index(t).Search_autocomplete("  !? ", 0, scanner.Movie, 0); got != nil {
+		t.Errorf("autocomplete on a punctuation-only query = %+v, want nothing", got)
+	}
+}
+
+func Test_search_local_source_serves_the_index(t *testing.T) {
+	source := &Matcher_source{index: must_index(t)}
+	got, err := source.Search_local(context.Background(), "matrix", 0, scanner.Movie, 5)
+	if err != nil {
+		t.Fatalf("search local: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("candidates = %+v, want both matrix movies", got)
+	}
+	if got[0].Imdb_id == "" || got[0].Media_type != scanner.Movie {
+		t.Errorf("candidate = %+v", got[0])
+	}
+	if len(got[0].Genres) == 0 {
+		t.Errorf("genres were dropped: %+v", got[0])
 	}
 }
 
@@ -495,4 +577,32 @@ func must_index(t *testing.T) *Index {
 		t.Fatalf("parse: %v", err)
 	}
 	return New_index(titles)
+}
+
+// The file-based build reads title.ratings through its own streaming path, so
+// the ratings table has to fill the same way the in-memory indexer fills it.
+func Test_import_dataset_streams_ratings_into_the_index(t *testing.T) {
+	index := must_index(t)
+	err := import_dataset(index.db, "title.ratings", strings.NewReader(
+		"tconst\taverageRating\tnumVotes\n"+
+			"tt0133093\t8.7\t2500000\n"+
+			"tt0903747\t9.5\t2300000\n"),
+		slog.New(slog.DiscardHandler), nil)
+	if err != nil {
+		t.Fatalf("import ratings: %v", err)
+	}
+	var count int
+	if err := index.db.QueryRow("SELECT COUNT(*) FROM title_rating").Scan(&count); err != nil {
+		t.Fatalf("count ratings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("ratings = %d, want 2", count)
+	}
+	got := index.Search("Breaking Bad", 0, scanner.Series)
+	if len(got) != 1 || got[0].Rating != 9.5 || got[0].Votes != 2300000 {
+		t.Errorf("search after import = %+v", got)
+	}
+	if err := import_dataset(index.db, "title.nope", strings.NewReader(""), slog.New(slog.DiscardHandler), nil); err == nil {
+		t.Error("an unknown dataset should be an error")
+	}
 }

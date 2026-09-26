@@ -29,7 +29,7 @@ jobs:
       working-directory: internal/webui
       run: npx --no-install cypress install
     - name: Generate coverage report (unit tests + real-binary e2e specs)
-      run: xvfb-run -a make coverage
+      run: make coverage
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v7
       with:

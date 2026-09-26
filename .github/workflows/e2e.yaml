@@ -37,8 +37,8 @@ jobs:
 
       - name: Mocked-API rendering specs
         working-directory: internal/webui
-        run: xvfb-run -a npm run e2e:mocked
+        run: npm run e2e:mocked
 
       - name: Real-binary smoke specs
         working-directory: internal/webui
-        run: xvfb-run -a npm run e2e:smoke
+        run: npm run e2e:smoke

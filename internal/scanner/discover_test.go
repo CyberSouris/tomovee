@@ -123,6 +123,44 @@ func Test_discover_skips_hidden_and_junk(t *testing.T) {
 	}
 }
 
+func Test_discover_exclude_patterns(t *testing.T) {
+	root := build_tree(t)
+	files, err := Discover(context.Background(), Discover_options{
+		Root:             root,
+		Exclude_patterns: []string{"*.txt", "sub/deep/*", "Show*"},
+	})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	for _, name := range []string{"notes.txt", "Deeper.2018.mkv", "Show.S01E02.720p.mkv"} {
+		if has_name(files, name) {
+			t.Errorf("%q should have been excluded", name)
+		}
+	}
+	if !has_name(files, "Nested.Movie.2019.mkv") {
+		t.Error("excluding sub/deep/* should leave the rest of sub/ alone")
+	}
+}
+
+func Test_is_excluded_matches_the_whole_relative_path(t *testing.T) {
+	patterns := []string{"*.txt", "sub/deep/*"}
+	for path, want := range map[string]bool{
+		"notes.txt":      true,
+		"sub/deep/a.mkv": true,
+		"sub/other.mkv":  false,
+		"movie.mkv":      false,
+		"a.txt.bak":      false,
+	} {
+		if got := is_excluded(path, patterns); got != want {
+			t.Errorf("is_excluded(%q) = %v, want %v", path, got, want)
+		}
+	}
+	// No patterns means nothing is excluded.
+	if is_excluded("anything.mkv", nil) {
+		t.Error("a path must not be excluded without patterns")
+	}
+}
+
 func Test_discover_size_filter(t *testing.T) {
 	root := build_tree(t)
 	files, err := Discover(context.Background(), Discover_options{Root: root, Min_size_bytes: 1000})

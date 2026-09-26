@@ -952,6 +952,48 @@ func Test_reclassify_movie_to_series_merges_into_existing_series(t *testing.T) {
 	}
 }
 
+// episodes_of returns the season and episode number of every file of a series,
+// keyed by file path, so a test can say where a file ended up.
+func episodes_of(t *testing.T, store *database.Store, entry_id int64) map[string][2]int {
+	t.Helper()
+	ctx := context.Background()
+	episodes, err := store.List_episodes(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("list episodes: %v", err)
+	}
+	numbers := make(map[string][2]int, len(episodes))
+	for _, episode := range episodes {
+		versions, err := store.List_versions_for_episode(ctx, episode.Id)
+		if err != nil {
+			t.Fatalf("episode versions: %v", err)
+		}
+		if len(versions) != 1 {
+			t.Fatalf("episode %d has %d versions, want one", episode.Id, len(versions))
+		}
+		numbers[versions[0].File_path] = [2]int{episode.Season_number, episode.Episode_number}
+	}
+	return numbers
+}
+
+// check_episodes fails unless every wanted file sits on the season and episode
+// number it names, and no other file is numbered.
+func check_episodes(t *testing.T, got map[string][2]int, want map[string][2]int) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("numbered files = %v, want %v", got, want)
+	}
+	for path, expected := range want {
+		number, ok := got[path]
+		if !ok {
+			t.Errorf("%s is not on an episode", path)
+			continue
+		}
+		if number != expected {
+			t.Errorf("%s = S%02dE%02d, want S%02dE%02d", path, number[0], number[1], expected[0], expected[1])
+		}
+	}
+}
+
 func Test_reclassify_movie_to_series_numbers_unnumbered_files(t *testing.T) {
 	service, store := new_movie_service(t, fake_series_hit{})
 	ctx := context.Background()
@@ -986,22 +1028,7 @@ func Test_reclassify_movie_to_series_numbers_unnumbered_files(t *testing.T) {
 	if _, _, _, err := service.Reclassify(ctx, entry_id, true); err != nil {
 		t.Fatalf("reclassify: %v", err)
 	}
-	numbers := map[string][2]int{}
-	episodes, err := store.List_episodes(ctx, entry_id)
-	if err != nil {
-		t.Fatalf("list episodes: %v", err)
-	}
-	for _, episode := range episodes {
-		versions, err := store.List_versions_for_episode(ctx, episode.Id)
-		if err != nil {
-			t.Fatalf("episode versions: %v", err)
-		}
-		if len(versions) != 1 {
-			t.Fatalf("episode %d has %d versions, want one", episode.Id, len(versions))
-		}
-		numbers[versions[0].File_path] = [2]int{episode.Season_number, episode.Episode_number}
-	}
-	want := map[string][2]int{
+	check_episodes(t, episodes_of(t, store, entry_id), map[string][2]int{
 		// The numbered file keeps the number its name gave it.
 		"The.Office/Season 1/The.Office.S01E01.mkv": {1, 1},
 		// Files with no number are numbered in the order they were added in,
@@ -1014,20 +1041,7 @@ func Test_reclassify_movie_to_series_numbers_unnumbered_files(t *testing.T) {
 		"The.Office/Season 3/Chapter One.mkv": {3, 1},
 		// Extras land in the specials season instead of shifting the show's.
 		"The.Office/Specials/Bloopers.mkv": {0, 1},
-	}
-	if len(numbers) != len(want) {
-		t.Fatalf("episodes = %v, want %v", numbers, want)
-	}
-	for path, expected := range want {
-		got, ok := numbers[path]
-		if !ok {
-			t.Errorf("%s is not on an episode", path)
-			continue
-		}
-		if got != expected {
-			t.Errorf("%s = S%02dE%02d, want S%02dE%02d", path, got[0], got[1], expected[0], expected[1])
-		}
-	}
+	})
 	loose, err := store.List_versions_for_entry(ctx, entry_id)
 	if err != nil {
 		t.Fatalf("list loose versions: %v", err)
@@ -1035,6 +1049,58 @@ func Test_reclassify_movie_to_series_numbers_unnumbered_files(t *testing.T) {
 	if len(loose) != 0 {
 		t.Errorf("loose versions = %d, want none", len(loose))
 	}
+}
+
+func Test_reclassify_numbers_files_with_tied_times_by_name(t *testing.T) {
+	service, store := new_movie_service(t, fake_series_hit{})
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Only one file has a recorded time; the rest share none, so their names
+	// decide the order. The names are deliberately awkward: a zero-padded
+	// number, a run of two digits, and one that does not start with a digit at
+	// all.
+	files := []struct {
+		path  string
+		mtime string
+	}{
+		{"The.Office/Part 10.mkv", ""},
+		{"The.Office/Part b.mkv", ""},
+		{"The.Office/Part 2.mkv", ""},
+		{"The.Office/Part 007.mkv", ""},
+		{"The.Office/Part 1.mkv", "2024-01-01T00:00:00Z"},
+		{"The.Office/Part 8.mkv", ""},
+	}
+	for i, file := range files {
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: entry_id, Library_id: lib, File_path: file.path,
+			Size_bytes: int64(1000 + i), Mtime: file.mtime,
+		}); err != nil {
+			t.Fatalf("save version: %v", err)
+		}
+	}
+
+	if _, _, _, err := service.Reclassify(ctx, entry_id, true); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+	check_episodes(t, episodes_of(t, store, entry_id), map[string][2]int{
+		// The one file with a time is the first of the unnamed run, since files
+		// that carry no time sort after those that do.
+		"The.Office/Part 1.mkv": {1, 1},
+		// The rest are read as a human reads them: 2, then 7 written as 007,
+		// then 8, then 10, and the name that has no number last.
+		"The.Office/Part 2.mkv":   {1, 2},
+		"The.Office/Part 007.mkv": {1, 3},
+		"The.Office/Part 8.mkv":   {1, 4},
+		"The.Office/Part 10.mkv":  {1, 5},
+		"The.Office/Part b.mkv":   {1, 6},
+	})
 }
 
 func Test_reclassify_movie_to_series_keeps_assigned_episodes(t *testing.T) {

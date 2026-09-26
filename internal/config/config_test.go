@@ -228,3 +228,40 @@ func Test_validate_requires_library_or_watch(t *testing.T) {
 		t.Errorf("no error expected with watch enabled, got: %v", err)
 	}
 }
+
+func Test_default_config_path_prefers_xdg_config_home(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/xdg/config")
+	if got := Default_config_path(); got != filepath.Join("/xdg/config", "tomovee", "config.yaml") {
+		t.Errorf("Default_config_path() = %q, want the XDG location", got)
+	}
+	// An empty value is no value at all, so the home directory is used.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := Default_config_path(); got != filepath.Join(home, ".config", "tomovee", "config.yaml") {
+		t.Errorf("Default_config_path() = %q, want the home location", got)
+	}
+	// Without a home directory to speak of, the working directory is the only
+	// place left.
+	t.Setenv("HOME", "")
+	if got := Default_config_path(); got != "config.yaml" {
+		t.Errorf("Default_config_path() = %q, want the bare file name", got)
+	}
+}
+
+func Test_user_data_dir_prefers_xdg_data_home(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/xdg/data")
+	if got := user_data_dir(); got != filepath.Join("/xdg/data", "tomovee") {
+		t.Errorf("user_data_dir() = %q, want the XDG location", got)
+	}
+	t.Setenv("XDG_DATA_HOME", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := user_data_dir(); got != filepath.Join(home, ".local", "share", "tomovee") {
+		t.Errorf("user_data_dir() = %q, want the home location", got)
+	}
+	t.Setenv("HOME", "")
+	if got := user_data_dir(); got != "tomovee" {
+		t.Errorf("user_data_dir() = %q, want the bare directory name", got)
+	}
+}

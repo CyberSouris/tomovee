@@ -2,8 +2,11 @@ package scan
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cybersouris/tomovee/internal/database"
@@ -187,6 +190,44 @@ func Test_run_unmatched_entries(t *testing.T) {
 	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "needs_lookup"})
 	if len(entries) != 1 || entries[0].Title != "Mystery Film" {
 		t.Fatalf("entries = %+v", entries)
+	}
+}
+
+// One file that cannot be read is recorded against that file and the scan goes
+// on: a single unreadable video must not cost the whole library its scan.
+func Test_run_records_per_file_failures_and_keeps_going(t *testing.T) {
+	dir := t.TempDir()
+	broken := write_file(t, dir, "Broken.2020.mkv", 1000)
+	write_file(t, dir, "Good.2021.mkv", 1000)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+	s.probe = func(ctx context.Context, path string) (*metadata.File_info, error) {
+		if path == broken {
+			return nil, errors.New("ffprobe could not read the file")
+		}
+		return fake_probe(ctx, path)
+	}
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 1 {
+		t.Errorf("new = %d, want the readable file only", result.New)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "ffprobe could not read the file") {
+		t.Fatalf("errors = %v, want the probe failure against the broken file", result.Errors)
+	}
+	if !strings.Contains(result.Errors[0], "Broken.2020.mkv") {
+		t.Errorf("error = %q, want the failing file named", result.Errors[0])
+	}
+	entries, err := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "needs_lookup"})
+	if err != nil {
+		t.Fatalf("list entries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Title != "Good" {
+		t.Errorf("entries = %+v, want only the readable file", entries)
 	}
 }
 
@@ -427,5 +468,104 @@ func Test_run_series_folder_groups_across_even_scan(t *testing.T) {
 	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
 	if len(episodes) != 2 {
 		t.Fatalf("episodes = %+v, want episodes from both seasons grouped", episodes)
+	}
+}
+
+// The frame poster only ever fills a blank: online artwork wins, an extraction
+// failure just leaves the entry blank, and a frame that is already on disk is
+// marked without extracting it a second time.
+func Test_ensure_frame_poster_prefers_existing_art_and_never_fails_the_scan(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	video := write_file(t, dir, "Movie.2020.mkv", 1000)
+	poster_dir := t.TempDir()
+
+	s := new_test_scanner(t, store, dir)
+	s.opts.Poster_dir = poster_dir
+	var extracted int
+	s.extract = func(_ context.Context, _ string, _ float64, out string) error {
+		extracted++
+		return os.WriteFile(out, []byte("fake-jpeg"), 0o644)
+	}
+
+	new_entry := func(title, poster string) int64 {
+		t.Helper()
+		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+			Media_type: "movie", Title: title, Poster_path: poster, Status: "needs_lookup",
+		})
+		if err != nil {
+			t.Fatalf("upsert %s: %v", title, err)
+		}
+		return id
+	}
+	poster_of := func(id int64) string {
+		t.Helper()
+		entry, err := store.Get_catalog_entry(ctx, id)
+		if err != nil || entry == nil {
+			t.Fatalf("get entry %d: %+v, %v", id, entry, err)
+		}
+		return entry.Poster_path
+	}
+
+	online := new_entry("Has Art", "https://images.example/has.jpg")
+	s.ensure_frame_poster(ctx, online, video, 120)
+	if extracted != 0 {
+		t.Errorf("extracted %d frames, want none for an entry that already has artwork", extracted)
+	}
+	if got := poster_of(online); got != "https://images.example/has.jpg" {
+		t.Errorf("poster = %q, want the online artwork untouched", got)
+	}
+
+	// ffmpeg missing, then ffmpeg failing: both leave the entry blank.
+	blank := new_entry("No Art", "")
+	s.extract = func(context.Context, string, float64, string) error {
+		return fmt.Errorf("extract frame: %w", thumbnail.Err_no_ffmpeg)
+	}
+	s.ensure_frame_poster(ctx, blank, video, 120)
+	if got := poster_of(blank); got != "" {
+		t.Errorf("poster = %q, want blank without ffmpeg", got)
+	}
+	s.extract = func(context.Context, string, float64, string) error {
+		return errors.New("ffmpeg gave up")
+	}
+	s.ensure_frame_poster(ctx, blank, video, 120)
+	if got := poster_of(blank); got != "" {
+		t.Errorf("poster = %q, want blank after a failed extraction", got)
+	}
+
+	// A frame that is already on disk is claimed, not re-extracted.
+	seeded := new_entry("Seeded", "")
+	seeded_file := thumbnail.Local_path(poster_dir, seeded)
+	if err := os.MkdirAll(filepath.Dir(seeded_file), 0o755); err != nil {
+		t.Fatalf("mkdir poster dir: %v", err)
+	}
+	if err := os.WriteFile(seeded_file, []byte("fake-jpeg"), 0o644); err != nil {
+		t.Fatalf("seed frame poster: %v", err)
+	}
+	s.extract = func(context.Context, string, float64, string) error {
+		extracted++
+		return nil
+	}
+	s.ensure_frame_poster(ctx, seeded, video, 120)
+	if extracted != 0 {
+		t.Errorf("extracted %d frames, want the existing frame reused", extracted)
+	}
+	if got := poster_of(seeded); got != thumbnail.Local_marker {
+		t.Errorf("poster = %q, want %q", got, thumbnail.Local_marker)
+	}
+
+	// And a successful extraction still claims its frame.
+	s.extract = func(_ context.Context, _ string, _ float64, out string) error {
+		extracted++
+		return os.WriteFile(out, []byte("fake-jpeg"), 0o644)
+	}
+	fresh := new_entry("Fresh", "")
+	s.ensure_frame_poster(ctx, fresh, video, 120)
+	if extracted != 1 {
+		t.Errorf("extracted %d frames, want 1", extracted)
+	}
+	if got := poster_of(fresh); got != thumbnail.Local_marker {
+		t.Errorf("poster = %q, want %q", got, thumbnail.Local_marker)
 	}
 }

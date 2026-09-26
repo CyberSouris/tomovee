@@ -9,7 +9,7 @@
 // The smoke mode needs a built binary; point TOMOVEE_BIN at one or run
 // `make build` first (default: bin/tomovee at the repository root).
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -85,6 +85,22 @@ async function wait_http(url, timeout_ms) {
   fail(`timed out waiting for ${url}`);
 }
 
+// The correction specs need files in the catalog, and the scan only keeps what
+// ffprobe can read, so the fixture has to be real video however small. Without
+// ffmpeg the media dir stays empty and corrections.cy.js skips itself.
+function seed_media(dir) {
+  for (const name of ['Mystery.Film.2020.mkv', 'Mystery.Film.2020.1080p.mkv']) {
+    const result = spawnSync('ffmpeg', [
+      '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=5:d=1',
+      '-c:v', 'mpeg4', '-frames:v', '1', '-y', path.join(dir, name),
+    ], { stdio: 'ignore' });
+    if (result.status !== 0) {
+      console.warn(`Could not seed ${name} (is ffmpeg installed?): the correction specs will skip`);
+      return;
+    }
+  }
+}
+
 async function free_port() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -131,10 +147,15 @@ async function run_smoke() {
     `database_path: "${path.join(tmp, 'tomovee.db')}"`,
     `poster_cache_dir: "${path.join(tmp, 'posters')}"`,
     'watch_enabled: false',
+    // The seeded videos are a few hundred bytes each, well under the 50 MB
+    // default, which would filter them out before they ever reach the catalog.
+    'scan:',
+    '  min_file_size_mb: 0',
     'libraries:',
     `  Movies: "${media}"`,
     '',
   ].join('\n'));
+  seed_media(media);
 
   console.log(`Launching ${binary} on 127.0.0.1:${port}…`);
   const server = spawn_server(binary, ['serve', '--config', config_path, '--log-level', 'warn']);

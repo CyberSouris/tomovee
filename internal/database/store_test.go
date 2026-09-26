@@ -130,6 +130,39 @@ func Test_upsert_episode(t *testing.T) {
 	}
 }
 
+// An episode's status is what keeps it on the unmatched list, so setting it has
+// to be readable back through the same query the list uses.
+func Test_set_episode_status(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+	entry, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Breaking Bad", Imdb_id: "tt0903747", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	id, err := store.Upsert_episode(ctx, Episode{
+		Catalog_entry_id: entry, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if err := store.Set_episode_status(ctx, id, "matched"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	episode, err := store.Get_episode(ctx, id)
+	if err != nil || episode == nil {
+		t.Fatalf("get episode: %+v, %v", episode, err)
+	}
+	if episode.Status != "matched" {
+		t.Errorf("status = %q, want matched", episode.Status)
+	}
+	// An unknown episode is not an error: there is simply nothing to update.
+	if err := store.Set_episode_status(ctx, 9999, "matched"); err != nil {
+		t.Errorf("unknown episode = %v, want no error", err)
+	}
+}
+
 func Test_save_version_replaces_tracks(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
@@ -536,5 +569,60 @@ func Test_update_catalog_entry_to_matched_clears_candidates(t *testing.T) {
 	}
 	if len(left) != 0 {
 		t.Fatalf("candidates survived a matched update: %+v", left)
+	}
+}
+
+// Subtitle tracks are read back for the UI, so a track whose language or format
+// is unknown still has to come back as a row rather than a hole.
+func Test_version_tracks_lists_subtitles_with_unknown_fields(t *testing.T) {
+	store := new_test_store(t)
+	ctx := context.Background()
+	entry, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "M", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	if err := store.Upsert_library(ctx, "Media", "/media", true); err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) != 1 {
+		t.Fatalf("libraries = %+v, %v", libraries, err)
+	}
+	id, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "m.mkv", Size_bytes: 100,
+		Mtime: "2026-01-01T00:00:00Z",
+		Subtitles: []Subtitle_track{
+			{Language: "eng", Format: "subrip", Source: "ffprobe"},
+			{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	_, subtitles, err := store.Version_tracks(ctx, id)
+	if err != nil {
+		t.Fatalf("tracks: %v", err)
+	}
+	if len(subtitles) != 2 {
+		t.Fatalf("subtitles = %+v, want both tracks", subtitles)
+	}
+	if subtitles[0].Language != "eng" || subtitles[0].Format != "subrip" {
+		t.Errorf("subtitles[0] = %+v", subtitles[0])
+	}
+	if subtitles[1].Language != "" || subtitles[1].Format != "" {
+		t.Errorf("subtitles[1] = %+v, want empty strings for unknown fields", subtitles[1])
+	}
+	if subtitles[1].Source != "ffprobe" {
+		t.Errorf("subtitles[1].Source = %q, want the ffprobe default", subtitles[1].Source)
+	}
+
+	// A closed database is an error, not an empty track list.
+	if err := store.db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, _, err := store.Version_tracks(ctx, id); err == nil {
+		t.Error("reading tracks from a closed database should fail")
 	}
 }

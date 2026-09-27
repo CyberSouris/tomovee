@@ -9,8 +9,8 @@
 // The smoke mode needs a built binary; point TOMOVEE_BIN at one or run
 // `make build` first (default: bin/tomovee at the repository root).
 
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
@@ -20,6 +20,7 @@ import path from 'node:path';
 const here = path.resolve(path.dirname(fileURLToPath(import.meta.url))); // internal/webui/e2e
 const webui = path.resolve(here, '..'); // internal/webui
 const repo = path.resolve(here, '..', '..', '..'); // repository root
+const testdata = path.join(repo, 'testdata'); // committed sample files
 
 function fail(message) {
   console.error(message);
@@ -85,43 +86,14 @@ async function wait_http(url, timeout_ms) {
   fail(`timed out waiting for ${url}`);
 }
 
-// The correction specs need files in the catalog, and the scan only keeps what
-// ffprobe can read, so the fixture has to be real video however small. Without
-// ffmpeg the media dir stays empty and corrections.cy.js skips itself.
-function seed_media(dir) {
-  for (const name of ['Mystery.Film.2020.mkv', 'Mystery.Film.2020.1080p.mkv']) {
-    const result = spawnSync('ffmpeg', [
-      '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=5:d=1',
-      '-c:v', 'mpeg4', '-frames:v', '1', '-y', path.join(dir, name),
-    ], { stdio: 'ignore' });
-    if (result.status !== 0) {
-      console.warn(`Could not seed ${name} (is ffmpeg installed?): the correction specs will skip`);
-      return;
-    }
-  }
-}
-
-// A minimal IMDb export set, so the server builds a real offline index at
-// startup and the specs can exercise offline matching and search. These are
-// plain text, so unlike seed_media they need no external tool.
-const datasets_exports = {
-  'title.basics.tsv':
-    'tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n' +
-    'tt0133093\tmovie\tThe Matrix\tThe Matrix\t0\t1999\t\\N\t136\tAction,Sci-Fi\n' +
-    'tt0903747\ttvSeries\tBreaking Bad\tBreaking Bad\t0\t2008\t2013\t49\tCrime,Drama\n',
-  'title.episode.tsv':
-    'tconst\tparentTconst\tseasonNumber\tepisodeNumber\n' +
-    'tt10001\ttt0903747\t1\t1\n',
-  'title.ratings.tsv':
-    'tconst\taverageRating\tnumVotes\n' +
-    'tt0133093\t8.7\t900000\n',
-};
-
-function seed_datasets(dir) {
-  mkdirSync(dir, { recursive: true });
-  for (const [name, body] of Object.entries(datasets_exports)) {
-    writeFileSync(path.join(dir, name), body);
-  }
+// The smoke fixture is built by copying the committed sample files in testdata/,
+// never by generating them, so a run cannot invent a different catalog than the
+// one the specs assert on. Each copy lands in a per-run temporary directory
+// because the importer writes its index database next to the exports and the
+// scan writes beside the media; the repository must stay clean.
+function copy_fixture(source, destination) {
+  if (!existsSync(source)) fail(`missing committed test data at ${source}`);
+  cpSync(source, destination, { recursive: true });
 }
 
 async function free_port() {
@@ -163,19 +135,22 @@ async function run_smoke() {
 
   const port = await free_port();
   const tmp = mkdtempSync(path.join(tmpdir(), 'tomovee-e2e-'));
+  // The media dir is an empty library; the fixtures are copied in below.
   const media = mkdtempSync(path.join(tmpdir(), 'tomovee-media-'));
   // A second, deliberately empty library the settings spec can delete without
   // touching the catalog the correction specs rely on.
   const archive = mkdtempSync(path.join(tmpdir(), 'tomovee-archive-'));
   const datasets = mkdtempSync(path.join(tmpdir(), 'tomovee-datasets-'));
+  copy_fixture(path.join(testdata, 'media'), media);
+  copy_fixture(path.join(testdata, 'imdb'), datasets);
   const config_path = path.join(tmp, 'config.yaml');
   writeFileSync(config_path, [
     `listen: "127.0.0.1:${port}"`,
     `database_path: "${path.join(tmp, 'tomovee.db')}"`,
     `poster_cache_dir: "${path.join(tmp, 'posters')}"`,
     'watch_enabled: false',
-    // The seeded videos are a few hundred bytes each, well under the 50 MB
-    // default, which would filter them out before they ever reach the catalog.
+    // The fixture videos are 706 bytes each, far under the 50 MB default,
+    // which would drop them before they ever reach the catalog.
     'scan:',
     '  min_file_size_mb: 0',
     `imdb_datasets_path: "${datasets}"`,
@@ -184,8 +159,6 @@ async function run_smoke() {
     `  Archive: "${archive}"`,
     '',
   ].join('\n'));
-  seed_media(media);
-  seed_datasets(datasets);
 
   console.log(`Launching ${binary} on 127.0.0.1:${port}…`);
   const server = spawn_server(binary, ['serve', '--config', config_path, '--log-level', 'warn']);

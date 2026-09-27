@@ -1,7 +1,7 @@
 // The offline IMDb index, built by the real binary at startup from the export
-// files e2e/run.mjs writes. Everything here goes through the HTTP API, so it
-// exercises the whole import path: parsing the TSVs, filling the index, the FTS
-// table and the matcher's offline source.
+// files committed in testdata/imdb. Everything here goes through the HTTP API,
+// so it exercises the whole import path: parsing the TSVs, filling the index, the
+// FTS table and the matcher's offline source.
 
 function wait_for_datasets(attempts = 200) {
   return cy.request('/api/v1/settings').then((response) => {
@@ -48,10 +48,7 @@ describe('offline IMDb datasets', () => {
     });
     cy.request('/api/v1/catalog?limit=50').then((response) => {
       const entry = response.body.entries.find((item) => item.media_type === 'movie');
-      if (!entry) {
-        cy.log('no movie in the catalog (the media fixture is empty)');
-        return null;
-      }
+      expect(entry, 'the committed fixture media should produce a movie').to.exist;
       return cy.request({
         method: 'POST',
         url: `/api/v1/catalog/${entry.id}/match`,

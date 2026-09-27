@@ -402,24 +402,17 @@ poster_cache_dir: `+poster_file+`
 	}
 }
 
-// export_tsv writes a minimal IMDb export set the index builder accepts:
-// title.basics is required, the other three are optional.
-func export_tsv(t *testing.T, dir string) {
+// copy_testdata copies a directory of committed sample files into dir, which
+// the importer then treats as an ordinary IMDb export directory. It copies
+// rather than pointing at the repository because the index database is written
+// next to the exports.
+func copy_testdata(t *testing.T, name string, dir string) string {
 	t.Helper()
-	files := map[string]string{
-		"title.basics.tsv": "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n" +
-			"tt0133093\tmovie\tThe Matrix\tThe Matrix\t0\t1999\t\\N\t136\tAction,Sci-Fi\n" +
-			"tt0903747\ttvSeries\tBreaking Bad\tBreaking Bad\t0\t2008\t2013\t49\tCrime,Drama\n",
-		"title.episode.tsv": "tconst\tparentTconst\tseasonNumber\tepisodeNumber\n" +
-			"tt10001\ttt0903747\t1\t1\n",
-		"title.ratings.tsv": "tconst\taverageRating\tnumVotes\n" +
-			"tt0133093\t8.7\t900000\n",
+	source := filepath.Join("..", "..", "testdata", name)
+	if err := os.CopyFS(dir, os.DirFS(source)); err != nil {
+		t.Fatalf("copy %s: %v", source, err)
 	}
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
+	return dir
 }
 
 func Test_load_datasets_attaches_the_index(t *testing.T) {
@@ -432,8 +425,7 @@ func Test_load_datasets_attaches_the_index(t *testing.T) {
 	store := database.New_store(d)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	dir := t.TempDir()
-	export_tsv(t, dir)
+	dir := copy_testdata(t, "imdb", t.TempDir())
 
 	p, err := build_pipeline(logger, &config.Config{Imdb_datasets_path: dir}, store)
 	if err != nil {

@@ -1,10 +1,10 @@
 //
 // e2e/smoke/corrections.cy.js exercises the per-file correction endpoints
-// against the real binary: a real scan over real (tiny) videos, a real SQLite
-// database, real jobs queued through the matching job manager. No TMDB key and
-// no IMDb index are configured, so every correction lands as "needs_lookup"
-// with no candidates — the point here is the state transition the endpoint
-// performs, not what a metadata provider would say about it.
+// against the real binary: a real scan over the committed sample videos in
+// testdata/media, a real SQLite database, real jobs queued through the matching
+// job manager. No TMDB key is configured, so every correction lands as
+// "needs_lookup" with no candidates — the point here is the state transition the
+// endpoint performs, not what a metadata provider would say about it.
 //
 // The specs are a narrative and depend on each other in the order written:
 // a file can only be put on an episode once its entry is a series, and a file
@@ -28,14 +28,14 @@ function wait_for_job(attempts = 200) {
 
 describe('per-file corrections over the real API', () => {
   before(function () {
-    cy.request({ method: 'POST', url: '/api/v1/scan', body: {}, failOnStatusCode: false });
+    cy.request({ method: 'POST', url: '/api/v1/scan', body: {} }).then((response) => {
+      expect(response.status, 'the fixture media should be scannable').to.eq(202);
+    });
     wait_for_job().then((job) => {
-      // No ffprobe, no media, or everything filtered out by the size floor:
-      // there is nothing to correct, and skipping beats reporting a failure
-      // that says more about the machine than about the code.
-      if (!job || !job.result || job.result.new === 0) {
-        this.skip();
-      }
+      // The fixture videos are committed and the size floor is lowered in the
+      // config, so an empty scan means the repository is missing test data —
+      // a real failure, not something to skip over.
+      expect(job && job.result && job.result.new, 'scan result').to.be.greaterThan(0);
     });
 
     cy.request('/api/v1/catalog?limit=50').then((response) => {

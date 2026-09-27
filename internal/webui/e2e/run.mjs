@@ -10,7 +10,7 @@
 // `make build` first (default: bin/tomovee at the repository root).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
@@ -101,6 +101,29 @@ function seed_media(dir) {
   }
 }
 
+// A minimal IMDb export set, so the server builds a real offline index at
+// startup and the specs can exercise offline matching and search. These are
+// plain text, so unlike seed_media they need no external tool.
+const datasets_exports = {
+  'title.basics.tsv':
+    'tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n' +
+    'tt0133093\tmovie\tThe Matrix\tThe Matrix\t0\t1999\t\\N\t136\tAction,Sci-Fi\n' +
+    'tt0903747\ttvSeries\tBreaking Bad\tBreaking Bad\t0\t2008\t2013\t49\tCrime,Drama\n',
+  'title.episode.tsv':
+    'tconst\tparentTconst\tseasonNumber\tepisodeNumber\n' +
+    'tt10001\ttt0903747\t1\t1\n',
+  'title.ratings.tsv':
+    'tconst\taverageRating\tnumVotes\n' +
+    'tt0133093\t8.7\t900000\n',
+};
+
+function seed_datasets(dir) {
+  mkdirSync(dir, { recursive: true });
+  for (const [name, body] of Object.entries(datasets_exports)) {
+    writeFileSync(path.join(dir, name), body);
+  }
+}
+
 async function free_port() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -141,6 +164,10 @@ async function run_smoke() {
   const port = await free_port();
   const tmp = mkdtempSync(path.join(tmpdir(), 'tomovee-e2e-'));
   const media = mkdtempSync(path.join(tmpdir(), 'tomovee-media-'));
+  // A second, deliberately empty library the settings spec can delete without
+  // touching the catalog the correction specs rely on.
+  const archive = mkdtempSync(path.join(tmpdir(), 'tomovee-archive-'));
+  const datasets = mkdtempSync(path.join(tmpdir(), 'tomovee-datasets-'));
   const config_path = path.join(tmp, 'config.yaml');
   writeFileSync(config_path, [
     `listen: "127.0.0.1:${port}"`,
@@ -151,11 +178,14 @@ async function run_smoke() {
     // default, which would filter them out before they ever reach the catalog.
     'scan:',
     '  min_file_size_mb: 0',
+    `imdb_datasets_path: "${datasets}"`,
     'libraries:',
     `  Movies: "${media}"`,
+    `  Archive: "${archive}"`,
     '',
   ].join('\n'));
   seed_media(media);
+  seed_datasets(datasets);
 
   console.log(`Launching ${binary} on 127.0.0.1:${port}…`);
   const server = spawn_server(binary, ['serve', '--config', config_path, '--log-level', 'warn']);
@@ -166,8 +196,9 @@ async function run_smoke() {
     if (code !== 0) process.exitCode = code;
   } finally {
     await stop_server(server);
-    rmSync(tmp, { recursive: true, force: true });
-    rmSync(media, { recursive: true, force: true });
+    for (const dir of [tmp, media, archive, datasets]) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 

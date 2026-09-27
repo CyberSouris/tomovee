@@ -1,0 +1,44 @@
+= Test data
+
+Sample files used by the tests, committed rather than generated at run time so a
+test run writes nothing it does not own.
+
+== `imdb/`
+
+A miniature IMDb non-commercial export set in the published column layout:
+`title.basics.tsv` (required), plus `title.akas.tsv`, `title.episode.tsv` and
+`title.ratings.tsv` as the optional exports. `internal/imdb_datasets` imports
+whatever is present, so this is enough to build a real offline index.
+
+Two consumers:
+
+* `cmd/tomovee`'s `load_datasets` test copies it into a temporary directory and
+  lets the server build the index there.
+* `internal/webui/e2e/run.mjs` copies it into the smoke fixture's datasets
+  directory, so the binary under test builds its index at startup.
+
+The titles are the real IMDb ids for The Matrix, The Matrix Reloaded, Breaking
+Bad and The Shawshank Redemption. The end-to-end specs look The Matrix up by id,
+so its id and release year are part of what they assert.
+
+Both consumers copy rather than point at this directory, because the importer
+writes its index database next to the exports and the repository must stay
+clean.
+
+== `media/`
+
+Two one-frame MPEG-4 videos that `ffprobe` reads as real files, 706 bytes each.
+They are named the way a user would name their files on purpose, because the
+correction specs assert on how the scanner parses them: `Mystery.Film.2020.mkv`
+and `Mystery.Film.2020.1080p.mkv` land in one catalog entry as two versions.
+
+At 706 bytes they are far below the 50 MB `min_file_size_mb` default, which
+would drop them before they ever reached the catalog, so the smoke fixture
+config lowers that limit to 0.
+
+Generated once with:
+
+[source,sh]
+----
+ffmpeg -f lavfi -i color=c=black:s=64x64:r=5:d=1 -c:v mpeg4 -frames:v 1 out.mkv
+----

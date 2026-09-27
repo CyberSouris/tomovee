@@ -1,0 +1,7 @@
+tconst	titleType	primaryTitle	originalTitle	isAdult	startYear	endYear	runtimeMinutes	genres
+tt0133093	movie	The Matrix	The Matrix	0	1999	\N	136	Action,Sci-Fi
+tt0234215	movie	The Matrix Reloaded	The Matrix Reloaded	0	2003	\N	138	Action,Sci-Fi
+tt0903747	tvSeries	Breaking Bad	Breaking Bad	0	2008	2013	49	Crime,Drama
+tt0111161	movie	The Shawshank Redemption	The Shawshank Redemption	0	1994	\N	142	Drama
+tt1000001	tvEpisode	Pilot	Pilot	0	2008	\N	58	Crime,Drama
+tt1000002	tvEpisode	Cat's in the Bag...	Cat's in the Bag...	0	2008	\N	48	Crime,Drama

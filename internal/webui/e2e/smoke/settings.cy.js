@@ -94,6 +94,18 @@ describe('settings and libraries', () => {
     });
   });
 
+  it('rematches every entry through the queued job manager', () => {
+    // The rematch-all path queues behind a running job instead of refusing, so
+    // it shares the same status endpoint as the plain match run.
+    cy.request({ method: 'POST', url: '/api/v1/match/rematch', body: {} }).then((response) => {
+      expect(response.status).to.eq(202);
+      return wait_for_match();
+    }).then((job) => {
+      expect(job.running).to.eq(false);
+      expect(job.progress.total).to.be.at.least(1);
+    });
+  });
+
   it('refuses a second matching run while one is queued', () => {
     // Start and immediately re-request: the second call is either rejected or
     // queued, but it must never report a bogus success.

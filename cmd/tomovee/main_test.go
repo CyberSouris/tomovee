@@ -9,10 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
+	"github.com/cybersouris/tomovee/internal/imdb_datasets"
+	"github.com/cybersouris/tomovee/internal/matching"
 	"github.com/cybersouris/tomovee/internal/metacache"
+	"github.com/cybersouris/tomovee/internal/scanner"
 )
 
 func write_config(t *testing.T, body string) string {
@@ -395,6 +399,120 @@ poster_cache_dir: `+poster_file+`
 `)
 	if err := cmd_serve([]string{"--config", path}); err == nil {
 		t.Error("cmd_serve accepted a poster cache dir that is a file")
+	}
+}
+
+// export_tsv writes a minimal IMDb export set the index builder accepts:
+// title.basics is required, the other three are optional.
+func export_tsv(t *testing.T, dir string) {
+	t.Helper()
+	files := map[string]string{
+		"title.basics.tsv": "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\n" +
+			"tt0133093\tmovie\tThe Matrix\tThe Matrix\t0\t1999\t\\N\t136\tAction,Sci-Fi\n" +
+			"tt0903747\ttvSeries\tBreaking Bad\tBreaking Bad\t0\t2008\t2013\t49\tCrime,Drama\n",
+		"title.episode.tsv": "tconst\tparentTconst\tseasonNumber\tepisodeNumber\n" +
+			"tt10001\ttt0903747\t1\t1\n",
+		"title.ratings.tsv": "tconst\taverageRating\tnumVotes\n" +
+			"tt0133093\t8.7\t900000\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+func Test_load_datasets_attaches_the_index(t *testing.T) {
+	ctx := context.Background()
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := database.New_store(d)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	dir := t.TempDir()
+	export_tsv(t, dir)
+
+	p, err := build_pipeline(logger, &config.Config{Imdb_datasets_path: dir}, store)
+	if err != nil {
+		t.Fatalf("build_pipeline: %v", err)
+	}
+	service := matching.New(store, p.matcher, nil, logger)
+
+	// The build runs in a goroutine, so wait for the callback that releases the
+	// startup matching run instead of racing it.
+	ready := make(chan struct{})
+	p.load_datasets(logger, dir, service, func() { close(ready) }, p.status)
+	select {
+	case <-ready:
+	case <-time.After(30 * time.Second):
+		t.Fatal("load_datasets never signalled ready")
+	}
+
+	index := p.datasets.Load()
+	if index == nil {
+		t.Fatal("no index attached")
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	if index.Count() == 0 {
+		t.Error("attached index is empty")
+	}
+	// attach_datasets is what hands the matcher its offline source, so a local
+	// search proving out means the index is attached and not merely opened.
+	if !p.matcher.Has_local_search() {
+		t.Fatal("matcher has no local search source after load_datasets")
+	}
+	hits, err := p.matcher.Search_local_autocomplete(ctx, "Breaking Bad", 0, scanner.Series, 5)
+	if err != nil {
+		t.Fatalf("Search_local_autocomplete: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Error("local search found nothing in the freshly loaded index")
+	}
+	if state := p.status.Snapshot().State; state != imdb_datasets.State_ready {
+		t.Errorf("tracker state = %v, want ready", state)
+	}
+}
+
+func Test_load_datasets_reports_a_bad_path(t *testing.T) {
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := database.New_store(d)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p, err := build_pipeline(logger, &config.Config{}, store)
+	if err != nil {
+		t.Fatalf("build_pipeline: %v", err)
+	}
+	service := matching.New(store, p.matcher, nil, logger)
+
+	// A directory with no exports is the realistic failure. The callback still
+	// has to fire, otherwise a bad path would wedge the startup matching run.
+	ready := make(chan struct{})
+	p.load_datasets(logger, t.TempDir(), service, func() { close(ready) }, p.status)
+	select {
+	case <-ready:
+	case <-time.After(30 * time.Second):
+		t.Fatal("load_datasets never signalled ready for an unusable path")
+	}
+	if index := p.datasets.Load(); index != nil {
+		_ = index.Close()
+		t.Error("an index was attached for an unusable datasets path")
+	}
+	if p.matcher.Has_local_search() {
+		t.Error("matcher has a local search source after a failed load")
+	}
+	snapshot := p.status.Snapshot()
+	if snapshot.State != imdb_datasets.State_error {
+		t.Errorf("tracker state = %v, want error", snapshot.State)
+	}
+	if snapshot.Message == "" {
+		t.Error("tracker carries no failure message")
 	}
 }
 

@@ -67,7 +67,7 @@ describe('offline IMDb datasets', () => {
 // /api/v1/scan/status always reports the most recent scan job.
 function wait_for_scan(attempts = 200) {
   return cy.request('/api/v1/scan/status').then((response) => {
-    if (response.body.job && response.body.job.running) {
+    if (response.body.job?.running) {
       if (attempts <= 0) throw new Error('scan never finished');
       return cy.wait(250).then(() => wait_for_scan(attempts - 1));
     }

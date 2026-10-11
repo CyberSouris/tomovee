@@ -28,6 +28,10 @@ jobs:
     - name: Install Cypress binary
       working-directory: internal/webui
       run: npx --no-install cypress install
+    # The real-binary smoke specs scan the committed testdata/media fixtures,
+    # which the daemon can only read with ffprobe on PATH.
+    - name: Install ffmpeg
+      run: sudo apt-get update && sudo apt-get install -y ffmpeg
     - name: Generate coverage report (unit tests + real-binary e2e specs)
       run: make coverage
     - name: Upload coverage to Codecov

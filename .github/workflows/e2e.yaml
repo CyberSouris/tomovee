@@ -32,6 +32,12 @@ jobs:
         working-directory: internal/webui
         run: npx --no-install cypress install
 
+      # The daemon reads the committed testdata/media fixtures with ffprobe, so
+      # the smoke specs need ffmpeg on PATH; without it the scan catalogs
+      # nothing and the media-dependent specs fail.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Build the daemon (embeds the SPA)
         run: go build -o bin/tomovee ./cmd/tomovee
 

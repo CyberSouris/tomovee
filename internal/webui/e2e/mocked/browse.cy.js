@@ -21,8 +21,15 @@ beforeEach(() => {
     body: { total: entries.length, count: entries.length, entries },
   }).as('catalog');
   cy.intercept('GET', '/api/v1/libraries', { body: [] }).as('libraries');
-  cy.intercept('GET', '/api/v1/categories', {
-    body: { genres: [{ name: 'Action', count: 1 }], unmatched: 1 },
+  cy.intercept('GET', '/api/v1/categories*', {
+    body: {
+      categories: [
+        { key: 'type:movie', name: 'Movies', kind: 'type', value: 'movie', count: 1, poster_url: '' },
+        { key: 'type:series', name: 'Series', kind: 'type', value: 'series', count: 1, poster_url: '' },
+        { key: 'genre:Action', name: 'Action', kind: 'genre', value: 'Action', count: 1, poster_url: '' },
+      ],
+      unmatched: 1,
+    },
   }).as('categories');
   cy.intercept('GET', '/api/v1/background', {
     body: { scan: null, match: null, datasets: null },
@@ -47,9 +54,27 @@ describe('browse page', () => {
     cy.contains('p', '2 titles');
   });
 
-  it('shows the unmatched chip count from the categories endpoint', () => {
+  it('shows category folders with counts and the unmatched chip', () => {
     cy.visit('/');
-    cy.contains('.chips button', 'Unmatched (1)');
-    cy.contains('.chips button', 'Action (1)');
+    cy.wait('@categories');
+    cy.contains('.folder', 'Movies');
+    cy.contains('.folder', 'Series');
+    cy.contains('.folder', 'Action');
+    cy.contains('.chip', 'Unmatched (1)');
+  });
+
+  it('intersects media type and genre when folders are combined', () => {
+    cy.visit('/');
+    cy.wait('@catalog');
+    cy.wait('@categories');
+    cy.contains('.folder', 'Action').click();
+    cy.wait('@catalog').its('request.url').should('include', 'genre=Action');
+    cy.contains('.folder', 'Movies').click();
+    cy.wait('@catalog')
+      .its('request.url')
+      .should('include', 'media_type=movie')
+      .and('include', 'genre=Action');
+    cy.contains('.pill', 'Action');
+    cy.contains('.pill', 'Movies');
   });
 });

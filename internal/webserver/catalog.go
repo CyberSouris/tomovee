@@ -135,32 +135,97 @@ type detail_response struct {
 	Versions []version_item `json:"versions"`
 }
 
+// category_item is one folder in the browse grid. Kind separates the two
+// artificial media-type folders (Movies, Series) from the genre folders, and
+// Value is what a click feeds back into the catalog filter: a media type for
+// "type", a genre name for "genre".
 type category_item struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
+	Key        string `json:"key"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Value      string `json:"value"`
+	Count      int    `json:"count"`
+	Poster_url string `json:"poster_url"`
 }
 
-// handle_categories returns the browse categories: one entry per genre among
-// matched titles with its count, plus the count of unmatched entries. The
-// frontend renders these as chips so the library can be browsed by tag.
+// latest_poster_url returns the poster URL of the most recently added entry
+// matching filter, or "" when nothing (with a poster) matches. Sort "added"
+// with Desc uses the entry's created_at, so "latest" means "added last".
+func (s *Server) latest_poster_url(ctx context.Context, filter database.Catalog_filter) string {
+	filter.Status = "matched"
+	filter.Has_poster = true
+	filter.Sort = "added"
+	filter.Desc = true
+	filter.Limit = 1
+	entries, err := s.store.List_catalog_entries(ctx, filter)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	return "/api/v1/posters/" + itoa(entries[0].Id)
+}
+
+// handle_categories returns the browse folders: the two artificial media-type
+// categories (Movies, Series) followed by one folder per genre. When filters
+// are provided, counts reflect the filtered subset (so "inside" only shows
+// relevant categories).
 func (s *Server) handle_categories(w http.ResponseWriter, r *http.Request) {
-	genres, err := s.store.Genre_counts(r.Context(), "matched")
+	ctx := r.Context()
+	filter := database.Catalog_filter{
+		Media_type: r.URL.Query().Get("media_type"),
+		Status:     r.URL.Query().Get("status"),
+		Search:     r.URL.Query().Get("q"),
+		Genres:     r.URL.Query()["genre"],
+		Library:    r.URL.Query().Get("library"),
+	}
+	if filter.Status == "" {
+		filter.Status = "matched"
+	}
+
+	categories := make([]category_item, 0)
+
+	for _, kind := range []struct{ name, value string }{{"Movies", "movie"}, {"Series", "series"}} {
+		// Once a media type is chosen, the other types are outside the subset,
+		// so they are not offered as categories to descend into.
+		if filter.Media_type != "" && filter.Media_type != kind.value {
+			continue
+		}
+		f := filter
+		f.Media_type = kind.value
+		count, err := s.store.Count_catalog_entries(ctx, f)
+		if err != nil {
+			s.internal_error(w, err, "count "+kind.value+" entries")
+			return
+		}
+		poster_f := f
+		poster_f.Has_poster = true
+		categories = append(categories, category_item{
+			Key: "type:" + kind.value, Name: kind.name, Kind: "type", Value: kind.value, Count: count,
+			Poster_url: s.latest_poster_url(ctx, poster_f),
+		})
+	}
+
+	genres, err := s.store.Genre_counts_for_filter(ctx, filter)
 	if err != nil {
 		s.internal_error(w, err, "load genre counts")
 		return
 	}
-	items := make([]category_item, 0, len(genres))
 	for _, genre := range genres {
-		items = append(items, category_item{Name: genre.Name, Count: genre.Count})
+		f := filter
+		f.Genres = append(f.Genres, genre.Name)
+		categories = append(categories, category_item{
+			Key: "genre:" + genre.Name, Name: genre.Name, Kind: "genre", Value: genre.Name, Count: genre.Count,
+			Poster_url: s.latest_poster_url(ctx, f),
+		})
 	}
-	unmatched, err := s.store.Count_catalog_entries(r.Context(), database.Catalog_filter{Status: "needs_lookup"})
+
+	unmatched, err := s.store.Count_catalog_entries(ctx, database.Catalog_filter{Status: "needs_lookup"})
 	if err != nil {
 		s.internal_error(w, err, "count unmatched entries")
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{
-		"genres":    items,
-		"unmatched": unmatched,
+		"categories": categories,
+		"unmatched":  unmatched,
 	})
 }
 
@@ -169,7 +234,7 @@ func (s *Server) handle_catalog_list(w http.ResponseWriter, r *http.Request) {
 		Media_type: r.URL.Query().Get("media_type"),
 		Status:     r.URL.Query().Get("status"),
 		Search:     r.URL.Query().Get("q"),
-		Genre:      r.URL.Query().Get("genre"),
+		Genres:     r.URL.Query()["genre"],
 		Year:       int_query(r, "year"),
 		Resolution: r.URL.Query().Get("resolution"),
 		Language:   r.URL.Query().Get("language"),

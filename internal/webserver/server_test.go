@@ -278,18 +278,108 @@ func Test_categories(t *testing.T) {
 		t.Fatalf("categories status = %d: %s", response.Code, response.Body)
 	}
 	body := decode[struct {
-		Genres    []category_item `json:"genres"`
-		Unmatched int             `json:"unmatched"`
+		Categories []category_item `json:"categories"`
+		Unmatched  int             `json:"unmatched"`
 	}](t, response)
 	if body.Unmatched != 1 {
 		t.Errorf("unmatched = %d, want 1", body.Unmatched)
 	}
-	if len(body.Genres) != 2 {
-		t.Fatalf("genres = %+v, want 2", body.Genres)
+	if len(body.Categories) != 4 {
+		t.Fatalf("categories = %+v, want 4", body.Categories)
 	}
-	if body.Genres[0].Name != "Action" || body.Genres[0].Count != 2 ||
-		body.Genres[1].Name != "Science Fiction" || body.Genres[1].Count != 1 {
-		t.Errorf("genres = %+v", body.Genres)
+	// The two artificial media-type folders come first, then the genres by
+	// descending count.
+	movies, series := body.Categories[0], body.Categories[1]
+	if movies.Kind != "type" || movies.Value != "movie" || movies.Name != "Movies" || movies.Count != 2 {
+		t.Errorf("movies folder = %+v", movies)
+	}
+	if series.Kind != "type" || series.Value != "series" || series.Name != "Series" || series.Count != 0 {
+		t.Errorf("series folder = %+v", series)
+	}
+	if action := body.Categories[2]; action.Kind != "genre" || action.Value != "Action" || action.Count != 2 {
+		t.Errorf("Action folder = %+v", action)
+	}
+	if sci := body.Categories[3]; sci.Kind != "genre" || sci.Value != "Science Fiction" || sci.Count != 1 {
+		t.Errorf("Science Fiction folder = %+v", sci)
+	}
+}
+
+// Test_catalog_multiple_genres_intersect pins that repeating the genre query
+// parameter narrows the list (AND) instead of widening it, which is what makes
+// entering a second browse category drill down.
+func Test_catalog_multiple_genres_intersect(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	for _, entry := range []database.Catalog_entry{
+		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
+	} {
+		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	response := do_request(t, server, http.MethodGet, "/api/v1/catalog?genre=Action&genre=Science+Fiction", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	body := decode[struct {
+		Total   int            `json:"total"`
+		Entries []catalog_item `json:"entries"`
+	}](t, response)
+	if body.Total != 1 || len(body.Entries) != 1 || body.Entries[0].Title != "Alien" {
+		t.Errorf("intersection = %+v, want only Alien", body)
+	}
+}
+
+// Test_categories_scoped_to_filter pins that the folder list is narrowed to the
+// current subset: once a media type is chosen the other type is no longer
+// offered, and only genres reachable inside the chosen genre remain.
+func Test_categories_scoped_to_filter(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+	for _, entry := range []database.Catalog_entry{
+		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
+		{Media_type: "movie", Title: "Up", Status: "matched", Genres: []string{"Comedy"}},
+		{Media_type: "series", Title: "Breaking Bad", Status: "matched", Genres: []string{"Drama"}},
+	} {
+		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	names := func(items []category_item) map[string]int {
+		counts := make(map[string]int, len(items))
+		for _, item := range items {
+			counts[item.Name] = item.Count
+		}
+		return counts
+	}
+
+	movie := decode[struct {
+		Categories []category_item `json:"categories"`
+	}](t, do_request(t, server, http.MethodGet, "/api/v1/categories?media_type=movie", ""))
+	if counts := names(movie.Categories); len(counts) != 4 || counts["Movies"] != 3 ||
+		counts["Action"] != 2 || counts["Comedy"] != 1 || counts["Science Fiction"] != 1 {
+		t.Errorf("inside Movies = %+v", counts)
+	}
+	if _, ok := names(movie.Categories)["Series"]; ok {
+		t.Errorf("Series should not be offered inside Movies: %+v", movie.Categories)
+	}
+
+	action := decode[struct {
+		Categories []category_item `json:"categories"`
+	}](t, do_request(t, server, http.MethodGet, "/api/v1/categories?genre=Action", ""))
+	counts := names(action.Categories)
+	if counts["Action"] != 2 || counts["Science Fiction"] != 1 {
+		t.Errorf("inside Action = %+v, want Action 2 and Science Fiction 1", counts)
+	}
+	if _, ok := counts["Comedy"]; ok {
+		t.Errorf("Comedy is not inside Action: %+v", counts)
+	}
+	if _, ok := counts["Drama"]; ok {
+		t.Errorf("Drama is not inside Action: %+v", counts)
 	}
 }
 

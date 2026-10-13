@@ -15,7 +15,13 @@ type Catalog_filter struct {
 	Statuses   []string
 	Search     string
 	Genre      string
-	Year       int
+	// Genres narrows to entries carrying every listed genre (an intersection),
+	// unlike the single Genre field which is kept for simpler callers.
+	Genres []string
+	Year   int
+	// Has_poster restricts to entries that have a poster path, so a caller
+	// building preview thumbnails never picks an entry with no artwork.
+	Has_poster bool
 	Resolution string
 	Language   string
 	Libraries  []string
@@ -297,6 +303,20 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 			WHERE ceg.catalog_entry_id = ce.id AND g.name = ?)`)
 		args = append(args, filter.Genre)
 	}
+	// One EXISTS per genre means an entry must carry all of them, so browsing
+	// into a second category intersects rather than widens the previous one.
+	for _, genre := range filter.Genres {
+		if genre == "" {
+			continue
+		}
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM catalog_entry_genre ceg JOIN genre g ON g.id = ceg.genre_id
+			WHERE ceg.catalog_entry_id = ce.id AND g.name = ?)`)
+		args = append(args, genre)
+	}
+	if filter.Has_poster {
+		clauses = append(clauses, "ce.poster_path IS NOT NULL AND ce.poster_path != ''")
+	}
 	if filter.Resolution != "" {
 		clauses = append(clauses, `EXISTS (
 			SELECT 1 FROM version v WHERE v.catalog_entry_id = ce.id AND v.resolution_label = ?)`)
@@ -463,4 +483,27 @@ func (s *Store) List_poster_refs(ctx context.Context) (map[int64]bool, error) {
 		refs[id] = true
 	}
 	return refs, rows.Err()
+}
+
+// Genre_counts_for_filter returns genre counts among entries matching filter.
+func (s *Store) Genre_counts_for_filter(ctx context.Context, filter Catalog_filter) ([]Genre_count, error) {
+	where, args := catalog_where(filter)
+	rows, err := s.db.db.QueryContext(ctx, `
+		SELECT g.name, COUNT(DISTINCT ce.id) FROM genre g
+		JOIN catalog_entry_genre ceg ON ceg.genre_id = g.id
+		JOIN catalog_entry ce ON ce.id = ceg.catalog_entry_id`+where+`
+		GROUP BY g.id ORDER BY COUNT(DISTINCT ce.id) DESC, g.name`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var genres []Genre_count
+	for rows.Next() {
+		var genre Genre_count
+		if err := rows.Scan(&genre.Name, &genre.Count); err != nil {
+			return nil, err
+		}
+		genres = append(genres, genre)
+	}
+	return genres, rows.Err()
 }

@@ -11,13 +11,12 @@
   let error = '';
 
   let q = '';
-  let media_type = '';
   let status = '';
   let sort = 'added';
 
-  let categories = { genres: [], unmatched: 0 };
-  let genre = '';
-  let category = 'all';
+  let categories = { categories: [], unmatched: 0 };
+  let selected_genres = [];
+  let selected_type = '';
   let libraries = [];
   let library = '';
 
@@ -29,18 +28,59 @@
     }
   }
 
+  // Categories are scoped to the current filter so that "entering" a folder
+  // only offers the categories still reachable inside that subset.
   async function load_categories() {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (selected_type) params.set('media_type', selected_type);
+    if (status) params.set('status', status);
+    for (const name of selected_genres) params.append('genre', name);
+    if (library) params.set('library', library);
+    const query = params.toString();
     try {
-      categories = await api_get('/api/v1/categories');
+      categories = await api_get('/api/v1/categories' + (query ? '?' + query : ''));
     } catch {
-      categories = { genres: [], unmatched: 0 };
+      categories = { categories: [], unmatched: 0 };
     }
   }
 
-  function pick_category(cat, genre_name = '') {
-    category = cat;
-    genre = genre_name;
-    status = cat === 'unmatched' ? 'needs_lookup' : cat === 'genre' ? 'matched' : '';
+  function is_selected(cat) {
+    return cat.kind === 'type' ? selected_type === cat.value : selected_genres.includes(cat.value);
+  }
+
+  // Clicking a type folder picks that single media type; clicking a genre folder
+  // toggles it, so a second genre intersects the current one instead of
+  // replacing it.
+  function toggle_category(cat) {
+    if (cat.kind === 'type') {
+      selected_type = selected_type === cat.value ? '' : cat.value;
+    } else if (selected_genres.includes(cat.value)) {
+      selected_genres = selected_genres.filter((name) => name !== cat.value);
+    } else {
+      selected_genres = [...selected_genres, cat.value];
+    }
+    load(true);
+  }
+
+  function remove_genre(name) {
+    selected_genres = selected_genres.filter((one) => one !== name);
+    load(true);
+  }
+
+  function remove_type() {
+    selected_type = '';
+    load(true);
+  }
+
+  function clear_categories() {
+    selected_genres = [];
+    selected_type = '';
+    load(true);
+  }
+
+  function toggle_unmatched() {
+    status = status === 'needs_lookup' ? '' : 'needs_lookup';
     load(true);
   }
 
@@ -50,9 +90,9 @@
     try {
       const params = new URLSearchParams();
       if (q) params.set('q', q);
-      if (media_type) params.set('media_type', media_type);
+      if (selected_type) params.set('media_type', selected_type);
       if (status) params.set('status', status);
-      if (genre) params.set('genre', genre);
+      for (const name of selected_genres) params.append('genre', name);
       if (library) params.set('library', library);
       if (sort) params.set('sort', sort);
       params.set('limit', String(PAGE));
@@ -67,6 +107,7 @@
     } finally {
       loading = false;
     }
+    if (reset) await load_categories();
   }
 
   function submit(event) {
@@ -77,45 +118,15 @@
   onMount(() => {
     load(true);
     load_libraries();
-    load_categories();
   });
 </script>
 
 <section>
-  <div class="chips" role="list" aria-label="Categories">
-    <button
-      class:active={category === 'all'}
-      on:click={() => pick_category('all')}
-    >All</button>
-    <button
-      class:active={category === 'unmatched'}
-      on:click={() => pick_category('unmatched')}
-    >Unmatched ({categories.unmatched})</button>
-    {#each categories.genres as g}
-      <button
-        class:active={category === 'genre' && genre === g.name}
-        on:click={() => pick_category('genre', g.name)}
-      >{g.name} ({g.count})</button>
-    {/each}
-  </div>
-
-  <form on:submit={submit}>
-    <input placeholder="Search title…" bind:value={q} />
-    <select bind:value={media_type}>
-      <option value="">All types</option>
-      <option value="movie">Movies</option>
-      <option value="series">Series</option>
-    </select>
-    <select bind:value={library}>
-      <option value="">All libraries</option>
-      {#each libraries as lib}
-        <option value={lib.name}>{lib.name}</option>
-      {/each}
-    </select>
-    <button type="submit" disabled={loading}>Search</button>
-  </form>
-
   <div class="toolbar">
+    <form on:submit={submit}>
+      <input placeholder="Search title…" bind:value={q} />
+      <button type="submit" disabled={loading}>Search</button>
+    </form>
     <label class="toolbar-field">
       <span class="muted">Library</span>
       <select bind:value={library} on:change={() => load(true)}>
@@ -143,6 +154,57 @@
         <option value="rating">Rating</option>
       </select>
     </label>
+    <button type="button" class="chip" class:active-chip={status === 'needs_lookup'} on:click={toggle_unmatched}>
+      Unmatched ({categories.unmatched})
+    </button>
+    {#if selected_genres.length || selected_type}
+      <button type="button" class="chip" on:click={clear_categories}>Clear categories</button>
+    {/if}
+  </div>
+
+  {#if selected_genres.length || selected_type}
+    <div class="selection">
+      <span class="muted">Filtered by</span>
+      {#if selected_type}
+        <button type="button" class="pill" on:click={remove_type}>
+          {selected_type === 'movie' ? 'Movies' : 'Series'} <span aria-hidden="true">×</span>
+        </button>
+      {/if}
+      {#each selected_genres as name (name)}
+        <button type="button" class="pill" on:click={() => remove_genre(name)}>
+          {name} <span aria-hidden="true">×</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  <h2 class="section-title">Categories</h2>
+  <div class="folders" role="list" aria-label="Categories">
+    {#each categories.categories as cat (cat.key)}
+      {#if cat.count > 0 && !is_selected(cat)}
+        <button
+          type="button"
+          class="folder"
+          on:click={() => toggle_category(cat)}
+        >
+          <span class="folder-stack" aria-hidden="true">
+            <span class="sheet sheet-1"></span>
+            <span class="sheet sheet-2"></span>
+            <span class="cover">
+              {#if cat.poster_url}
+                <img src={cat.poster_url} alt="" loading="lazy" />
+              {:else}
+                <span class="cover-fallback">{cat.name}</span>
+              {/if}
+            </span>
+          </span>
+          <span class="folder-label">
+            <strong>{cat.name}</strong>
+            <span class="muted">{cat.count}</span>
+          </span>
+        </button>
+      {/if}
+    {/each}
   </div>
 
   {#if error}
@@ -185,23 +247,120 @@
 </section>
 
 <style>
-  form {
-    display: flex;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    margin-bottom: 1rem;
+  .section-title {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 0.7rem;
   }
 
-  form input {
-    flex: 1;
-    min-width: 12rem;
+  .folders {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 1.4rem 1.1rem;
+    margin-bottom: 1.6rem;
+  }
+
+  .folder {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  /* The stack sits inset from the tile box so the two "papers" behind the
+     cover can peek out at the top-right corner without being clipped. */
+  .folder-stack {
+    position: relative;
+    display: block;
+    aspect-ratio: 2 / 3;
+    margin: 11px 11px 0 0;
+  }
+
+  .sheet {
+    position: absolute;
+    inset: 0;
+    border-radius: 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+  }
+
+  .sheet-1 {
+    transform: translate(10px, -10px) rotate(2.4deg);
+  }
+
+  .sheet-2 {
+    transform: translate(5px, -5px) rotate(1.2deg);
+  }
+
+  .cover {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  }
+
+  .cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .cover-fallback {
+    padding: 0.5rem;
+    text-align: center;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .folder:hover .cover {
+    border-color: var(--accent);
+  }
+
+  .folder-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  .folder-label strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .toolbar {
     display: flex;
     gap: 0.6rem;
     flex-wrap: wrap;
-    margin-bottom: 1rem;
+    align-items: center;
+    margin-bottom: 0.9rem;
+  }
+
+  .toolbar form {
+    display: flex;
+    gap: 0.6rem;
+    flex: 1 1 18rem;
+  }
+
+  .toolbar form input {
+    flex: 1;
+    min-width: 10rem;
   }
 
   .toolbar-field {
@@ -210,16 +369,9 @@
     gap: 0.4rem;
   }
 
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-bottom: 0.9rem;
-  }
-
-  .chips button {
+  .chip {
     font-size: 0.82rem;
-    padding: 0.3rem 0.75rem;
+    padding: 0.4rem 0.75rem;
     border-radius: 999px;
     background: var(--panel);
     border: 1px solid var(--border);
@@ -227,16 +379,34 @@
     cursor: pointer;
   }
 
-  .chips button:hover {
+  .chip:hover {
     border-color: var(--accent);
     color: var(--text);
   }
 
-  .chips button.active {
+  .chip.active-chip {
     background: var(--accent);
     border-color: var(--accent);
-    color: var(--text);
+    color: #fff;
     font-weight: 600;
+  }
+
+  .selection {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.9rem;
+  }
+
+  .pill {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    cursor: pointer;
   }
 
   .muted {
@@ -308,5 +478,9 @@
   .tag.warn {
     background: rgba(210, 153, 34, 0.2);
     color: var(--warn);
+  }
+
+  .more {
+    margin-top: 1rem;
   }
 </style>

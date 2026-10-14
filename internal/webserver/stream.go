@@ -96,7 +96,7 @@ func browser_unplayable_container(path string) bool {
 // -c copy remux would preserve e.g. AC3, which browsers cannot unmute). The
 // returned path is the resulting temporary file; the caller owns it and must
 // remove it when done.
-func remux_to_mp4(ctx context.Context, src string, audio []database.Audio_track) (string, error) {
+func remux_to_mp4(_ context.Context, src string, audio []database.Audio_track) (string, error) {
 	file, err := os.CreateTemp("", "tomovee-remux-*.mp4")
 	if err != nil {
 		return "", err

@@ -942,7 +942,7 @@ func Test_rematch_all_queues_behind_running_job(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	go func() {
-		_, _ = server.matches.Start(func(job_ctx context.Context, _ func(matching.Progress)) (*matching.Result, error) {
+		_, _ = server.matches.Start(func(_ context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 			close(started)
 			<-block
 			return &matching.Result{Total: 1}, nil
@@ -1220,7 +1220,7 @@ func Test_rematch_queues_behind_running_job(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	go func() {
-		_, _ = server.matches.Start(func(job_ctx context.Context, _ func(matching.Progress)) (*matching.Result, error) {
+		_, _ = server.matches.Start(func(_ context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 			close(started)
 			<-block
 			return &matching.Result{Total: 1}, nil

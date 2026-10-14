@@ -153,7 +153,7 @@ func Test_missing_api_key(t *testing.T) {
 }
 
 func Test_http_error(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"status_message":"not found"}`))
 	}))

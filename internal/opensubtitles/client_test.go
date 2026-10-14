@@ -71,7 +71,7 @@ func Test_search_by_hash(t *testing.T) {
 }
 
 func Test_search_by_hash_episode(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"total_pages":1,"total_count":1,"page":1,
 			"data":[
@@ -108,7 +108,7 @@ func Test_missing_api_key(t *testing.T) {
 }
 
 func Test_http_error(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"invalid api key"}`))
 	}))

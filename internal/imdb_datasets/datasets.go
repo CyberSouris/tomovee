@@ -185,7 +185,7 @@ func Parse_ratings(r io.Reader) ([]Rating, error) {
 
 // make_tsv_reader validates a TSV dataset header and returns the reader plus
 // its column index.
-func make_tsv_reader(r io.Reader, name string, required []string) (*csv.Reader, map[string]int, error) {
+func make_tsv_reader(r io.Reader, _ string, required []string) (*csv.Reader, map[string]int, error) {
 	reader := csv.NewReader(r)
 	reader.Comma = '\t'
 	reader.FieldsPerRecord = -1

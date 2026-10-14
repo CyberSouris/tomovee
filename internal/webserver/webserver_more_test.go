@@ -330,7 +330,7 @@ func Test_handle_reclassify_queues_behind_running_job(t *testing.T) {
 	id := unmatched_entry_with_version(t, store)
 	block := make(chan struct{})
 	started := make(chan struct{})
-	if _, err := server.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	if _, err := server.matches.Start(func(_ context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 		close(started)
 		<-block
 		return &matching.Result{}, nil
@@ -519,7 +519,7 @@ func Test_handle_scan_start_branches(t *testing.T) {
 	}
 
 	block := make(chan struct{})
-	if _, err := server.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+	if _, err := server.jobs.Start(func(_ context.Context, _ func(scan.Progress)) (*scan.Result, error) {
 		<-block
 		return &scan.Result{}, nil
 	}); err != nil {
@@ -548,7 +548,7 @@ func Test_handle_match_start_conflict(t *testing.T) {
 	server, _ := new_test_server(t)
 	block := make(chan struct{})
 	defer close(block)
-	if _, err := server.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	if _, err := server.matches.Start(func(_ context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 		<-block
 		return &matching.Result{}, nil
 	}); err != nil {
@@ -661,7 +661,7 @@ func Test_job_manager_subscribe_receives_progress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if _, run_err := server.jobs.Run_sync(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+	if _, run_err := server.jobs.Run_sync(func(_ context.Context, progress func(scan.Progress)) (*scan.Result, error) {
 		progress(scan.Progress{Phase: "file", Path: "/m/movie.mkv", Files_scanned: 1})
 		progress(scan.Progress{Phase: "done", Files_found: 1, Files_scanned: 1, New_files: 1})
 		return &scan.Result{Found: 1, New: 1}, nil
@@ -707,7 +707,7 @@ func Test_job_manager_subscribe_initializes_from_running_job(t *testing.T) {
 	started := make(chan struct{})
 	run_done := make(chan error, 1)
 	go func() {
-		_, err := server.jobs.Run_sync(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+		_, err := server.jobs.Run_sync(func(_ context.Context, progress func(scan.Progress)) (*scan.Result, error) {
 			close(started)
 			<-block
 			progress(scan.Progress{Phase: "done", Files_found: 1})
@@ -1173,7 +1173,7 @@ func Test_handle_version_split_waits_for_a_running_job(t *testing.T) {
 		t.Fatalf("save version: %v", err)
 	}
 	block := make(chan struct{})
-	if _, err := server.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	if _, err := server.matches.Start(func(_ context.Context, _ func(matching.Progress)) (*matching.Result, error) {
 		<-block
 		return &matching.Result{}, nil
 	}); err != nil {

@@ -42,7 +42,7 @@ func stream_test_server(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	for name, data := range datasets {
 		name, data := name, data
-		mux.HandleFunc("/"+name, func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/"+name, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/gzip")
 			_, _ = w.Write(data)
 		})

@@ -309,7 +309,7 @@ func (idx *Index) Episodes_titles(parent string) []Episode_title {
 // title equals the normalized query. Results are restricted to the requested
 // media type when want is Movie or Series. A non-zero year filters nothing on
 // its own; callers rank matches by year closeness.
-func (idx *Index) Search(query string, year int, want scanner.Media_type) []Result {
+func (idx *Index) Search(query string, _ int, want scanner.Media_type) []Result {
 	key := Normalize_title(query)
 	if key == "" || idx.db == nil {
 		return nil

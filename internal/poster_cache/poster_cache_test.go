@@ -96,7 +96,7 @@ func Test_prune_keeps_referenced(t *testing.T) {
 }
 
 func Test_ensure_rejects_non_200(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()

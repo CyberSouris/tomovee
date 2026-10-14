@@ -410,7 +410,7 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusAccepted, job_response_from(job))
 }
 
-func (s *Server) handle_scan_status(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
 	write_json(w, http.StatusOK, map[string]any{"job": job_response_from(s.jobs.Snapshot())})
 }
 
@@ -419,7 +419,7 @@ func (s *Server) handle_scan_status(w http.ResponseWriter, r *http.Request) {
 // background status and SSE feed. It returns scan.Err_scan_in_progress when
 // another scan is already running, so the watcher can skip its round instead
 // of colliding with a manual scan.
-func (s *Server) Watch_scan(ctx context.Context, names []string) (*scan.Result, error) {
+func (s *Server) Watch_scan(_ context.Context, names []string) (*scan.Result, error) {
 	if s.scanner == nil {
 		return nil, errors.New("scanner is not configured")
 	}
@@ -441,7 +441,7 @@ type background_status struct {
 	Datasets *imdb_datasets.Status `json:"datasets,omitempty"`
 }
 
-func (s *Server) handle_background_status(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request) {
 	datasets := (*imdb_datasets.Status)(nil)
 	if s.datasets != nil {
 		status := s.datasets.Snapshot()
@@ -682,7 +682,7 @@ func (s *Server) datasets_percent() int {
 	return s.datasets.Snapshot().Percent
 }
 
-func (s *Server) handle_match_status(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handle_match_status(w http.ResponseWriter, _ *http.Request) {
 	write_json(w, http.StatusOK, map[string]any{"job": match_job_response_from(s.matches.Snapshot())})
 }
 

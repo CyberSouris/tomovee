@@ -62,7 +62,7 @@ func Parse_from_json(path string, data []byte) (*File_info, error) {
 
 // Resolution_label maps a frame height to a human label such as "1080p".
 // Interlaced content (top/bottom-field-first) is marked with a trailing "i".
-func Resolution_label(width, height int, interlaced bool) string {
+func Resolution_label(_ int, height int, interlaced bool) string {
 	suffix := "p"
 	if interlaced {
 		suffix = "i"

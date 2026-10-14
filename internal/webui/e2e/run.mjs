@@ -22,18 +22,18 @@ const webui = path.resolve(here, '..'); // internal/webui
 const repo = path.resolve(here, '..', '..', '..'); // repository root
 const testdata = path.join(repo, 'testdata'); // committed sample files
 
-function fail(message) {
+const fail = (message) => {
   console.error(message);
   process.exit(1);
-}
+};
 
-function run(command, args, options = {}) {
+const run = (command, args, options = {}) => {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: 'inherit', ...options });
     child.on('error', reject);
     child.on('close', (code) => resolve(code ?? 1));
   });
-}
+};
 
 // spawn_server launches a long-lived server in its own process group so it can
 // be torn down together with any children it spawned. The vite CLI is spawned

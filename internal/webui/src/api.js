@@ -1,16 +1,16 @@
-export async function api_get(path) {
+export const api_get = async (path) => {
   const response = await fetch(path);
   return unwrap(response);
-}
+};
 
-export async function api_send(path, method, body) {
+export const api_send = async (path, method, body) => {
   const response = await fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   return unwrap(response);
-}
+};
 
 async function unwrap(response) {
   const text = await response.text();
@@ -21,9 +21,9 @@ async function unwrap(response) {
   return data;
 }
 
-export function poster_image(entry) {
+export const poster_image = (entry) => {
   return entry.poster_url || '';
-}
+};
 
 export function format_bytes(bytes) {
   if (!bytes) return '';

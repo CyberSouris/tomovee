@@ -79,7 +79,7 @@ func Extract(ctx context.Context, video_path string, duration_seconds float64, o
 	if err != nil {
 		return fmt.Errorf("%w (%s)", Err_no_ffmpeg, Ffmpeg_binary)
 	}
-	if err := os.MkdirAll(filepath.Dir(out_path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(out_path), 0o750); err != nil {
 		return err
 	}
 

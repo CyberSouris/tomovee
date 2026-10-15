@@ -332,19 +332,6 @@ func (p *pipeline) reload_sources(logger *slog.Logger, store *database.Store, cf
 // listen_address confines loopback-style listen hosts to a concrete loopback
 // address, so a config that asks to listen on the loopback never binds to
 // non-loopback interfaces (e.g. the name "localhost" resolving through a
-// custom resolver or VPN). Explicit all-interface ("", "0.0.0.0", "::") and
-// other concrete addresses are passed through unchanged.
-func listen_address(addr string) string {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	if strings.EqualFold(host, "localhost") {
-		return net.JoinHostPort("127.0.0.1", port)
-	}
-	return addr
-}
-
 func cmd_serve(args []string) error {
 	cfg, err := load_config(args)
 	if err != nil {
@@ -357,7 +344,7 @@ func cmd_serve(args []string) error {
 	}
 	defer db.Close()
 
-	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o750); err != nil {
 		return err
 	}
 

@@ -160,6 +160,11 @@ func Load(path string) (*Config, error) {
 	cfg := Defaults()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		// A missing config file is not an error: start from defaults. While we
+		// are here, seed an example file at that path so the available options
+		// are discoverable; every active entry is commented out, so the seeded
+		// file changes no behaviour.
+		write_example_config(path)
 		return cfg, nil
 	}
 	if err != nil {
@@ -218,9 +223,8 @@ func (c *Config) Validate() error {
 	if c.Listen == "" {
 		errs = append(errs, "listen must not be empty")
 	}
-	if len(c.Libraries) == 0 && !c.Watch_enabled {
-		errs = append(errs, "at least one library is required (or enable folder watching)")
-	}
+	// A library may be added later from the web UI, so the daemon is allowed to
+	// start without one. Libraries, when present, are still validated above.
 	if c.Scan.Min_file_size_mb < 0 {
 		errs = append(errs, "scan.min_file_size_mb must not be negative")
 	}
@@ -262,6 +266,72 @@ func normalize_path(path string) string {
 		return path
 	}
 	return abs
+}
+
+// example_config is the commented-out template seeded when no config file exists.
+// Every active setting is prefixed with "# " so the defaults still apply until
+// the user opts in by editing them.
+const example_config = `# Tomovee example configuration.
+# Created automatically when no config file is present; lines are commented
+# out so the built-in defaults apply until you uncomment and adjust them.
+
+# SQLite database file.
+#database_path: ~/.local/share/tomovee/tomovee.db
+
+# Directory where poster images are cached.
+#poster_cache_dir: ~/.local/share/tomovee/posters
+
+# HTTP listen address.
+#listen: 127.0.0.1:8080
+
+# Named media libraries scanned for files. At least one is usually wanted, but
+# the daemon also starts with none so libraries can be added from the web UI.
+#libraries:
+#  movies: ~/Media/Movies
+#  tv: ~/Media/TV
+
+# External API credentials. All are optional; matching degrades gracefully.
+#api:
+#  tmdb_key: ""
+#  opensubtitles_api_key: ""
+#  opensubtitles_username: ""
+#  opensubtitles_password: ""
+#  opensubtitles_user_agent: "Tomovee/0.1 by Cyber Souris"
+
+# Default for newly registered libraries' watching state, and master switch for
+# folder watching. Per-library toggles persist to the database and can be
+# changed from the web UI.
+#watch_enabled: false
+
+# Run a full background matching pass over the catalog at boot.
+#match_on_start: false
+
+# How video files are delivered to the browser.
+#stream:
+#  transcode: none
+
+# scan:
+#   quality_subdir_min_size: 2
+#   min_file_size_mb: 50
+
+# Optional path to a directory holding IMDb dataset exports.
+#imdb_datasets_path: ""
+
+# Minimum log verbosity: debug, info, warn, or error.
+#log_level: info
+`
+
+func write_example_config(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(example_config), 0o600)
 }
 
 func user_data_dir() string {

@@ -205,27 +205,17 @@ log_level: debug
 	}
 }
 
-func Test_validate_requires_library_or_watch(t *testing.T) {
+func Test_validate_allows_empty_libraries(t *testing.T) {
 	cfg := Defaults()
 	cfg.Libraries = nil
 	cfg.Watch_enabled = false
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error when no libraries and no watch")
-	}
-	if !strings.Contains(err.Error(), "library") {
-		t.Errorf("error should mention library, got: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error without libraries, got: %v", err)
 	}
 
 	cfg.Libraries = map[string]string{"movies": "/media/movies"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("no error expected with a library, got: %v", err)
-	}
-
-	cfg.Libraries = nil
-	cfg.Watch_enabled = true
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("no error expected with watch enabled, got: %v", err)
 	}
 }
 

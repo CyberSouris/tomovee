@@ -237,8 +237,8 @@ func Test_load_config_errors(t *testing.T) {
 		t.Error("invalid yaml accepted")
 	}
 	missing := filepath.Join(t.TempDir(), "nope.yaml")
-	if _, err := load_config([]string{"--config", missing}); err == nil {
-		t.Error("missing config with no libraries accepted")
+	if _, err := load_config([]string{"--config", missing}); err != nil {
+		t.Errorf("missing config should now be accepted, got: %v", err)
 	}
 }
 

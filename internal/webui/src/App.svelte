@@ -114,6 +114,7 @@
   // task that begins while another still runs is not missed).
   let dismissed = false;
   let dismissed_key = '';
+  let expanded = false;
   $: task_key = active_tasks
     .map((t) => t.name)
     .sort()
@@ -121,6 +122,10 @@
   $: if (task_key !== dismissed_key) {
     dismissed = false;
     dismissed_key = task_key;
+    expanded = false;
+  }
+  $: if (active_tasks.length <= 1) {
+    expanded = false;
   }
 
   function go_task(task) {
@@ -183,10 +188,38 @@
         <span class="notif-dot" aria-hidden="true"></span>
         <span class="notif-label">{active_label}</span>
         {#if extra_tasks > 0}
-          <span class="notif-more">+{extra_tasks}</span>
+          <span
+            class="notif-more"
+            role="button"
+            tabindex="0"
+            aria-label="Show all background tasks"
+            aria-expanded={expanded}
+            on:click|stopPropagation={() => (expanded = !expanded)}
+            on:keydown|stopPropagation={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                expanded = !expanded;
+              }
+            }}
+          >
+            +{extra_tasks}
+          </span>
         {/if}
         <span class="notif-percent">{active_percent}%</span>
       </button>
+      {#if expanded}
+        <ul class="notif-tasks">
+          {#each active_tasks as task (task.name)}
+            <li>
+              <button class="notif-task" on:click={() => { go_task(task); expanded = false; }}>
+                <span class="notif-dot" aria-hidden="true"></span>
+                <span class="notif-label">{task.label}</span>
+                <span class="notif-percent">{task.percent()}%</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
       <div class="notif-bar"><div class="notif-fill" style={`width: ${active_percent}%`}></div></div>
       <button class="notif-close" aria-label="Dismiss notification" title="Dismiss" on:click={() => (dismissed = true)}>
         ×
@@ -346,6 +379,34 @@
     margin: 0 0.9rem 0.75rem;
     border-radius: 2px;
     overflow: hidden;
+  }
+
+  .notif-tasks {
+    list-style: none;
+    margin: 0;
+    padding: 0 0.9rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .notif-task {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .notif-task:hover {
+    border-color: var(--accent);
   }
 
   .notif-fill {

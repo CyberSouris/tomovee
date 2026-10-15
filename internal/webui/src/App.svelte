@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { api_get } from './api.js';
+  import { api_get, api_send } from './api.js';
   import logo from './assets/logo.png';
   import Browse from './routes/Browse.svelte';
   import Detail from './routes/Detail.svelte';
@@ -221,7 +221,7 @@
         </ul>
       {/if}
       <div class="notif-bar"><div class="notif-fill" style={`width: ${active_percent}%`}></div></div>
-      <button class="notif-close" aria-label="Dismiss notification" title="Dismiss" on:click={() => (dismissed = true)}>
+      <button class="notif-close" aria-label="Stop and dismiss" title="Stop and dismiss" on:click={() => { api_send('/api/v1/background/cancel', 'POST', {}).catch(() => {}); dismissed = true; }}>
         ×
       </button>
     </div>

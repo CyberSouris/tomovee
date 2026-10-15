@@ -1,6 +1,7 @@
 package imdb_datasets
 
 import (
+	"context"
 	"sync"
 )
 
@@ -45,6 +46,7 @@ type Tracker struct {
 	current   int64 // total source bytes of the dataset being imported
 	message   string
 	has_path  bool
+	cancel    context.CancelFunc
 }
 
 // New_tracker creates a Tracker in the idle state.
@@ -111,6 +113,24 @@ func (t *Tracker) Set_has_path(has bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.has_path = has
+}
+
+// Set_cancel stores the cancel function for an in-flight build, if any. Passing
+// nil clears it.
+func (t *Tracker) Set_cancel(cancel context.CancelFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancel = cancel
+}
+
+// Cancel cancels an in-flight build, if one is running.
+func (t *Tracker) Cancel() {
+	t.mu.Lock()
+	cancel := t.cancel
+	t.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // Snapshot returns a thread-safe copy of the tracker's current status.

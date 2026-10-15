@@ -7,6 +7,7 @@ package imdb_datasets
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -238,10 +239,26 @@ func Open(path string, logs *slog.Logger) (*Index, error) {
 // nil to keep the plain behaviour. Because building a fresh index can take a
 // long time, callers that must serve immediately should run this in the
 // background and report it to the user.
+// Open_with_progress is Open, additionally reporting index build events (importing
+// datasets, rows processed) through on_progress. on_progress may be nil. It uses
+// context.Background() and is therefore not cancellable; see
+// Open_with_progress_context for a cancellable variant.
 func Open_with_progress(path string, logs *slog.Logger, on_progress func(Build_progress)) (*Index, error) {
+	return Open_with_progress_context(context.Background(), path, logs, on_progress)
+}
+
+// Open_with_progress_context is Open_with_progress with a caller-supplied
+// context, so an in-flight build can be cancelled. A cancelled build returns
+// ctx.Err() (and the resulting index, if any, should be discarded).
+func Open_with_progress_context(ctx context.Context, path string, logs *slog.Logger, on_progress func(Build_progress)) (*Index, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("imdb_datasets: stat %s: %w", path, err)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 	dir := path
 	if !info.IsDir() {
@@ -266,9 +283,6 @@ func Open_with_progress(path string, logs *slog.Logger, on_progress func(Build_p
 				on_progress(Build_progress{Step: Build_ready})
 			}
 		} else if index_reusable(db_path) {
-			// No export files are present (the index was built by streaming the
-			// exports straight from the network and the originals never saved),
-			// but a current index exists, so reuse it.
 			if on_progress != nil {
 				on_progress(Build_progress{Step: Build_reuse})
 			}

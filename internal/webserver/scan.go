@@ -246,6 +246,36 @@ func (jm *job_manager[R, T]) next_pending_locked() *pending_run[R, T] {
 	return next
 }
 
+// HTTP cancel handlers. They ask the relevant job manager(s) to stop the
+// running work; the response is returned immediately, and clients poll the
+// status/stream endpoints to observe completion.
+
+func (s *Server) handle_scan_cancel(w http.ResponseWriter, r *http.Request) {
+	s.jobs.Cancel()
+	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+func (s *Server) handle_match_cancel(w http.ResponseWriter, r *http.Request) {
+	s.matches.Cancel()
+	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+func (s *Server) handle_datasets_cancel(w http.ResponseWriter, r *http.Request) {
+	if s.datasets != nil {
+		s.datasets.Cancel()
+	}
+	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+func (s *Server) handle_background_cancel(w http.ResponseWriter, r *http.Request) {
+	s.jobs.Cancel()
+	s.matches.Cancel()
+	if s.datasets != nil {
+		s.datasets.Cancel()
+	}
+	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
 // Cancel requests cancellation of the running job, if any.
 func (jm *job_manager[R, T]) Cancel() {
 	jm.mu.Lock()

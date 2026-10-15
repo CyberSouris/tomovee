@@ -66,9 +66,9 @@ func Test_settings_override_persisted_and_read_back(t *testing.T) {
 	}
 
 	// Clearing a key to "" removes the credential and marks it unconfigured.
-	clear := do_request(t, server, http.MethodPut, "/api/v1/settings",
+	clearResp := do_request(t, server, http.MethodPut, "/api/v1/settings",
 		`{"tmdb_key":""}`)
-	cleared := decode[settings_response](t, clear)
+	cleared := decode[settings_response](t, clearResp)
 	if cleared.Tmdb_key != "" || cleared.Tmdb_configured {
 		t.Fatalf("expected tmdb cleared/unconfigured: %+v", cleared)
 	}

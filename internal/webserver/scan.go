@@ -267,8 +267,8 @@ func (jm *job_manager[R, T]) snapshot_locked() *job[R, T] {
 	if jm.job == nil {
 		return nil
 	}
-	copy := *jm.job
-	return &copy
+	jobCopy := *jm.job
+	return &jobCopy
 }
 
 // Subscribe registers a progress channel and returns it with an unsubscribe

@@ -95,7 +95,7 @@ func (c *Cache) Ensure(ctx context.Context, entry_id int64, poster_path string) 
 		return "", err
 	}
 	target := c.base_url + "/" + c.size + poster_path
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
 	if err != nil {
 		return "", err
 	}

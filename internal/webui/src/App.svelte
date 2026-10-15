@@ -133,6 +133,20 @@
     window.location.hash = '#' + task.page;
   }
 
+  async function cancel_task(name) {
+    const path =
+      name === 'scan'
+        ? '/api/v1/scan/cancel'
+        : name === 'match'
+        ? '/api/v1/match/cancel'
+        : '/api/v1/datasets/cancel';
+    try {
+      await api_send(path, 'POST', {});
+    } catch {
+      // ignore; the status poll will reconcile state
+    }
+  }
+
   function go_notice(notice) {
     window.location.hash = '#' + notice.page;
   }
@@ -210,11 +224,19 @@
       {#if expanded}
         <ul class="notif-tasks">
           {#each active_tasks as task (task.name)}
-            <li>
+            <li class="notif-task-row">
               <button class="notif-task" on:click={() => { go_task(task); expanded = false; }}>
                 <span class="notif-dot" aria-hidden="true"></span>
                 <span class="notif-label">{task.label}</span>
                 <span class="notif-percent">{task.percent()}%</span>
+              </button>
+              <button
+                class="notif-task-close"
+                aria-label={`Stop ${task.name}`}
+                title="Stop"
+                on:click|stopPropagation={() => cancel_task(task.name)}
+              >
+                &times;
               </button>
             </li>
           {/each}
@@ -390,11 +412,17 @@
     gap: 0.25rem;
   }
 
+  .notif-task-row {
+    display: flex;
+    gap: 0.35rem;
+    align-items: stretch;
+  }
+
   .notif-task {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    width: 100%;
+    flex: 1 1 auto;
     background: var(--panel-2);
     color: var(--text);
     border: 1px solid var(--border);
@@ -403,6 +431,23 @@
     font-size: 0.82rem;
     text-align: left;
     cursor: pointer;
+  }
+
+  .notif-task-close {
+    flex: 0 0 auto;
+    background: var(--panel-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.35rem 0.55rem;
+    font-size: 1.05rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .notif-task-close:hover {
+    color: var(--text);
+    border-color: #b00020;
   }
 
   .notif-task:hover {

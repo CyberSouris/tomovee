@@ -21,7 +21,7 @@ func (f *fake_source) Search_movie(context.Context, string, int) ([]tmdb.Movie_s
 	return []tmdb.Movie_search_result{{Id: 1, Title: "Result"}}, nil
 }
 
-func (f *fake_source) Search_tv(context.Context, string, int) ([]tmdb.Tv_search_result, error) {
+func (*fake_source) Search_tv(context.Context, string, int) ([]tmdb.Tv_search_result, error) {
 	return nil, nil
 }
 
@@ -30,11 +30,11 @@ func (f *fake_source) Movie_details(_ context.Context, id int) (*tmdb.Movie_deta
 	return &tmdb.Movie_details{Id: id, Title: "Movie"}, nil
 }
 
-func (f *fake_source) Tv_details(context.Context, int) (*tmdb.Tv_details, error) {
+func (*fake_source) Tv_details(context.Context, int) (*tmdb.Tv_details, error) {
 	return &tmdb.Tv_details{}, nil
 }
 
-func (f *fake_source) Find_by_imdb(context.Context, string) (*tmdb.Find_result, error) {
+func (*fake_source) Find_by_imdb(context.Context, string) (*tmdb.Find_result, error) {
 	return &tmdb.Find_result{}, nil
 }
 

@@ -19,7 +19,7 @@ type recording_source struct {
 	detail_err      error
 }
 
-func (f *recording_source) Search_movie(context.Context, string, int) ([]tmdb.Movie_search_result, error) {
+func (*recording_source) Search_movie(context.Context, string, int) ([]tmdb.Movie_search_result, error) {
 	return nil, nil
 }
 

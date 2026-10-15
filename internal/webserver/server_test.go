@@ -57,7 +57,7 @@ func (f fake_metadata) Tv_details(_ context.Context, id int) (*tmdb.Tv_details, 
 	return &tmdb.Tv_details{}, nil
 }
 
-func (f fake_metadata) Find_by_imdb(context.Context, string) (*tmdb.Find_result, error) {
+func (fake_metadata) Find_by_imdb(context.Context, string) (*tmdb.Find_result, error) {
 	return &tmdb.Find_result{}, nil
 }
 
@@ -87,7 +87,7 @@ func (f fake_local) Search_local(_ context.Context, query string, _ int, _ scann
 	return hits, nil
 }
 
-func (f fake_local) Search(_ context.Context, _ string, _ int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
+func (fake_local) Search(_ context.Context, _ string, _ int, _ scanner.Media_type) ([]matcher.Offline_candidate, error) {
 	return nil, nil
 }
 

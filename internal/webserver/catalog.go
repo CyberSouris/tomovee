@@ -307,7 +307,7 @@ func (s *Server) handle_unmatched(w http.ResponseWriter, r *http.Request) {
 // persisted candidate shortlist are listed before the rest, making the picks
 // that need human attention easy to spot. The reorder is stable so each group
 // keeps its original added-first order.
-func (s *Server) candidates_first(items []catalog_item) {
+func (*Server) candidates_first(items []catalog_item) {
 	has, rest := make([]catalog_item, 0, len(items)), make([]catalog_item, 0, len(items))
 	for _, item := range items {
 		if len(item.Candidates) > 0 {

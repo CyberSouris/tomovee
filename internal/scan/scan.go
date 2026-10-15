@@ -204,7 +204,7 @@ func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
 // recognized already carry their Series_root; any movie below such a folder is
 // reclassified as a series member (given that folder as its root, so it groups
 // by the folder title) and its version attaches directly to the show.
-func (s *Scanner) group_series_files(files []scanner.Found_file) {
+func (*Scanner) group_series_files(files []scanner.Found_file) {
 	roots := make([]string, 0, 8)
 	for _, file := range files {
 		if file.Media_type == scanner.Series && file.Series_root != "" && !contains_root(roots, file.Series_root) {

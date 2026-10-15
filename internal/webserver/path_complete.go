@@ -11,7 +11,7 @@ import (
 // handle_path_complete suggests local directories that match a typed prefix,
 // so the settings page can autocomplete library paths. An empty query lists
 // the root; an unterminated segment filters its parent's subdirectories.
-func (s *Server) handle_path_complete(w http.ResponseWriter, r *http.Request) {
+func (*Server) handle_path_complete(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		query = "/"

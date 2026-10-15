@@ -92,7 +92,7 @@ func stream_exports(client *http.Client, ctx context.Context, base string, stems
 // byte counter to the raw compressed body so its count tracks the compressed
 // size, and returns a decompressed reader plus the advertised content length.
 func open_stream_export(client *http.Client, ctx context.Context, base, stem string, counter *byte_counter) (io.ReadCloser, int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+stem+".tsv.gz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+stem+".tsv.gz", http.NoBody)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -114,11 +114,11 @@ func Test_path_id_rejects_bad_ids(t *testing.T) {
 }
 
 func Test_int_query_and_itoa(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/x?limit=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/x?limit=10", http.NoBody)
 	if got := int_query(req, "limit"); got != 10 {
 		t.Errorf("int_query(limit) = %d, want 10", got)
 	}
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/x?limit=abc", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/x?limit=abc", http.NoBody)
 	if got := int_query(req, "limit"); got != 0 {
 		t.Errorf("int_query(bad limit) = %d, want 0", got)
 	}
@@ -203,7 +203,7 @@ func Test_handle_library_delete_empty_name(t *testing.T) {
 	server, _ := new_test_server(t)
 	// The routed pattern never yields an empty name, so exercise the guard
 	// directly.
-	request := httptest.NewRequest(http.MethodDelete, "/api/v1/libraries/", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/libraries/", http.NoBody)
 	request.SetPathValue("name", "")
 	rec := httptest.NewRecorder()
 	server.handle_library_delete(rec, request)
@@ -588,7 +588,7 @@ func Test_matching_unavailable_message_branches(t *testing.T) {
 func Test_handle_scan_stream_ends_on_cancel(t *testing.T) {
 	server, _ := new_test_server(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/scan/stream", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/scan/stream", http.NoBody).WithContext(ctx)
 	recorder := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -616,7 +616,7 @@ func Test_handle_scan_stream_ends_on_cancel(t *testing.T) {
 func Test_handle_match_stream_ends_on_cancel(t *testing.T) {
 	server, _ := new_test_server(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/match/stream", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/match/stream", http.NoBody).WithContext(ctx)
 	recorder := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {

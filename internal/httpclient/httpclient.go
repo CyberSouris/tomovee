@@ -83,7 +83,7 @@ func (c *Client) Get_json(ctx context.Context, url string, headers map[string]st
 			return err
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 		if err != nil {
 			return err
 		}

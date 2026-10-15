@@ -85,7 +85,7 @@ func stream_fixture(t *testing.T) (*Server, int64) {
 }
 
 func media_request(server *Server, method, target string, headers map[string]string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, target, nil)
+	request := httptest.NewRequest(method, target, http.NoBody)
 	for key, value := range headers {
 		request.Header.Set(key, value)
 	}

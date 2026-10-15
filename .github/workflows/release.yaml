@@ -52,9 +52,14 @@ jobs:
       - name: Build binary
         env:
           CGO_ENABLED: "0"
+          GOOS: "linux"
+          GOARCH: "${{ matrix.goarch }}"
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
             -o dist/tomovee ./cmd/tomovee
+
+      - name: Check binary architecture
+        run: file dist/tomovee
 
       - name: Stage tarball
         run: |

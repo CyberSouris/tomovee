@@ -257,21 +257,16 @@ func lookup_name(entry database.Catalog_entry, version database.Version) (name s
 // episodes when the entry groups them.
 func (m *Matching) largest_version(ctx context.Context, entry database.Catalog_entry) (database.Version, bool, error) {
 	if entry.Media_type == "series" {
-		episodes, err := m.store.List_episodes(ctx, entry.Id)
+		// One query instead of one per episode; versions come back ordered by
+		// descending size, so the first one is the largest.
+		versions, err := m.store.List_versions_for_series_entry(ctx, entry.Id)
 		if err != nil {
 			return database.Version{}, false, err
 		}
-		var best database.Version
-		for _, episode := range episodes {
-			versions, err := m.store.List_versions_for_episode(ctx, episode.Id)
-			if err != nil {
-				return database.Version{}, false, err
-			}
-			if len(versions) > 0 && versions[0].Size_bytes >= best.Size_bytes {
-				best = versions[0]
-			}
+		if len(versions) == 0 {
+			return database.Version{}, false, nil
 		}
-		return best, best.File_path != "", nil
+		return versions[0], true, nil
 	}
 	versions, err := m.store.List_versions_for_entry(ctx, entry.Id)
 	if err != nil {

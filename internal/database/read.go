@@ -171,6 +171,15 @@ func (s *Store) List_versions_for_episode(ctx context.Context, episode_id int64)
 	return s.list_versions(ctx, "v.episode_id = ?", episode_id)
 }
 
+// List_versions_for_series_entry returns every version owned by a series entry,
+// whether attached directly to the entry or to one of its episodes, ordered by
+// descending file size. It collapses the per-episode lookups that largest_version
+// and other series walks previously issued (one query per episode) into a single
+// pass.
+func (s *Store) List_versions_for_series_entry(ctx context.Context, catalog_entry_id int64) ([]Version, error) {
+	return s.list_versions(ctx, "v.catalog_entry_id = ? OR v.episode_id IN (SELECT id FROM episode WHERE catalog_entry_id = ?)", catalog_entry_id, catalog_entry_id)
+}
+
 // Get_version returns a single version row by id, or nil when it does not
 // exist.
 func (s *Store) Get_version(ctx context.Context, id int64) (*Version, error) {
@@ -184,8 +193,8 @@ func (s *Store) Get_version(ctx context.Context, id int64) (*Version, error) {
 	return version, nil
 }
 
-func (s *Store) list_versions(ctx context.Context, where string, arg any) ([]Version, error) {
-	rows, err := s.db.db.QueryContext(ctx, version_columns+" WHERE "+where+" ORDER BY v.size_bytes DESC", arg)
+func (s *Store) list_versions(ctx context.Context, where string, args ...any) ([]Version, error) {
+	rows, err := s.db.db.QueryContext(ctx, version_columns+" WHERE "+where+" ORDER BY v.size_bytes DESC", args...)
 	if err != nil {
 		return nil, err
 	}

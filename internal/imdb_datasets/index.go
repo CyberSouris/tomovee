@@ -314,15 +314,33 @@ func (idx *Index) Search(query string, _ int, want scanner.Media_type) []Result 
 	if key == "" || idx.db == nil {
 		return nil
 	}
+	// Split the predicates into separate index-backed lookups joined with
+	// UNION ALL. A single WHERE with ORs forces a full scan of the title
+	// table for large datasets; each arm below uses its own index (pri_key,
+	// orig_key, and title_aka.key) so the lookup stays an index seek. Result
+	// de-duplication happens in Go below, so duplicates across arms are fine.
 	rows, err := idx.db.Query(`
-		SELECT DISTINCT t.id, t.title_type, t.primary_title, t.original_title,
+		SELECT t.id, t.title_type, t.primary_title, t.original_title,
 		       t.start_year, t.end_year, t.runtime_minutes, t.genres,
 		       COALESCE(r.average_rating, 0), COALESCE(r.num_votes, 0)
 		FROM title t
 		LEFT JOIN title_rating r ON r.id = t.id
 		WHERE t.pri_key = ?
-		   OR (t.orig_key IS NOT NULL AND t.orig_key = ?)
-		   OR EXISTS (SELECT 1 FROM title_aka a WHERE a.title_id = t.id AND a.key = ?)`,
+		UNION ALL
+		SELECT t.id, t.title_type, t.primary_title, t.original_title,
+		       t.start_year, t.end_year, t.runtime_minutes, t.genres,
+		       COALESCE(r.average_rating, 0), COALESCE(r.num_votes, 0)
+		FROM title t
+		LEFT JOIN title_rating r ON r.id = t.id
+		WHERE t.orig_key = ?
+		UNION ALL
+		SELECT t.id, t.title_type, t.primary_title, t.original_title,
+		       t.start_year, t.end_year, t.runtime_minutes, t.genres,
+		       COALESCE(r.average_rating, 0), COALESCE(r.num_votes, 0)
+		FROM title t
+		JOIN title_aka a ON a.title_id = t.id
+		LEFT JOIN title_rating r ON r.id = t.id
+		WHERE a.key = ?`,
 		key, key, key)
 	if err != nil {
 		return nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/cybersouris/tomovee/internal/opensubtitles"
@@ -519,7 +520,9 @@ func merge_candidates(existing, extra []Candidate) []Candidate {
 }
 
 func candidate_key(c Candidate) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%d", c.Source, c.Tmdb_id, c.Imdb_id, c.Title, c.Year)
+	// strconv.Itoa avoids the reflection/boxing of fmt.Sprintf for primitive
+	// fields, which matters when many candidates are merged.
+	return c.Source + "|" + strconv.Itoa(c.Tmdb_id) + "|" + c.Imdb_id + "|" + c.Title + "|" + strconv.Itoa(c.Year)
 }
 
 // Enrich_by_tmdb builds a matched result for a specific TMDB id and media type.

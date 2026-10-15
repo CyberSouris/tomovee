@@ -39,7 +39,10 @@ func similarity(a, b string) float64 {
 	if ratio < 0 {
 		ratio = 0
 	}
-	if suffix_submatch(a, b) {
+	// Normalized token slices are computed once here and reused for the suffix
+	// check instead of normalizing (and splitting) both titles a second time.
+	at, bt := strings.Fields(an), strings.Fields(bn)
+	if suffix_tokens(at, bt) || suffix_tokens(bt, at) {
 		ratio = max(ratio, 0.85)
 	}
 	return ratio

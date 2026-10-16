@@ -71,6 +71,24 @@ scan:
 	}
 }
 
+func Test_load_missing_file_creates_example_config(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "config.yaml")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load missing: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected default config")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("example config was not created: %v", err)
+	}
+	if !strings.Contains(string(data), "#database_path:") {
+		t.Errorf("example config missing commented database_path")
+	}
+}
+
 func Test_load_missing_file_returns_defaults(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil {

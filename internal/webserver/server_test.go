@@ -814,6 +814,67 @@ func Test_scan_job_runs(t *testing.T) {
 	t.Fatal("scan job did not finish in time")
 }
 
+func Test_parallel_scan_exposes_one_job_per_library(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	if err := store.Upsert_library(ctx, "lib1", dir1, true); err != nil {
+		t.Fatalf("upsert lib1: %v", err)
+	}
+	if err := store.Upsert_library(ctx, "lib2", dir2, true); err != nil {
+		t.Fatalf("upsert lib2: %v", err)
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1","lib2"]}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+
+	started := decode[struct {
+		Job  *job_response   `json:"job"`
+		Jobs []*job_response `json:"jobs"`
+		Scans []*job_response `json:"scans"`
+	}](t, start)
+	if len(started.Jobs) != 2 {
+		t.Fatalf("started jobs = %d, want 2", len(started.Jobs))
+	}
+	if started.Job == nil {
+		t.Fatal("started response has no primary job")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/scan/status", "")
+		status_body := decode[struct {
+			Scans []*job_response `json:"scans"`
+		}](t, status)
+		if len(status_body.Scans) != 2 {
+			t.Fatalf("status scans = %d, want 2", len(status_body.Scans))
+		}
+		done := true
+		for _, job := range status_body.Scans {
+			if job == nil || job.Running {
+				done = false
+				break
+			}
+		}
+		if done {
+			background := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+			bg := decode[struct {
+				Scans []*job_response `json:"scans"`
+			}](t, background)
+			if len(bg.Scans) < 2 {
+				t.Fatalf("background scans = %d, want at least 2", len(bg.Scans))
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("parallel scan did not finish in time")
+}
+
 func unmatched_entry_with_version(t *testing.T, store *database.Store) int64 {
 	t.Helper()
 	ctx := context.Background()

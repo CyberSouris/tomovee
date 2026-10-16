@@ -10,7 +10,7 @@ import (
 
 func write_file(t *testing.T, path string, size int) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {

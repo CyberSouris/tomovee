@@ -10,7 +10,7 @@ func Test_handle_path_complete_lists_matching_directories(t *testing.T) {
 	server, _ := new_test_server(t)
 	root := t.TempDir()
 	sub := filepath.Join(root, "Movies")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "readme.txt"), []byte("x"), 0o644); err != nil {

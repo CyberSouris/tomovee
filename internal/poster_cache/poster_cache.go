@@ -91,7 +91,7 @@ func (c *Cache) Ensure(ctx context.Context, entry_id int64, poster_path string) 
 	if info, err := os.Stat(local); err == nil && !info.IsDir() {
 		return local, nil
 	}
-	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+	if err := os.MkdirAll(c.dir, 0o750); err != nil {
 		return "", err
 	}
 	target := c.base_url + "/" + c.size + poster_path

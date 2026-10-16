@@ -325,7 +325,7 @@ func write_example_config(path string) {
 	if strings.TrimSpace(path) == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return
 	}
 	if _, err := os.Stat(path); err == nil {

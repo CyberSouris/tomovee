@@ -61,7 +61,7 @@ func write_file(t *testing.T, dir, name string, size int) string {
 
 func mkdir_all(t *testing.T, dir, sub string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, sub), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", sub, err)
 	}
 }
@@ -537,7 +537,7 @@ func Test_ensure_frame_poster_prefers_existing_art_and_never_fails_the_scan(t *t
 	// A frame that is already on disk is claimed, not re-extracted.
 	seeded := new_entry("Seeded", "")
 	seeded_file := thumbnail.Local_path(poster_dir, seeded)
-	if err := os.MkdirAll(filepath.Dir(seeded_file), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(seeded_file), 0o750); err != nil {
 		t.Fatalf("mkdir poster dir: %v", err)
 	}
 	if err := os.WriteFile(seeded_file, []byte("fake-jpeg"), 0o644); err != nil {

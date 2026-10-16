@@ -371,7 +371,7 @@ func cmd_serve(args []string) error {
 	}
 	defer db.Close()
 
-	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o750); err != nil {
 		return err
 	}
 

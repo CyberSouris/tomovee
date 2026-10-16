@@ -315,7 +315,7 @@ func (s *Server) handle_datasets_start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Imdb_datasets_path = dir
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		s.internal_error(w, err, "create datasets directory")
 		return
 	}

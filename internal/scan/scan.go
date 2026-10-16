@@ -70,6 +70,7 @@ type Scanner struct {
 	opts  Options
 
 	run_mu sync.Mutex
+	lib_mu map[string]*sync.Mutex
 
 	ffmpeg_warn sync.Once
 
@@ -101,26 +102,73 @@ func (s *Scanner) Run(ctx context.Context) (*Result, error) {
 	return s.Run_libraries(ctx, nil, s.opts.Progress)
 }
 
+// acquire_library_locks returns per-library mutexes for the given names, so
+// distinct libraries can be scanned concurrently while two scans of the same
+// library still serialize.
+func (s *Scanner) acquire_library_locks(names []string) []*sync.Mutex {
+	locks := make([]*sync.Mutex, 0, len(names))
+	s.run_mu.Lock()
+	if s.lib_mu == nil {
+		s.lib_mu = make(map[string]*sync.Mutex)
+	}
+	for _, name := range names {
+		if _, ok := s.lib_mu[name]; !ok {
+			s.lib_mu[name] = &sync.Mutex{}
+		}
+	}
+	s.run_mu.Unlock()
+	for _, name := range names {
+		s.run_mu.Lock()
+		lock := s.lib_mu[name]
+		s.run_mu.Unlock()
+		locks = append(locks, lock)
+	}
+	return locks
+}
+
 // Run_libraries runs a scan. When names is non-empty only those libraries are
 // scanned (used by the web UI's per-library refresh and folder watching);
 // otherwise every registered library is scanned. The progress callback applies
 // to this invocation only. Scans are serialized: a call blocks until any
 // in-flight scan on this Scanner finishes.
 func (s *Scanner) Run_libraries(ctx context.Context, names []string, progress func(Progress)) (*Result, error) {
-	s.run_mu.Lock()
-	defer s.run_mu.Unlock()
-
-	previous_progress := s.opts.Progress
-	if progress != nil {
-		s.opts.Progress = progress
+	// Resolve the requested library names first so per-library locks can be
+	// acquired without holding the map lock during a (possibly long) scan.
+	libraries, err := s.store.List_libraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries: %w", err)
+	}
+	if len(names) > 0 {
+		selected := make(map[string]bool, len(names))
+		for _, name := range names {
+			selected[name] = true
+		}
+		filtered := libraries[:0]
+		for _, library := range libraries {
+			if selected[library.Name] {
+				filtered = append(filtered, library)
+			}
+		}
+		libraries = filtered
+	}
+	lock_names := make([]string, 0, len(libraries))
+	for _, library := range libraries {
+		lock_names = append(lock_names, library.Name)
+	}
+	locks := s.acquire_library_locks(lock_names)
+	for _, lock := range locks {
+		lock.Lock()
 	}
 	defer func() {
-		s.opts.Progress = previous_progress
+		for _, lock := range locks {
+			lock.Unlock()
+		}
 	}()
-	return s.run(ctx, names)
+
+	return s.run(ctx, names, progress)
 }
 
-func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
+func (s *Scanner) run(ctx context.Context, names []string, progress func(Progress)) (*Result, error) {
 	result := &Result{}
 
 	libraries, err := s.store.List_libraries(ctx)
@@ -177,24 +225,28 @@ func (s *Scanner) run(ctx context.Context, names []string) (*Result, error) {
 		}
 		s.group_series_files(files)
 		result.Found += len(files)
-		s.report(Progress{Phase: "discover", Path: library.Name, Files_found: result.Found})
+		if progress != nil {
+			progress(Progress{Phase: "discover", Path: library.Name, Files_found: result.Found})
+		}
 
 		for _, file := range files {
 			seen[file.Path] = true
-			s.process_file(ctx, library, abs, file, result)
+			s.process_file(ctx, library, abs, file, result, progress)
 		}
 	}
 
 	if err := s.mark_missing(ctx, roots, lib_by_id, seen, result); err != nil {
 		result.Errors = append(result.Errors, "mark missing: "+err.Error())
 	}
-	s.report(Progress{
-		Phase:       "done",
-		Files_found: result.Found,
-		New_files:   result.New,
-		Skipped:     result.Skipped,
-		Errors:      len(result.Errors),
-	})
+	if progress != nil {
+		progress(Progress{
+			Phase:       "done",
+			Files_found: result.Found,
+			New_files:   result.New,
+			Skipped:     result.Skipped,
+			Errors:      len(result.Errors),
+		})
+	}
 	return result, nil
 }
 
@@ -245,7 +297,7 @@ func covering_root(path string, roots []string) string {
 	return ""
 }
 
-func (s *Scanner) process_file(ctx context.Context, library database.Library, root string, file scanner.Found_file, result *Result) {
+func (s *Scanner) process_file(ctx context.Context, library database.Library, root string, file scanner.Found_file, result *Result, progress func(Progress)) {
 	mtime := format_mtime(file.Mtime)
 	relative, err := filepath.Rel(root, file.Path)
 	if err != nil {
@@ -257,7 +309,7 @@ func (s *Scanner) process_file(ctx context.Context, library database.Library, ro
 		s.add_error(result, file.Path, err)
 	} else if found && ref.Size_bytes == file.Size_bytes && ref.Mtime == mtime {
 		result.Skipped++
-		s.report_file(result, file.Path)
+		s.report_file(progress, result, file.Path)
 		return
 	}
 
@@ -273,22 +325,25 @@ func (s *Scanner) process_file(ctx context.Context, library database.Library, ro
 	info, err := s.probe(ctx, file.Path)
 	if err != nil {
 		s.add_error(result, file.Path, err)
-		s.report_file(result, file.Path)
+		s.report_file(progress, result, file.Path)
 		return
 	}
 
 	if err := s.persist(ctx, library, root, file, info, hash); err != nil {
 		s.add_error(result, file.Path, err)
-		s.report_file(result, file.Path)
+		s.report_file(progress, result, file.Path)
 		return
 	}
 
 	result.New++
-	s.report_file(result, file.Path)
+	s.report_file(progress, result, file.Path)
 }
 
-func (s *Scanner) report_file(result *Result, path string) {
-	s.report(Progress{
+func (s *Scanner) report_file(progress func(Progress), result *Result, path string) {
+	if progress == nil {
+		return
+	}
+	progress(Progress{
 		Phase:         "file",
 		Path:          path,
 		Files_found:   result.Found,

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cybersouris/tomovee/internal/config"
 	"github.com/cybersouris/tomovee/internal/database"
@@ -65,8 +66,10 @@ type Server struct {
 	static  fs.FS
 	logger  *slog.Logger
 	mux     *http.ServeMux
-	jobs    *job_manager[scan.Progress, scan.Result]
-	matches *job_manager[matching.Progress, matching.Result]
+	jobs      *job_manager[scan.Progress, scan.Result]
+	scanMu    sync.Mutex
+	scanJobs  map[string]*job_manager[scan.Progress, scan.Result]
+	matches   *job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.
@@ -90,6 +93,7 @@ func New(opts Options) *Server {
 		logger:          logger,
 		mux:             http.NewServeMux(),
 		jobs:            new_job_manager[scan.Progress, scan.Result](logger),
+		scanJobs:        make(map[string]*job_manager[scan.Progress, scan.Result]),
 		matches:         new_job_manager[matching.Progress, matching.Result](logger),
 	}
 	s.routes()

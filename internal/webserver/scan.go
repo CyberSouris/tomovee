@@ -251,7 +251,22 @@ func (jm *job_manager[R, T]) next_pending_locked() *pending_run[R, T] {
 // status/stream endpoints to observe completion.
 
 func (s *Server) handle_scan_cancel(w http.ResponseWriter, r *http.Request) {
+	if library := r.URL.Query().Get("library"); library != "" {
+		s.scanMu.Lock()
+		mgr, ok := s.scanJobs[library]
+		s.scanMu.Unlock()
+		if ok && mgr != nil {
+			mgr.Cancel()
+		}
+		write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+		return
+	}
 	s.jobs.Cancel()
+	s.scanMu.Lock()
+	for _, mgr := range s.scanJobs {
+		mgr.Cancel()
+	}
+	s.scanMu.Unlock()
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
@@ -269,6 +284,11 @@ func (s *Server) handle_datasets_cancel(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handle_background_cancel(w http.ResponseWriter, r *http.Request) {
 	s.jobs.Cancel()
+	s.scanMu.Lock()
+	for _, mgr := range s.scanJobs {
+		mgr.Cancel()
+	}
+	s.scanMu.Unlock()
 	s.matches.Cancel()
 	if s.datasets != nil {
 		s.datasets.Cancel()
@@ -360,6 +380,7 @@ func (jm *job_manager[R, T]) broadcast(progress R) {
 
 type job_response struct {
 	Id          string        `json:"id"`
+	Library     string        `json:"library,omitempty"`
 	Started_at  string        `json:"started_at"`
 	Finished_at string        `json:"finished_at,omitempty"`
 	Running     bool          `json:"running"`
@@ -415,6 +436,35 @@ func job_response_from(job *job[scan.Progress, scan.Result]) *job_response {
 	return response
 }
 
+// scan_job_manager returns the per-library job manager, creating it on demand so
+// each library can be scanned (and cancelled, and tracked) independently.
+func (s *Server) scan_job_manager(name string) *job_manager[scan.Progress, scan.Result] {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	if s.scanJobs == nil {
+		s.scanJobs = make(map[string]*job_manager[scan.Progress, scan.Result])
+	}
+	if mgr, ok := s.scanJobs[name]; ok {
+		return mgr
+	}
+	mgr := new_job_manager[scan.Progress, scan.Result](s.logger)
+	s.scanJobs[name] = mgr
+	return mgr
+}
+
+// all_scan_job_managers returns the global watcher job plus every per-library
+// job manager currently registered.
+func (s *Server) all_scan_job_managers() []*job_manager[scan.Progress, scan.Result] {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	out := make([]*job_manager[scan.Progress, scan.Result], 0, len(s.scanJobs)+1)
+	out = append(out, s.jobs)
+	for _, mgr := range s.scanJobs {
+		out = append(out, mgr)
+	}
+	return out
+}
+
 func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	if s.scanner == nil {
 		write_error(w, http.StatusServiceUnavailable, "scanner is not configured")
@@ -430,18 +480,76 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	job, err := s.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
-		return s.scanner.Run_libraries(ctx, request.Libraries, progress)
-	})
-	if err != nil {
-		write_error(w, http.StatusConflict, job_running_error("a scan is already running"))
+
+	names := append([]string(nil), request.Libraries...)
+	if len(names) == 0 {
+		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
+			for _, library := range libs {
+				names = append(names, library.Name)
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		job, err := s.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+			return s.scanner.Run_libraries(ctx, nil, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a scan is already running"))
+			return
+		}
+		write_json(w, http.StatusAccepted, job_response_from(job))
 		return
 	}
-	write_json(w, http.StatusAccepted, job_response_from(job))
+
+	started := make([]*job[scan.Progress, scan.Result], 0, len(names))
+	for _, name := range names {
+		name := name
+		mgr := s.scan_job_manager(name)
+		job, err := mgr.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+			return s.scanner.Run_libraries(ctx, []string{name}, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a scan is already running for "+name))
+			return
+		}
+		started = append(started, job)
+	}
+
+	jobs := make([]*job_response, 0, len(started))
+	for i, job := range started {
+		resp := job_response_from(job)
+		resp.Library = names[i]
+		jobs = append(jobs, resp)
+	}
+	response := map[string]any{"jobs": jobs}
+	if len(jobs) > 0 {
+		response["job"] = jobs[0]
+	}
+	write_json(w, http.StatusAccepted, response)
 }
 
 func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
-	write_json(w, http.StatusOK, map[string]any{"job": job_response_from(s.jobs.Snapshot())})
+	scans := make([]*job_response, 0)
+	if snap := s.jobs.Snapshot(); snap != nil {
+		response := job_response_from(snap)
+		response.Library = ""
+		scans = append(scans, response)
+	}
+	s.scanMu.Lock()
+	for lib, mgr := range s.scanJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			response := job_response_from(snap)
+			response.Library = lib
+			scans = append(scans, response)
+		}
+	}
+	s.scanMu.Unlock()
+	var first *job_response
+	if len(scans) > 0 {
+		first = scans[0]
+	}
+	write_json(w, http.StatusOK, map[string]any{"job": first, "scans": scans, "jobs": scans})
 }
 
 // Watch_scan runs a scan synchronously through the same job manager the manual
@@ -467,6 +575,7 @@ func (s *Server) Watch_scan(_ context.Context, names []string) (*scan.Result, er
 // single global progress indicator.
 type background_status struct {
 	Scan     *job_response         `json:"scan,omitempty"`
+	Scans    []*job_response       `json:"scans,omitempty"`
 	Match    *match_job_response   `json:"match,omitempty"`
 	Datasets *imdb_datasets.Status `json:"datasets,omitempty"`
 }
@@ -477,8 +586,58 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 		status := s.datasets.Snapshot()
 		datasets = &status
 	}
+	scans := make([]*job_response, 0)
+	if snap := s.jobs.Snapshot(); snap != nil {
+		response := job_response_from(snap)
+		response.Library = ""
+		scans = append(scans, response)
+	}
+	for _, mgr := range s.all_scan_job_managers() {
+		if mgr == s.jobs {
+			continue
+		}
+		snap := mgr.Snapshot()
+		if snap == nil {
+			continue
+		}
+		// Determine library name from map key; handled below? Store mapping.
+	}
+	// attach library names
+	s.scanMu.Lock()
+	for lib, mgr := range s.scanJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			response := job_response_from(snap)
+			response.Library = lib
+			// replace placeholder without library already appended? We'll rebuild below instead.
+		}
+		_ = lib
+	}
+	s.scanMu.Unlock()
+
+	// Rebuild cleanly to avoid duplicates.
+	scans = make([]*job_response, 0)
+	if snap := s.jobs.Snapshot(); snap != nil {
+		response := job_response_from(snap)
+		response.Library = ""
+		scans = append(scans, response)
+	}
+	s.scanMu.Lock()
+	for lib, mgr := range s.scanJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			response := job_response_from(snap)
+			response.Library = lib
+			scans = append(scans, response)
+		}
+	}
+	s.scanMu.Unlock()
+
+	var first *job_response
+	if len(scans) > 0 {
+		first = scans[0]
+	}
 	write_json(w, http.StatusOK, background_status{
-		Scan:     job_response_from(s.jobs.Snapshot()),
+		Scan:     first,
+		Scans:    scans,
 		Match:    match_job_response_from(s.matches.Snapshot()),
 		Datasets: datasets,
 	})

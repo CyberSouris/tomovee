@@ -133,13 +133,17 @@
     window.location.hash = '#' + task.page;
   }
 
-  async function cancel_task(name) {
-    const path =
-      name === 'scan'
-        ? '/api/v1/scan/cancel'
-        : name === 'match'
-        ? '/api/v1/match/cancel'
-        : '/api/v1/datasets/cancel';
+  async function cancel_task(task) {
+    let path = '/api/v1/background/cancel';
+    const name = (task && task.name) || '';
+    if (name.startsWith('scan:')) {
+      const library = task.library ? `?library=${encodeURIComponent(task.library)}` : '';
+      path = `/api/v1/scan/cancel${library}`;
+    } else if (name === 'match') {
+      path = '/api/v1/match/cancel';
+    } else if (name === 'datasets') {
+      path = '/api/v1/datasets/cancel';
+    }
     try {
       await api_send(path, 'POST', {});
     } catch {
@@ -153,14 +157,23 @@
 
   function tasks(bg) {
     const items = [];
-    if (bg.scan && bg.scan.running) {
-      const p = bg.scan.progress || {};
+    const scans = Array.isArray(bg.scans)
+      ? bg.scans
+      : bg.scan
+      ? [bg.scan]
+      : [];
+    for (const scan_job of scans) {
+      if (!scan_job || !scan_job.running) continue;
+      const p = scan_job.progress || {};
       items.push({
-        name: 'scan',
+        name: scan_job.library ? `scan:${scan_job.library}` : `scan:${scan_job.id}`,
+        library: scan_job.library || '',
         page: '/scan',
         active: true,
         get label() {
-          return `Scanning — ${p.phase || 'scanning'}`;
+          return scan_job.library
+            ? `Scanning ${scan_job.library} — ${p.phase || 'scanning'}`
+            : `Scanning — ${p.phase || 'scanning'}`;
         },
         percent: () => (p.files_found ? Math.round((100 * (p.files_scanned || 0)) / p.files_found) : 0),
       });
@@ -234,7 +247,7 @@
                 class="notif-task-close"
                 aria-label={`Stop ${task.name}`}
                 title="Stop"
-                on:click|stopPropagation={() => cancel_task(task.name)}
+                on:click|stopPropagation={() => cancel_task(task)}
               >
                 &times;
               </button>

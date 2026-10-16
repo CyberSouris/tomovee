@@ -428,6 +428,69 @@ type result_item struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
+// pick_scan_job chooses which scan job the singular "scan" field of the
+// status endpoints surfaces: a running scan always wins over finished ones,
+// and the most recently started (or finished) scan wins within each class,
+// with the id as a final tie-break. The choice must not depend on map
+// iteration order, or the UI compares two different jobs on consecutive
+// polls and re-fires its finished notification every time.
+func pick_scan_job(scans []*job_response) *job_response {
+	var best *job_response
+	for _, job := range scans {
+		if job == nil {
+			continue
+		}
+		if best == nil || better_scan_job(job, best) {
+			best = job
+		}
+	}
+	return best
+}
+
+// better_scan_job reports whether scan a should surface instead of scan b.
+func better_scan_job(a, b *job_response) bool {
+	if a.Running != b.Running {
+		return a.Running
+	}
+	if a.Started_at != b.Started_at {
+		return a.Started_at > b.Started_at
+	}
+	if a.Finished_at != b.Finished_at {
+		return a.Finished_at > b.Finished_at
+	}
+	return a.Id > b.Id
+}
+
+// pick_match_job is pick_scan_job for matching jobs: the singular "match"
+// field surfaces the running match when one is active, otherwise the most
+// recently finished one, independently of map iteration order.
+func pick_match_job(matches []*match_job_response) *match_job_response {
+	var best *match_job_response
+	for _, job := range matches {
+		if job == nil {
+			continue
+		}
+		if best == nil || better_match_job(job, best) {
+			best = job
+		}
+	}
+	return best
+}
+
+// better_match_job reports whether match a should surface instead of match b.
+func better_match_job(a, b *match_job_response) bool {
+	if a.Running != b.Running {
+		return a.Running
+	}
+	if a.Started_at != b.Started_at {
+		return a.Started_at > b.Started_at
+	}
+	if a.Finished_at != b.Finished_at {
+		return a.Finished_at > b.Finished_at
+	}
+	return a.Id > b.Id
+}
+
 func job_response_from(job *job[scan.Progress, scan.Result]) *job_response {
 	if job == nil {
 		return nil
@@ -566,10 +629,7 @@ func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	s.scanMu.Unlock()
-	var first *job_response
-	if len(scans) > 0 {
-		first = scans[0]
-	}
+	first := pick_scan_job(scans)
 	write_json(w, http.StatusOK, map[string]any{"job": first, "scans": scans, "jobs": scans})
 }
 
@@ -640,14 +700,8 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 	}
 	s.matchMu.Unlock()
 
-	var first *job_response
-	if len(scans) > 0 {
-		first = scans[0]
-	}
-	var firstMatch *match_job_response
-	if len(matches) > 0 {
-		firstMatch = matches[0]
-	}
+	first := pick_scan_job(scans)
+	firstMatch := pick_match_job(matches)
 	write_json(w, http.StatusOK, background_status{
 		Scan:     first,
 		Scans:    scans,
@@ -976,10 +1030,7 @@ func (s *Server) handle_match_status(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	s.matchMu.Unlock()
-	var first *match_job_response
-	if len(matches) > 0 {
-		first = matches[0]
-	}
+	first := pick_match_job(matches)
 	write_json(w, http.StatusOK, map[string]any{"job": first, "jobs": matches, "matches": matches})
 }
 

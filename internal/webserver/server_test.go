@@ -814,6 +814,79 @@ func Test_scan_job_runs(t *testing.T) {
 	t.Fatal("scan job did not finish in time")
 }
 
+// Test_parallel_match_primary_is_stable guards the singular "match" field of
+// the background status against map iteration order: with several finished
+// per-library match jobs and no global job, the primary job must not change
+// between polls, or the UI re-fires its "matching finished" notification on
+// every poll.
+func Test_parallel_match_primary_is_stable(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	for _, lib := range []string{"lib1", "lib2"} {
+		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+			Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+		})
+		if err != nil {
+			t.Fatalf("upsert entry: %v", err)
+		}
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: id, File_path: "/media/" + lib + "/The.Matrix.1999.mkv",
+			Size_bytes: 9000, Hash: "hash-" + lib,
+		}); err != nil {
+			t.Fatalf("save version: %v", err)
+		}
+		if err := store.Upsert_library(ctx, lib, "/media/"+lib, true); err != nil {
+			t.Fatalf("upsert %s: %v", lib, err)
+		}
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1","lib2"]}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+		bg := decode[struct {
+			Matches []*match_job_response `json:"matches"`
+		}](t, status)
+		if len(bg.Matches) < 2 {
+			t.Fatalf("background matches = %d, want 2", len(bg.Matches))
+		}
+		done := true
+		for _, job := range bg.Matches {
+			if job == nil || job.Running {
+				done = false
+				break
+			}
+		}
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var primary string
+	for i := 0; i < 50; i++ {
+		status := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+		bg := decode[struct {
+			Match *match_job_response `json:"match"`
+		}](t, status)
+		if bg.Match == nil {
+			t.Fatal("background has no primary match job")
+		}
+		if i == 0 {
+			primary = bg.Match.Id
+			continue
+		}
+		if bg.Match.Id != primary {
+			t.Fatalf("primary match job changed between polls: %s -> %s", primary, bg.Match.Id)
+		}
+	}
+}
+
 func Test_parallel_scan_exposes_one_job_per_library(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
@@ -833,8 +906,8 @@ func Test_parallel_scan_exposes_one_job_per_library(t *testing.T) {
 	}
 
 	started := decode[struct {
-		Job  *job_response   `json:"job"`
-		Jobs []*job_response `json:"jobs"`
+		Job   *job_response   `json:"job"`
+		Jobs  []*job_response `json:"jobs"`
 		Scans []*job_response `json:"scans"`
 	}](t, start)
 	if len(started.Jobs) != 2 {

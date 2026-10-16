@@ -62,16 +62,16 @@ type Server struct {
 	// stream_datasets mirrors the Options field; see there.
 	stream_datasets func(index_db_path string)
 	// reload mirrors the Options field; see there.
-	reload  func() error
-	static  fs.FS
-	logger  *slog.Logger
-	mux     *http.ServeMux
+	reload    func() error
+	static    fs.FS
+	logger    *slog.Logger
+	mux       *http.ServeMux
 	jobs      *job_manager[scan.Progress, scan.Result]
 	scanMu    sync.Mutex
 	scanJobs  map[string]*job_manager[scan.Progress, scan.Result]
-	matches    *job_manager[matching.Progress, matching.Result]
-	matchMu    sync.Mutex
-	matchJobs  map[string]*job_manager[matching.Progress, matching.Result]
+	matches   *job_manager[matching.Progress, matching.Result]
+	matchMu   sync.Mutex
+	matchJobs map[string]*job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.

@@ -139,8 +139,9 @@
     if (name.startsWith('scan:')) {
       const library = task.library ? `?library=${encodeURIComponent(task.library)}` : '';
       path = `/api/v1/scan/cancel${library}`;
-    } else if (name === 'match') {
-      path = '/api/v1/match/cancel';
+    } else if (name.startsWith('match:')) {
+      const library = task.library ? `?library=${encodeURIComponent(task.library)}` : '';
+      path = `/api/v1/match/cancel${library}`;
     } else if (name === 'datasets') {
       path = '/api/v1/datasets/cancel';
     }
@@ -178,10 +179,17 @@
         percent: () => (p.files_found ? Math.round((100 * (p.files_scanned || 0)) / p.files_found) : 0),
       });
     }
-    if (bg.match && bg.match.running) {
-      const p = bg.match.progress || {};
+    const matches_bg = Array.isArray(bg.matches)
+      ? bg.matches
+      : bg.match
+      ? [bg.match]
+      : [];
+    for (const match_job of matches_bg) {
+      if (!match_job || !match_job.running) continue;
+      const p = match_job.progress || {};
       items.push({
-        name: 'match',
+        name: match_job.library ? `match:${match_job.library}` : `match:${match_job.id}`,
+        library: match_job.library || '',
         page: '/match',
         active: true,
         get label() {

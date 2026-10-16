@@ -69,7 +69,9 @@ type Server struct {
 	jobs      *job_manager[scan.Progress, scan.Result]
 	scanMu    sync.Mutex
 	scanJobs  map[string]*job_manager[scan.Progress, scan.Result]
-	matches   *job_manager[matching.Progress, matching.Result]
+	matches    *job_manager[matching.Progress, matching.Result]
+	matchMu    sync.Mutex
+	matchJobs  map[string]*job_manager[matching.Progress, matching.Result]
 }
 
 // New builds a Server and registers its routes.
@@ -95,6 +97,7 @@ func New(opts Options) *Server {
 		jobs:            new_job_manager[scan.Progress, scan.Result](logger),
 		scanJobs:        make(map[string]*job_manager[scan.Progress, scan.Result]),
 		matches:         new_job_manager[matching.Progress, matching.Result](logger),
+		matchJobs:       make(map[string]*job_manager[matching.Progress, matching.Result]),
 	}
 	s.routes()
 	return s

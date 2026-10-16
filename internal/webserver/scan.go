@@ -271,7 +271,22 @@ func (s *Server) handle_scan_cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handle_match_cancel(w http.ResponseWriter, r *http.Request) {
+	if library := r.URL.Query().Get("library"); library != "" {
+		s.matchMu.Lock()
+		mgr, ok := s.matchJobs[library]
+		s.matchMu.Unlock()
+		if ok && mgr != nil {
+			mgr.Cancel()
+		}
+		write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
+		return
+	}
 	s.matches.Cancel()
+	s.matchMu.Lock()
+	for _, mgr := range s.matchJobs {
+		mgr.Cancel()
+	}
+	s.matchMu.Unlock()
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
@@ -290,6 +305,11 @@ func (s *Server) handle_background_cancel(w http.ResponseWriter, r *http.Request
 	}
 	s.scanMu.Unlock()
 	s.matches.Cancel()
+	s.matchMu.Lock()
+	for _, mgr := range s.matchJobs {
+		mgr.Cancel()
+	}
+	s.matchMu.Unlock()
 	if s.datasets != nil {
 		s.datasets.Cancel()
 	}
@@ -452,6 +472,20 @@ func (s *Server) scan_job_manager(name string) *job_manager[scan.Progress, scan.
 	return mgr
 }
 
+func (s *Server) match_job_manager(name string) *job_manager[matching.Progress, matching.Result] {
+	s.matchMu.Lock()
+	defer s.matchMu.Unlock()
+	if s.matchJobs == nil {
+		s.matchJobs = make(map[string]*job_manager[matching.Progress, matching.Result])
+	}
+	if mgr, ok := s.matchJobs[name]; ok {
+		return mgr
+	}
+	mgr := new_job_manager[matching.Progress, matching.Result](s.logger)
+	s.matchJobs[name] = mgr
+	return mgr
+}
+
 func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	if s.scanner == nil {
 		write_error(w, http.StatusServiceUnavailable, "scanner is not configured")
@@ -564,6 +598,7 @@ type background_status struct {
 	Scan     *job_response         `json:"scan,omitempty"`
 	Scans    []*job_response       `json:"scans,omitempty"`
 	Match    *match_job_response   `json:"match,omitempty"`
+	Matches  []*match_job_response `json:"matches,omitempty"`
 	Datasets *imdb_datasets.Status `json:"datasets,omitempty"`
 }
 
@@ -589,14 +624,35 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 	}
 	s.scanMu.Unlock()
 
+	matches := make([]*match_job_response, 0)
+	if snap := s.matches.Snapshot(); snap != nil {
+		resp := match_job_response_from(snap)
+		resp.Library = ""
+		matches = append(matches, resp)
+	}
+	s.matchMu.Lock()
+	for lib, mgr := range s.matchJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			resp := match_job_response_from(snap)
+			resp.Library = lib
+			matches = append(matches, resp)
+		}
+	}
+	s.matchMu.Unlock()
+
 	var first *job_response
 	if len(scans) > 0 {
 		first = scans[0]
 	}
+	var firstMatch *match_job_response
+	if len(matches) > 0 {
+		firstMatch = matches[0]
+	}
 	write_json(w, http.StatusOK, background_status{
 		Scan:     first,
 		Scans:    scans,
-		Match:    match_job_response_from(s.matches.Snapshot()),
+		Match:    firstMatch,
+		Matches:  matches,
 		Datasets: datasets,
 	})
 }
@@ -667,6 +723,7 @@ func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 
 type match_job_response struct {
 	Id          string              `json:"id"`
+	Library     string              `json:"library,omitempty"`
 	Started_at  string              `json:"started_at"`
 	Finished_at string              `json:"finished_at,omitempty"`
 	Running     bool                `json:"running"`
@@ -752,14 +809,51 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-		return s.matching.Run(ctx, request.Libraries, progress)
-	})
-	if err != nil {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+	names := append([]string(nil), request.Libraries...)
+	if len(names) == 0 {
+		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
+			for _, library := range libs {
+				names = append(names, library.Name)
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+			return s.matching.Run(ctx, nil, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+			return
+		}
+		write_json(w, http.StatusAccepted, match_job_response_from(job))
 		return
 	}
-	write_json(w, http.StatusAccepted, match_job_response_from(job))
+
+	started := make([]*job[matching.Progress, matching.Result], 0, len(names))
+	for _, name := range names {
+		name := name
+		mgr := s.match_job_manager(name)
+		job, err := mgr.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+			return s.matching.Run(ctx, []string{name}, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a matching job is already running for "+name))
+			return
+		}
+		started = append(started, job)
+	}
+	jobs := make([]*match_job_response, 0, len(started))
+	for i, job := range started {
+		resp := match_job_response_from(job)
+		resp.Library = names[i]
+		jobs = append(jobs, resp)
+	}
+	response := map[string]any{"jobs": jobs, "matches": jobs}
+	if len(jobs) > 0 {
+		response["job"] = jobs[0]
+	}
+	write_json(w, http.StatusAccepted, response)
 }
 
 // handle_rematch_all_start starts a background rematch run over every known
@@ -785,14 +879,51 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	job, err := s.matches.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-		return s.matching.Run_rematch(ctx, request.Libraries, progress)
-	})
-	if err != nil {
-		write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+	names := append([]string(nil), request.Libraries...)
+	if len(names) == 0 {
+		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
+			for _, library := range libs {
+				names = append(names, library.Name)
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		job, err := s.matches.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+			return s.matching.Run_rematch(ctx, nil, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
+			return
+		}
+		write_json(w, http.StatusAccepted, match_job_response_from(job))
 		return
 	}
-	write_json(w, http.StatusAccepted, match_job_response_from(job))
+
+	started := make([]*job[matching.Progress, matching.Result], 0, len(names))
+	for _, name := range names {
+		name := name
+		mgr := s.match_job_manager(name)
+		job, err := mgr.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+			return s.matching.Run_rematch(ctx, []string{name}, progress)
+		})
+		if err != nil {
+			write_error(w, http.StatusConflict, job_running_error("a matching job is already running for "+name))
+			return
+		}
+		started = append(started, job)
+	}
+	jobs := make([]*match_job_response, 0, len(started))
+	for i, job := range started {
+		resp := match_job_response_from(job)
+		resp.Library = names[i]
+		jobs = append(jobs, resp)
+	}
+	response := map[string]any{"jobs": jobs, "matches": jobs}
+	if len(jobs) > 0 {
+		response["job"] = jobs[0]
+	}
+	write_json(w, http.StatusAccepted, response)
 }
 
 // matching_unavailable_message explains why the background matching job cannot
@@ -830,7 +961,26 @@ func (s *Server) datasets_percent() int {
 }
 
 func (s *Server) handle_match_status(w http.ResponseWriter, _ *http.Request) {
-	write_json(w, http.StatusOK, map[string]any{"job": match_job_response_from(s.matches.Snapshot())})
+	matches := make([]*match_job_response, 0)
+	if snap := s.matches.Snapshot(); snap != nil {
+		resp := match_job_response_from(snap)
+		resp.Library = ""
+		matches = append(matches, resp)
+	}
+	s.matchMu.Lock()
+	for lib, mgr := range s.matchJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			resp := match_job_response_from(snap)
+			resp.Library = lib
+			matches = append(matches, resp)
+		}
+	}
+	s.matchMu.Unlock()
+	var first *match_job_response
+	if len(matches) > 0 {
+		first = matches[0]
+	}
+	write_json(w, http.StatusOK, map[string]any{"job": first, "jobs": matches, "matches": matches})
 }
 
 func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {

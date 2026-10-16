@@ -3,7 +3,8 @@
   import { api_get, api_send } from '../api.js';
 
   let libraries = [];
-  let selected = [];
+  let selected_set = {};
+$: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
 
   let scan_progress = null;
   let scan_result = null;
@@ -51,28 +52,39 @@
     try {
       const data = await api_get('/api/v1/settings');
       libraries = data.libraries || [];
-      selected = libraries.filter((library) => library.enabled).map((library) => library.name);
+      selected_set = {};
+      for (const library of libraries) {
+        if (library.enabled) selected_set[library.name] = true;
+      }
+      selected_set = { ...selected_set };
     } catch (err) {
       scan_error = err.message;
     }
   }
 
   function is_selected(name) {
-    return selected.includes(name);
+    return !!selected_set[name];
   }
 
   function toggle(name) {
-    selected = is_selected(name)
-      ? selected.filter((item) => item !== name)
-      : [...selected, name];
+    const next = { ...selected_set };
+    if (next[name]) delete next[name];
+    else next[name] = true;
+    selected_set = next;
   }
 
   function all_selected() {
-    return libraries.length > 0 && selected.length === libraries.length;
+    return libraries.length > 0 && libraries.every((library) => selected_set[library.name]);
   }
 
   function toggle_all() {
-    selected = all_selected() ? [] : libraries.map((library) => library.name);
+    if (all_selected()) {
+      selected_set = {};
+      return;
+    }
+    const next = {};
+    for (const library of libraries) next[library.name] = true;
+    selected_set = next;
   }
 
   async function start_scan() {
@@ -217,7 +229,7 @@
     <div class="list">
       {#each libraries as library}
         <label class="lib" class:checked={is_selected(library.name)}>
-          <input type="checkbox" checked={is_selected(library.name)} on:change={() => toggle(library.name)} disabled={busy} />
+          <input type="checkbox" bind:checked={selected_set[library.name]} on:change={() => { selected_set = { ...selected_set }; }} disabled={busy} />
           <span class="name">{library.name}</span>
           <span class="path muted">{library.path}</span>
           {#if library.enabled}<span class="badge">watched</span>{/if}

@@ -203,14 +203,11 @@ func (p *pipeline) load_datasets(logger *slog.Logger, path string, service *matc
 	}
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		if status != nil {
 			status.Set_cancel(cancel)
+			defer status.Set_cancel(nil)
 		}
-		defer func() {
-			if status != nil {
-				status.Set_cancel(nil)
-			}
-		}()
 		index, err := imdb_datasets.Open_with_progress_context(ctx, path, logger, progress)
 		if err != nil {
 			status.Fail(err.Error())
@@ -255,6 +252,7 @@ func (p *pipeline) stream_datasets(logger *slog.Logger, index_db_path string, se
 	}
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		if status != nil {
 			status.Set_cancel(cancel)
 			defer status.Set_cancel(nil)

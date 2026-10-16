@@ -452,19 +452,6 @@ func (s *Server) scan_job_manager(name string) *job_manager[scan.Progress, scan.
 	return mgr
 }
 
-// all_scan_job_managers returns the global watcher job plus every per-library
-// job manager currently registered.
-func (s *Server) all_scan_job_managers() []*job_manager[scan.Progress, scan.Result] {
-	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
-	out := make([]*job_manager[scan.Progress, scan.Result], 0, len(s.scanJobs)+1)
-	out = append(out, s.jobs)
-	for _, mgr := range s.scanJobs {
-		out = append(out, mgr)
-	}
-	return out
-}
-
 func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	if s.scanner == nil {
 		write_error(w, http.StatusServiceUnavailable, "scanner is not configured")
@@ -587,35 +574,6 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 		datasets = &status
 	}
 	scans := make([]*job_response, 0)
-	if snap := s.jobs.Snapshot(); snap != nil {
-		response := job_response_from(snap)
-		response.Library = ""
-		scans = append(scans, response)
-	}
-	for _, mgr := range s.all_scan_job_managers() {
-		if mgr == s.jobs {
-			continue
-		}
-		snap := mgr.Snapshot()
-		if snap == nil {
-			continue
-		}
-		// Determine library name from map key; handled below? Store mapping.
-	}
-	// attach library names
-	s.scanMu.Lock()
-	for lib, mgr := range s.scanJobs {
-		if snap := mgr.Snapshot(); snap != nil {
-			response := job_response_from(snap)
-			response.Library = lib
-			// replace placeholder without library already appended? We'll rebuild below instead.
-		}
-		_ = lib
-	}
-	s.scanMu.Unlock()
-
-	// Rebuild cleanly to avoid duplicates.
-	scans = make([]*job_response, 0)
 	if snap := s.jobs.Snapshot(); snap != nil {
 		response := job_response_from(snap)
 		response.Library = ""

@@ -354,12 +354,6 @@ func (s *Scanner) report_file(progress func(Progress), result *Result, path stri
 	})
 }
 
-func (s *Scanner) report(progress Progress) {
-	if s.opts.Progress != nil {
-		s.opts.Progress(progress)
-	}
-}
-
 // add_error records a per-file failure without aborting the scan.
 func (s *Scanner) add_error(result *Result, path string, err error) {
 	result.Errors = append(result.Errors, path+": "+err.Error())

@@ -48,17 +48,6 @@ func similarity(a, b string) float64 {
 	return ratio
 }
 
-// suffix_submatch reports whether one normalized title is a contiguous suffix
-// of the other and makes up at least half of it. A file name frequently drops
-// a leading article or credit ("Shawshank Redemption" for "The Shawshank
-// Redemption", "Psycho" for "Alfred Hitchcock's Psycho"); boosting that case
-// keeps the match confident. Sequels and spin-offs, whose extra words trail
-// the title ("The Matrix Reloaded"), are not a suffix and stay un-boosted.
-func suffix_submatch(a, b string) bool {
-	ta, tb := strings.Fields(normalize_title(a)), strings.Fields(normalize_title(b))
-	return suffix_tokens(ta, tb) || suffix_tokens(tb, ta)
-}
-
 func suffix_tokens(short, long []string) bool {
 	if len(short) == 0 || len(short) >= len(long) {
 		return false

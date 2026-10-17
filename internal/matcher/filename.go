@@ -24,6 +24,11 @@ type Filename_hint struct {
 var (
 	year_re    = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	bracket_re = regexp.MustCompile(`[\[\(\{][^\]\)\}]*[\]\)\}]`)
+	// year_range_re matches a release year range such as "2001-2005" (hyphen or
+	// en dash). TV release folders commonly append the show's run to the show
+	// name, e.g. "Some.Show.2001-2005.D5"; the whole range is a tag, not part of
+	// the title.
+	year_range_re = regexp.MustCompile(`\b(19\d{2}|20\d{2})\s*[-–]\s*(19\d{2}|20\d{2})\b`)
 )
 
 // release_tags are scene/quality tokens that carry no title information and
@@ -88,6 +93,18 @@ func Parse_filename(name string) Filename_hint {
 // legitimately contain dots ("The.Office", "Breaking.Bad") that would
 // otherwise be eaten as a file extension.
 func Parse_foldername(name string) Filename_hint {
+	// A trailing year range ("Some.Show.2001-2005.D5") ends the title before its
+	// first year; without this, cutting at the last year would leave that year
+	// stranded in the title ("Some Show 2001").
+	if match := year_range_re.FindStringSubmatchIndex(name); match != nil && match[0] > 0 {
+		if year, err := strconv.Atoi(name[match[2]:match[3]]); err == nil {
+			title := clean_title(name[:match[0]])
+			if title == "" {
+				title = clean_title(name)
+			}
+			return Filename_hint{Title: title, Year: year}
+		}
+	}
 	year, loc := last_year(name)
 	cutoff := len(name)
 	if loc != nil && loc[0] > 0 {

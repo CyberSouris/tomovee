@@ -132,6 +132,19 @@ func (s *Scanner) acquire_library_locks(names []string) []*sync.Mutex {
 // to this invocation only. Scans are serialized: a call blocks until any
 // in-flight scan on this Scanner finishes.
 func (s *Scanner) Run_libraries(ctx context.Context, names []string, progress func(Progress)) (*Result, error) {
+	return s.run_libraries(ctx, names, progress, false)
+}
+
+// Force_libraries resets the catalog of the named libraries (or every library
+// when names is empty) before scanning them, so files that would otherwise be
+// skipped as unchanged are re-probed, re-grouped and re-titled from scratch. It
+// backs the WebUI's force rescan, which is used when a scanner or matcher change
+// makes the existing entries stale.
+func (s *Scanner) Force_libraries(ctx context.Context, names []string, progress func(Progress)) (*Result, error) {
+	return s.run_libraries(ctx, names, progress, true)
+}
+
+func (s *Scanner) run_libraries(ctx context.Context, names []string, progress func(Progress), force bool) (*Result, error) {
 	// Resolve the requested library names first so per-library locks can be
 	// acquired without holding the map lock during a (possibly long) scan.
 	libraries, err := s.store.List_libraries(ctx)
@@ -164,6 +177,18 @@ func (s *Scanner) Run_libraries(ctx context.Context, names []string, progress fu
 			lock.Unlock()
 		}
 	}()
+
+	// The reset runs under the same per-library locks as the scan, so no other
+	// scan can re-add versions between the wipe and the rebuild.
+	if force {
+		ids := make([]int64, 0, len(libraries))
+		for _, library := range libraries {
+			ids = append(ids, library.Id)
+		}
+		if err := s.store.Reset_catalogs(ctx, ids); err != nil {
+			return nil, fmt.Errorf("reset catalog: %w", err)
+		}
+	}
 
 	return s.run(ctx, names, progress)
 }
@@ -353,7 +378,6 @@ func (s *Scanner) report_file(progress func(Progress), result *Result, path stri
 		Errors:        len(result.Errors),
 	})
 }
-
 
 // add_error records a per-file failure without aborting the scan.
 func (s *Scanner) add_error(result *Result, path string, err error) {

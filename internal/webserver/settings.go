@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -121,6 +122,15 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// Validate the library set before persisting anything so a rejected update
+	// has no side effects on the other settings.
+	if message, err := s.library_path_conflict(r.Context(), update); err != nil {
+		s.internal_error(w, err, "validate libraries")
+		return
+	} else if message != "" {
+		write_error(w, http.StatusBadRequest, message)
+		return
+	}
 	if update.Watch_enabled != nil {
 		value := "false"
 		if *update.Watch_enabled {
@@ -169,6 +179,73 @@ func (s *Server) handle_settings_put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write_json(w, http.StatusOK, response)
+}
+
+// library_path_conflict returns a human-readable message when the libraries
+// already stored overlap with the ones in the update, meaning one root is the
+// same as, a parent of, or nested inside another. Overlapping roots make the
+// scanner catalogue the same files twice and split a series across separate
+// entries, so the settings API refuses the update. Libraries are matched by
+// name, so a rename or in-place edit is judged by its new path. An empty
+// message means there is no conflict.
+func (s *Server) library_path_conflict(ctx context.Context, update settings_update) (string, error) {
+	paths := map[string]string{}
+	order := make([]string, 0, len(update.Libraries))
+	existing, err := s.store.List_libraries(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, library := range existing {
+		if library.Name == "" || library.Path == "" {
+			continue
+		}
+		if _, seen := paths[library.Name]; !seen {
+			order = append(order, library.Name)
+		}
+		paths[library.Name] = library.Path
+	}
+	for _, library := range update.Libraries {
+		if library.Name == "" || library.Path == "" {
+			continue
+		}
+		if _, seen := paths[library.Name]; !seen {
+			order = append(order, library.Name)
+		}
+		paths[library.Name] = library.Path
+	}
+	for i := 0; i < len(order); i++ {
+		for j := i + 1; j < len(order); j++ {
+			a, b := paths[order[i]], paths[order[j]]
+			if library_paths_conflict(a, b) {
+				return fmt.Sprintf(
+					"library %q (%s) overlaps library %q (%s); libraries must not be nested",
+					order[i], a, order[j], b,
+				), nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// library_paths_conflict reports whether two library roots overlap: one being
+// the same as, a parent of, or nested inside the other.
+func library_paths_conflict(a, b string) bool {
+	return path_within(a, b) || path_within(b, a)
+}
+
+// path_within reports whether inner is the same directory as outer or lives
+// underneath it. Paths are cleaned first so an unnormalised root still matches
+// its parent; paths that are relative where the other is absolute, or on
+// different volumes, are treated as unrelated.
+func path_within(inner, outer string) bool {
+	if inner == "" || outer == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(outer), filepath.Clean(inner))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // handle_sources_reload re-applies the persisted source settings (TMDB and

@@ -170,13 +170,29 @@ var series_folder_patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^season.*extra$`),
 }
 
+// folder_year_tag_re matches a trailing year tag in parentheses or brackets,
+// with an optional separator, such as the " (2001)" in "S01 (2001)" or the
+// " [1999]" in "Season 2 [1999]". Release layouts routinely append the season's
+// year to the container folder; the tag says nothing about the show's identity,
+// so it is dropped before deciding whether a folder names a season.
+var folder_year_tag_re = regexp.MustCompile(`[\s._-]*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]][\s._-]*$`)
+
+// strip_folder_year_tag removes a trailing year tag from a folder name so that
+// "S01 (2001)" is treated the same as "S01".
+func strip_folder_year_tag(name string) string {
+	return strings.Trim(folder_year_tag_re.ReplaceAllString(name, ""), " ._-")
+}
+
 // Skip_series_folder reports whether a directory base name is a container
-// inside a show's folder tree (Season 1, Specials, Extras, ...) rather than
-// the show title itself.
+// inside a show's folder tree (Season 1, S01 (2001), Specials, Extras, ...)
+// rather than the show title itself.
 func Skip_series_folder(name string) bool {
-	for _, re := range series_folder_patterns {
-		if re.MatchString(strings.Trim(name, " ._-")) {
-			return true
+	cleaned := strings.Trim(name, " ._-")
+	for _, candidate := range []string{cleaned, strip_folder_year_tag(cleaned)} {
+		for _, re := range series_folder_patterns {
+			if re.MatchString(candidate) {
+				return true
+			}
 		}
 	}
 	return false
@@ -187,12 +203,14 @@ func Skip_series_folder(name string) bool {
 var season_folder_re = regexp.MustCompile(`(?i)^(?:season\s*[\s._-]*|s)(\d{1,3})$`)
 
 // Season_of returns the season the container folder of the file at path
-// declares: "Season 3" and "S3" give 3, while specials and extras containers
-// ("Specials", "Extras", "Behind the Scenes", ...) give 0, the season specials
-// live in. ok is false when the file sits directly in the show folder, which
-// names no season, so the caller keeps its own default.
+// declares: "Season 3", "S3" and their year-tagged forms ("S03 (2001)") give 3,
+// while specials and extras containers ("Specials", "Extras", "Behind the
+// Scenes", ...) give 0, the season specials live in. ok is false when the file
+// sits directly in the show folder, which names no season, so the caller keeps
+// its own default.
 func Season_of(path string) (season int, ok bool) {
 	name := strings.Trim(filepath.Base(filepath.Dir(path)), " ._-")
+	name = strip_folder_year_tag(name)
 	if match := season_folder_re.FindStringSubmatch(name); match != nil {
 		if number, err := strconv.Atoi(match[1]); err == nil {
 			return number, true

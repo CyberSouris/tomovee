@@ -88,6 +88,9 @@ describe('settings and libraries', () => {
       // error is omitempty, so an absent field is the success case.
       expect(job.error || '').to.eq('');
       expect(job.progress.total).to.be.at.least(1);
+      // The run must end with a "done" phase: the WebUI relies on the matching
+      // SSE stream's done event to re-enable its actions.
+      expect(job.progress.phase).to.eq('done');
     });
     cy.request('/api/v1/background').then((response) => {
       expect(response.status).to.eq(200);
@@ -102,6 +105,19 @@ describe('settings and libraries', () => {
       return wait_for_match();
     }).then((job) => {
       expect(job.running).to.eq(false);
+      expect(job.progress.total).to.be.at.least(1);
+    });
+  });
+
+  it('force-rematches from scratch through the queued job manager', () => {
+    // The force variant drops each entry's existing match before re-running, so
+    // it must complete cleanly against the fixture catalog too.
+    cy.request({ method: 'POST', url: '/api/v1/match/rematch', body: { force: true } }).then((response) => {
+      expect(response.status).to.eq(202);
+      return wait_for_match();
+    }).then((job) => {
+      expect(job.running).to.eq(false);
+      expect(job.error || '').to.eq('');
       expect(job.progress.total).to.be.at.least(1);
     });
   });

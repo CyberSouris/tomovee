@@ -133,12 +133,21 @@ func Test_run_reports_progress(t *testing.T) {
 	if len(events) == 0 {
 		t.Fatal("no progress events reported")
 	}
+	// The run must end with a "done" phase: the match SSE stream maps that to an
+	// "event: done", which is what re-enables the WebUI once matching finishes.
 	last := events[len(events)-1]
+	if last.Phase != "done" {
+		t.Errorf("last progress phase = %q, want done", last.Phase)
+	}
 	if last.Done != 1 || last.Total != 1 {
 		t.Errorf("last progress = %+v, want Done 1/1", last)
 	}
+	// Per-entry events count up; the terminal summary repeats the total.
 	done := -1
 	for _, p := range events {
+		if p.Phase == "done" {
+			continue
+		}
 		if p.Done <= done {
 			t.Errorf("progress Done = %d after %d (not increasing)", p.Done, done)
 		}

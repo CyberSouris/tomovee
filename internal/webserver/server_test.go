@@ -814,6 +814,138 @@ func Test_scan_job_runs(t *testing.T) {
 	t.Fatal("scan job did not finish in time")
 }
 
+// Test_handle_scan_start_force_rebuilds_catalog verifies the force flag reaches
+// the scanner: the seeded catalog (entry plus version) is dropped, and with no
+// files on disk nothing is rebuilt.
+func Test_handle_scan_start_force_rebuilds_catalog(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	if err := store.Upsert_library(ctx, "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) != 1 {
+		t.Fatalf("libraries = %+v, %v", libraries, err)
+	}
+	entry, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Stale", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "Stale.mkv", Size_bytes: 1,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/scan",
+		`{"libraries":["lib1"],"force":true}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/scan/status", "")
+		body := decode[struct {
+			Scans []*job_response `json:"scans"`
+		}](t, status)
+		if len(body.Scans) == 0 {
+			t.Fatalf("status has no scan jobs")
+		}
+		running := false
+		for _, job := range body.Scans {
+			if job == nil || job.Running {
+				running = true
+			}
+		}
+		if !running {
+			if got, err := store.Get_catalog_entry(ctx, entry); err != nil || got != nil {
+				t.Fatalf("force rescan kept the stale entry: %+v, %v", got, err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("force scan job did not finish in time")
+}
+
+// Test_parallel_match_primary_is_stable guards the singular "match" field of
+// the background status against map iteration order: with several finished
+// per-library match jobs and no global job, the primary job must not change
+// between polls, or the UI re-fires its "matching finished" notification on
+// every poll.
+func Test_parallel_match_primary_is_stable(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	for _, lib := range []string{"lib1", "lib2"} {
+		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+			Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+		})
+		if err != nil {
+			t.Fatalf("upsert entry: %v", err)
+		}
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: id, File_path: "/media/" + lib + "/The.Matrix.1999.mkv",
+			Size_bytes: 9000, Hash: "hash-" + lib,
+		}); err != nil {
+			t.Fatalf("save version: %v", err)
+		}
+		if err := store.Upsert_library(ctx, lib, "/media/"+lib, true); err != nil {
+			t.Fatalf("upsert %s: %v", lib, err)
+		}
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1","lib2"]}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+		bg := decode[struct {
+			Matches []*match_job_response `json:"matches"`
+		}](t, status)
+		if len(bg.Matches) < 2 {
+			t.Fatalf("background matches = %d, want 2", len(bg.Matches))
+		}
+		done := true
+		for _, job := range bg.Matches {
+			if job == nil || job.Running {
+				done = false
+				break
+			}
+		}
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var primary string
+	for i := 0; i < 50; i++ {
+		status := do_request(t, server, http.MethodGet, "/api/v1/background", "")
+		bg := decode[struct {
+			Match *match_job_response `json:"match"`
+		}](t, status)
+		if bg.Match == nil {
+			t.Fatal("background has no primary match job")
+		}
+		if i == 0 {
+			primary = bg.Match.Id
+			continue
+		}
+		if bg.Match.Id != primary {
+			t.Fatalf("primary match job changed between polls: %s -> %s", primary, bg.Match.Id)
+		}
+	}
+}
+
 func Test_parallel_scan_exposes_one_job_per_library(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
@@ -833,8 +965,8 @@ func Test_parallel_scan_exposes_one_job_per_library(t *testing.T) {
 	}
 
 	started := decode[struct {
-		Job  *job_response   `json:"job"`
-		Jobs []*job_response `json:"jobs"`
+		Job   *job_response   `json:"job"`
+		Jobs  []*job_response `json:"jobs"`
 		Scans []*job_response `json:"scans"`
 	}](t, start)
 	if len(started.Jobs) != 2 {
@@ -993,6 +1125,82 @@ func Test_rematch_all_re_runs_matched_entries(t *testing.T) {
 	}
 	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" {
 		t.Fatalf("entry = %+v, want re-matched matrix (imdb tt0133093)", entry)
+	}
+}
+
+// Test_rematch_all_force_drops_unmatchable_match covers the Force rematch
+// button: entries the matcher can no longer match lose their stale match rather
+// than keeping it.
+func Test_rematch_all_force_drops_unmatchable_match(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	id := matched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", `{"force":true}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 0)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "needs_lookup" || entry.Imdb_id != "" || entry.Tmdb_id != 0 {
+		t.Fatalf("entry = %+v, want the stale match dropped", entry)
+	}
+	if entry.Title != "The Matrix" || entry.Release_year != 1999 {
+		t.Fatalf("entry = %+v, want the file-derived title/year", entry)
+	}
+}
+
+// Test_rematch_all_plain_keeps_unmatchable_match is the contrast to the force
+// variant: a plain rematch leaves an entry the matcher cannot match as it was.
+func Test_rematch_all_plain_keeps_unmatchable_match(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	id := matched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 0)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0000000" {
+		t.Fatalf("plain rematch dropped an existing match: %+v", entry)
+	}
+}
+
+// Test_match_job_reports_done_phase guards the match SSE contract: the run must
+// end with a "done" phase so the stream emits its done event and the WebUI
+// re-enables its actions instead of staying stuck on "busy".
+func Test_match_job_reports_done_phase(t *testing.T) {
+	server, store := new_test_server(t)
+	unmatched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 1)
+
+	status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+	body := decode[struct {
+		Job *match_job_response `json:"job"`
+	}](t, status)
+	if body.Job == nil {
+		t.Fatal("no match job reported")
+	}
+	if body.Job.Progress.Phase != "done" {
+		t.Errorf("phase = %q, want done", body.Job.Progress.Phase)
+	}
+	if body.Job.Running {
+		t.Error("job still running after its done phase")
 	}
 }
 

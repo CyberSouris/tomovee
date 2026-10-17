@@ -66,9 +66,9 @@ func Test_settings_override_persisted_and_read_back(t *testing.T) {
 	}
 
 	// Clearing a key to "" removes the credential and marks it unconfigured.
-	clear := do_request(t, server, http.MethodPut, "/api/v1/settings",
+	clearResp := do_request(t, server, http.MethodPut, "/api/v1/settings",
 		`{"tmdb_key":""}`)
-	cleared := decode[settings_response](t, clear)
+	cleared := decode[settings_response](t, clearResp)
 	if cleared.Tmdb_key != "" || cleared.Tmdb_configured {
 		t.Fatalf("expected tmdb cleared/unconfigured: %+v", cleared)
 	}
@@ -143,6 +143,75 @@ func Test_settings_upsert_library_from_web(t *testing.T) {
 	libraries, err = store.List_libraries(ctx)
 	if err != nil || len(libraries) != 1 || libraries[0].Path != "/srv/movies2" || libraries[0].Enabled {
 		t.Fatalf("library not updated: %v (%+v)", err, libraries)
+	}
+}
+
+func Test_settings_rejects_overlapping_library_paths(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	seed := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"libraries":[{"name":"media","path":"/srv/media","enabled":true}]}`)
+	if seed.Code != http.StatusOK {
+		t.Fatalf("seed put status = %d: %s", seed.Code, seed.Body)
+	}
+
+	// A sibling sharing a path prefix is not nested and is accepted.
+	sibling := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"libraries":[{"name":"media2","path":"/srv/media2","enabled":false}]}`)
+	if sibling.Code != http.StatusOK {
+		t.Fatalf("sibling put status = %d, want 200: %s", sibling.Code, sibling.Body)
+	}
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"child", `{"libraries":[{"name":"shows","path":"/srv/media/shows","enabled":false}]}`},
+		{"parent", `{"libraries":[{"name":"all","path":"/srv","enabled":false}]}`},
+		{"duplicate", `{"libraries":[{"name":"movies","path":"/srv/media","enabled":false}]}`},
+	} {
+		resp := do_request(t, server, http.MethodPut, "/api/v1/settings", tc.body)
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("%s put status = %d, want 400: %s", tc.name, resp.Code, resp.Body)
+		}
+	}
+
+	libraries, err := store.List_libraries(ctx)
+	if err != nil {
+		t.Fatalf("list libraries: %v", err)
+	}
+	if len(libraries) != 2 {
+		t.Fatalf("rejected updates changed the store: %+v", libraries)
+	}
+
+	// A rejected update leaves its other settings untouched too.
+	rejected := do_request(t, server, http.MethodPut, "/api/v1/settings",
+		`{"tmdb_key":"should-not-stick","libraries":[{"name":"shows","path":"/srv/media/shows","enabled":false}]}`)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("rejected put status = %d, want 400: %s", rejected.Code, rejected.Body)
+	}
+	if _, ok, _ := store.Config_get(ctx, config.Override_tmdb_key); ok {
+		t.Fatal("rejected update persisted tmdb_key")
+	}
+}
+
+func Test_path_within(t *testing.T) {
+	for _, tc := range []struct {
+		inner, outer string
+		want         bool
+	}{
+		{"/srv/media", "/srv/media", true},
+		{"/srv/media/shows", "/srv/media", true},
+		{"/srv/media/", "/srv/media", true},
+		{"/srv/media2", "/srv/media", false},
+		{"/srv", "/srv/media", false},
+		{"/srv/media", "", false},
+		{"", "/srv/media", false},
+	} {
+		if got := path_within(tc.inner, tc.outer); got != tc.want {
+			t.Errorf("path_within(%q, %q) = %v, want %v", tc.inner, tc.outer, got, tc.want)
+		}
 	}
 }
 

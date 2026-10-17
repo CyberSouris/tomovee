@@ -39,13 +39,13 @@ func Test_is_junk(t *testing.T) {
 			t.Errorf("Is_junk(%q) = false, want true", name)
 		}
 	}
-	real := []string{
+	validFiles := []string{
 		"Fight.Club.1999.1080p.BluRay.x264.mkv",
 		"The Matrix (1999).mkv",
 		"Marcel.Review.mkv",
 		"Weekend.Movie.mkv",
 	}
-	for _, name := range real {
+	for _, name := range validFiles {
 		if Is_junk(name) {
 			t.Errorf("Is_junk(%q) = true, want false", name)
 		}
@@ -93,7 +93,7 @@ func Test_parse_episode_series(t *testing.T) {
 }
 
 func Test_classify(t *testing.T) {
-	const min = 50 * 1024 * 1024
+	const minSize = 50 * 1024 * 1024
 
 	cases := []struct {
 		name  string
@@ -108,7 +108,7 @@ func Test_classify(t *testing.T) {
 		{"readme.txt", 1024, Not_video, Movie},
 	}
 	for _, c := range cases {
-		got := Classify(c.name, c.size, min)
+		got := Classify(c.name, c.size, minSize)
 		if got.Kind != c.kind {
 			t.Errorf("Classify(%q).Kind = %v, want %v", c.name, got.Kind, c.kind)
 		}
@@ -129,6 +129,8 @@ func Test_series_folder_helpers(t *testing.T) {
 		{"flat show", "Show.Name/S01E01.mkv", "Show.Name", "Show.Name"},
 		{"nested specials", "Show.Name/Specials/Show.S00E01.mkv", "Show.Name", "Show.Name"},
 		{"season s1", "Show.Name/S1/f.mkv", "Show.Name", "Show.Name"},
+		{"season tagged with year", "Show.Name/S01 (2001)/S01E01.mkv", "Show.Name", "Show.Name"},
+		{"season tagged with bracket year", "Show.Name/Season 2 [1999]/f.mkv", "Show.Name", "Show.Name"},
 		{"two levels", "Show.Name/Season 1/Special Features/x.mkv", "Show.Name", "Show.Name"},
 		{"flat in library root", "S01E01.mkv", ".", ""},
 		{"flat season in library root", "Season 1/S01E01.mkv", ".", ""},
@@ -144,12 +146,12 @@ func Test_series_folder_helpers(t *testing.T) {
 		})
 	}
 
-	for _, folder := range []string{"Season 1", "Season 12", "s3", "S4", "Specials", "Specials", "Extras", "Bonus", "Special Features", "Deleted Scenes", "Behind the Scenes", "Trailers", "Interviews"} {
+	for _, folder := range []string{"Season 1", "Season 12", "s3", "S4", "S01 (2001)", "Season 2 [1999]", "Specials", "Specials", "Extras", "Bonus", "Special Features", "Deleted Scenes", "Behind the Scenes", "Trailers", "Interviews"} {
 		if !Skip_series_folder(folder) {
 			t.Errorf("Skip_series_folder(%q) = false, want true", folder)
 		}
 	}
-	for _, folder := range []string{"Breaking Bad", "The.Office", "Santorini", "Extras The Show"} {
+	for _, folder := range []string{"Breaking Bad", "The.Office", "Santorini", "Extras The Show", "The Office (2001)"} {
 		if Skip_series_folder(folder) {
 			t.Errorf("Skip_series_folder(%q) = true, want false", folder)
 		}
@@ -159,8 +161,9 @@ func Test_series_folder_helpers(t *testing.T) {
 func Test_series_folder_patterns(t *testing.T) {
 	cases := map[string]bool{
 		"Season 1": true, "season 2": true, "Season.3": true, "S07": true, "s8": true,
+		"S01 (2001)": true, "Season 2 [1999]": true,
 		"Specials": true, "Special": true, "Extras": true, "Features": false,
-		"Breaking.Bad": false,
+		"Breaking.Bad": false, "The Office (2001)": false,
 	}
 	for folder, want := range cases {
 		if got := Skip_series_folder(folder); got != want {
@@ -179,6 +182,8 @@ func Test_season_of(t *testing.T) {
 		{"The.Office/Season.10/Part 1.mkv", 10, true},
 		{"The.Office/s3/Part 1.mkv", 3, true},
 		{"The.Office/S04/Part 1.mkv", 4, true},
+		{"The.Office/S02 (2001)/Part 1.mkv", 2, true},
+		{"The.Office/Season 3 [2005]/Part 1.mkv", 3, true},
 		{"The.Office/Specials/Bloopers.mkv", 0, true},
 		{"The.Office/Extras/Behind the Scenes.mkv", 0, true},
 		{"The.Office/Part 1.mkv", 0, false},

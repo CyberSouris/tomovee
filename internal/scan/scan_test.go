@@ -306,6 +306,62 @@ func Test_run_unknown_library_only_errors(t *testing.T) {
 	}
 }
 
+// Test_force_libraries_rebuilds_catalog verifies the WebUI force rescan: a plain
+// rescan skips unchanged files and keeps existing decisions, while a forced one
+// drops the derived catalog and rebuilds every entry from the files.
+func Test_force_libraries_rebuilds_catalog(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "The.Matrix.1999.1080p.mkv", 1000)
+
+	store := new_test_store(t)
+	ctx := context.Background()
+	s := new_test_scanner(t, store, dir)
+
+	if _, err := s.Run(ctx); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	entries, _ := store.List_catalog_entries(ctx, database.Catalog_filter{})
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	stale_id := entries[0].Id
+	if err := store.Set_catalog_status(ctx, stale_id, "matched"); err != nil {
+		t.Fatalf("mark matched: %v", err)
+	}
+
+	// A plain rescan skips the unchanged file and keeps the match.
+	if result, err := s.Run(ctx); err != nil {
+		t.Fatalf("second run: %v", err)
+	} else if result.Skipped != 1 || result.New != 0 {
+		t.Fatalf("plain rescan = %+v, want 1 skipped and 0 new", result)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, stale_id); entry == nil || entry.Status != "matched" {
+		t.Fatalf("plain rescan dropped the match: %+v", entry)
+	}
+
+	// The force rescan drops the derived catalog and rebuilds it from the files.
+	result, err := s.Force_libraries(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("force run: %v", err)
+	}
+	if result.New != 1 || result.Skipped != 0 {
+		t.Fatalf("force run = %+v, want 1 new and 0 skipped", result)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, stale_id); entry != nil {
+		t.Fatalf("force run kept the stale entry: %+v", entry)
+	}
+	entries, _ = store.List_catalog_entries(ctx, database.Catalog_filter{})
+	if len(entries) != 1 {
+		t.Fatalf("entries after force = %+v, want 1 rebuilt", entries)
+	}
+	if entries[0].Id == stale_id || entries[0].Status != "needs_lookup" {
+		t.Fatalf("entry not rebuilt from scratch: %+v", entries[0])
+	}
+	if versions, _ := store.List_versions_for_entry(ctx, entries[0].Id); len(versions) != 1 {
+		t.Fatalf("versions after force = %+v, want 1", versions)
+	}
+}
+
 func Test_run_normalizes_legacy_absolute_version(t *testing.T) {
 	dir := t.TempDir()
 	path := write_file(t, dir, "Old.Movie.mkv", 1000)

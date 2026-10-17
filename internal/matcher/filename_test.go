@@ -91,6 +91,8 @@ func Test_parse_foldername(t *testing.T) {
 		{"Chernobyl.2019", "Chernobyl", 2019},
 		{"Stranger Things", "Stranger Things", 0},
 		{"Dont Breathe", "Dont Breathe", 0},
+		{"Some.Show.2001-2005.D5", "Some Show", 2001},
+		{"Another.Show (1999-2003)", "Another Show", 1999},
 	}
 	for _, c := range cases {
 		got := Parse_foldername(c.name)

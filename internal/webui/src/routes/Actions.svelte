@@ -3,17 +3,21 @@
   import { api_get, api_send } from '../api.js';
 
   let libraries = [];
-  let selected = [];
+  let selected_set = {};
+$: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
+$: all_selected = libraries.length > 0 && libraries.every((library) => selected_set[library.name]);
 
   let scan_progress = null;
   let scan_result = null;
   let scan_running = false;
+  let scan_force = false;
   let scan_error = '';
   let scan_source = null;
 
   let match_progress = null;
   let match_result = null;
   let match_running = false;
+  let match_force = false;
   let match_error = '';
   let match_source = null;
 
@@ -51,45 +55,78 @@
     try {
       const data = await api_get('/api/v1/settings');
       libraries = data.libraries || [];
-      selected = libraries.filter((library) => library.enabled).map((library) => library.name);
+      selected_set = {};
+      for (const library of libraries) {
+        if (library.enabled) selected_set[library.name] = true;
+      }
+      selected_set = { ...selected_set };
     } catch (err) {
       scan_error = err.message;
     }
-  }
-
-  function is_selected(name) {
-    return selected.includes(name);
-  }
-
-  function toggle(name) {
-    selected = is_selected(name)
-      ? selected.filter((item) => item !== name)
-      : [...selected, name];
-  }
-
-  function all_selected() {
-    return libraries.length > 0 && selected.length === libraries.length;
   }
 
   function toggle_all() {
-    selected = all_selected() ? [] : libraries.map((library) => library.name);
+    if (all_selected) {
+      selected_set = {};
+      return;
+    }
+    const next = {};
+    for (const library of libraries) next[library.name] = true;
+    selected_set = next;
   }
 
   async function start_scan() {
-    scan_error = '';
+    run_scan(false);
+  }
+
+  async function start_force_scan() {
+    run_scan(true);
+  }
+
+  function clear_scan_panel() {
+    scan_progress = null;
     scan_result = null;
+    scan_error = '';
+  }
+
+  function clear_match_panel() {
+    match_progress = null;
+    match_result = null;
+    match_error = '';
+  }
+
+  // Starting a new action hides the previous action's progress and results, so
+  // the page only shows the run the user just triggered. The chain's internal
+  // match is not a new action — it belongs to the Scan & Match run already on
+  // screen — so it clears only its own panel and keeps the chain's scan results.
+  function clear_previous_action() {
+    clear_scan_panel();
+    clear_match_panel();
+  }
+
+  async function run_scan(force) {
+    clear_previous_action();
+    scan_force = force;
     try {
-      await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
+      await api_send('/api/v1/scan', 'POST', { libraries: selected.slice(), force });
       scan_running = true;
     } catch (err) {
+      scan_force = false;
       scan_error = err.message;
     }
   }
 
-  async function start_match() {
+  // from_chain marks the match kicked off by Scan & Match. That run already
+  // showed its scan results, so they are kept; a directly triggered match hides
+  // them instead (see clear_previous_action).
+  async function start_match(from_chain) {
     chain_match = false;
-    match_error = '';
-    match_result = null;
+    if (from_chain) {
+      clear_match_panel();
+    } else {
+      clear_previous_action();
+    }
+    match_force = false;
     try {
       await api_send('/api/v1/match', 'POST', { libraries: selected.slice() });
       match_running = true;
@@ -98,21 +135,22 @@
     }
   }
 
-  async function start_rematch() {
-    match_error = '';
-    match_result = null;
+  async function start_force_rematch() {
+    clear_previous_action();
+    match_force = true;
     try {
-      await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice() });
+      await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice(), force: true });
       match_running = true;
     } catch (err) {
+      match_force = false;
       match_error = err.message;
     }
   }
 
   async function start_chain() {
+    clear_previous_action();
     chain_match = true;
-    scan_error = '';
-    scan_result = null;
+    scan_force = false;
     try {
       await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
       scan_running = true;
@@ -140,11 +178,14 @@
       scan_progress = JSON.parse(event.data).progress;
       scan_running = true;
     });
-    scan_source.addEventListener('done', () => {
-      scan_running = false;
-      refresh_scan();
-      if (chain_match) {
-        start_match();
+    scan_source.addEventListener('done', async () => {
+      scan_force = false;
+      // Per-library scans each emit their own "done"; re-derive the running
+      // state from the aggregated status so we only clear busy (and chain the
+      // match) once the last selected library has finished.
+      await refresh_scan();
+      if (!scan_running && chain_match) {
+        start_match(true);
       }
     });
 
@@ -161,9 +202,11 @@
       match_progress = JSON.parse(event.data).progress;
       match_running = true;
     });
-    match_source.addEventListener('done', () => {
-      match_running = false;
-      refresh_match();
+    match_source.addEventListener('done', async () => {
+      match_force = false;
+      // Like the scan stream, each per-library match emits its own "done"; the
+      // aggregated status clears busy only once the last library finishes.
+      await refresh_match();
     });
 
     return () => {
@@ -198,26 +241,33 @@
   {#if libraries.length}
     <div class="controls">
       <button class="secondary" on:click={toggle_all} disabled={busy || libraries.length === 0}>
-        {all_selected() ? 'Select none' : 'Select all'}
+        {all_selected ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>
-      <button on:click={start_match} disabled={busy || selected.length === 0}>
-        {match_running ? 'Matching…' : 'Match'}
+      <button on:click={() => start_match(false)} disabled={busy || selected.length === 0} title="Look up titles for entries that are not matched yet. Entries that are already matched are left alone.">
+        {match_running && !match_force ? 'Matching…' : 'Match'}
       </button>
-      <button on:click={start_rematch} disabled={busy || selected.length === 0} title="Re-run the matcher over every known title, already matched ones included">
-        Rematch all
-      </button>
-      <button on:click={start_chain} disabled={busy || selected.length === 0}>
-        {chain_match ? 'Scan & Match…' : 'Scan & Match'}
+      <button on:click={start_force_rematch} disabled={busy || selected.length === 0} title="Drop every match found so far for the selected libraries and run the matcher over everything from scratch. Use after a matcher change.">
+        {match_running && match_force ? 'Rematching…' : 'Force rematch'}
       </button>
       <button on:click={start_scan} disabled={busy || selected.length === 0}>
-        {scan_running ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}
+        {scan_running && !scan_force ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}
+      </button>
+      <button
+        on:click={start_force_scan}
+        disabled={busy || selected.length === 0}
+        title="Drop all matches and files known for the selected libraries and scan them from scratch. Use when a smart scan got it wrong."
+      >
+        {scan_running && scan_force ? 'Rebuilding…' : 'Force rescan'}
+      </button>
+      <button on:click={start_chain} disabled={busy || selected.length === 0} title="Run a smart scan, then match any entries it added, in one go.">
+        {chain_match ? 'Scan & Match…' : 'Scan & Match'}
       </button>
     </div>
     <div class="list">
       {#each libraries as library}
-        <label class="lib" class:checked={is_selected(library.name)}>
-          <input type="checkbox" checked={is_selected(library.name)} on:change={() => toggle(library.name)} disabled={busy} />
+        <label class="lib" class:checked={!!selected_set[library.name]}>
+          <input type="checkbox" bind:checked={selected_set[library.name]} on:change={() => { selected_set = { ...selected_set }; }} disabled={busy} />
           <span class="name">{library.name}</span>
           <span class="path muted">{library.path}</span>
           {#if library.enabled}<span class="badge">watched</span>{/if}

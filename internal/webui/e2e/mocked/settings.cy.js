@@ -46,4 +46,29 @@ describe('settings page', () => {
     cy.contains('TMDB:');
     cy.contains('li', 'Reload applies them to the running server');
   });
+
+  it('rejects a nested library path and keeps the list unchanged', () => {
+    cy.intercept('PUT', '/api/v1/settings', {
+      statusCode: 400,
+      body: {
+        error:
+          'library "Shows" (/media/movies/shows) overlaps library "Movies" (/media/movies); libraries must not be nested',
+      },
+    }).as('save');
+    cy.visit('/#/settings');
+    cy.wait('@settings');
+    cy.get('input[placeholder="Name"]').type('Shows');
+    cy.get('input[placeholder="/path/to/movies"]').type('/media/movies/shows');
+    cy.contains('button', 'Add library').click();
+    cy.wait('@save');
+    cy.get('p.error').should('contain', 'libraries must not be nested');
+    cy.contains('th', 'Last scan')
+      .closest('table')
+      .find('tbody tr')
+      .should('have.length', 2);
+    cy.contains('th', 'Last scan')
+      .closest('table')
+      .find('tbody')
+      .should('not.contain', '/media/movies/shows');
+  });
 });

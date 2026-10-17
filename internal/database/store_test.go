@@ -714,3 +714,76 @@ func Test_reset_catalogs_scopes_to_named_libraries(t *testing.T) {
 		t.Errorf("shared versions = %+v, want only the B file", versions)
 	}
 }
+
+func Test_reset_entry_match_clears_matched_metadata(t *testing.T) {
+	ctx := context.Background()
+	store := new_test_store(t)
+
+	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Old Match", Original_title: "Old Original",
+		Release_year: 2008, Overview: "an overview", Runtime_minutes: 49,
+		Rating: 9.5, Vote_count: 12000, Imdb_id: "tt0903747", Tmdb_id: 1396,
+		Poster_path: "/poster.jpg", Status: "matched", Genres: []string{"Drama"},
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, Episode{
+		Catalog_entry_id: id, Season_number: 1, Episode_number: 1,
+		Title: "Pilot", Overview: "pilot overview", Airdate: "2008", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if err := store.Upsert_series_metadata(ctx, Series_metadata{
+		Catalog_entry_id: id, First_air_date: "2008-01-20", Num_episodes: 62,
+	}); err != nil {
+		t.Fatalf("upsert series metadata: %v", err)
+	}
+	if err := store.Replace_candidates(ctx, id, []Candidate{
+		{Tmdb_id: 1396, Title: "Breaking Bad", Year: 2008, Media_type: "series", Score: 0.4},
+	}); err != nil {
+		t.Fatalf("replace candidates: %v", err)
+	}
+
+	if err := store.Reset_entry_match(ctx, id, "Breaking Bad", 0); err != nil {
+		t.Fatalf("reset entry match: %v", err)
+	}
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "needs_lookup" || entry.Title != "Breaking Bad" || entry.Release_year != 0 {
+		t.Errorf("entry = %+v, want needs_lookup/raw title raw year", entry)
+	}
+	if entry.Original_title != "" || entry.Overview != "" || entry.Runtime_minutes != 0 ||
+		entry.Rating != 0 || entry.Vote_count != 0 || entry.Imdb_id != "" ||
+		entry.Tmdb_id != 0 || entry.Poster_path != "" {
+		t.Errorf("matched metadata survived reset: %+v", entry)
+	}
+	if len(entry.Genres) != 0 {
+		t.Errorf("genres survived reset: %+v", entry.Genres)
+	}
+	if meta, _ := store.Get_series_metadata(ctx, id); meta != nil {
+		t.Errorf("series metadata survived reset: %+v", meta)
+	}
+	if candidates, _ := store.List_candidates(ctx, id); len(candidates) != 0 {
+		t.Errorf("candidates survived reset: %+v", candidates)
+	}
+	episodes, err := store.List_episodes(ctx, id)
+	if err != nil {
+		t.Fatalf("list episodes: %v", err)
+	}
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %d, want the row kept", len(episodes))
+	}
+	if episodes[0].Id != episode_id || episodes[0].Status != "needs_lookup" ||
+		episodes[0].Title != "" || episodes[0].Overview != "" || episodes[0].Airdate != "" {
+		t.Errorf("episode = %+v, want cleared match state", episodes[0])
+	}
+	// Versions survive: only the match is dropped, the files stay catalogued.
+	if versions, _ := store.List_versions_for_entry(ctx, id); len(versions) != 0 {
+		t.Errorf("unexpected version rows: %+v", versions)
+	}
+}

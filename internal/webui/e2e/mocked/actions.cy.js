@@ -69,4 +69,27 @@ describe('actions page library selection', () => {
       force: false,
     });
   });
+
+  it('force rematch asks the rematch endpoint to drop existing matches', () => {
+    cy.intercept('POST', '/api/v1/match/rematch', { statusCode: 202, body: { job: null } }).as('rematch');
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('button', 'Force rematch').click();
+    cy.wait('@rematch').its('request.body').should('deep.equal', {
+      libraries: ['Movies', 'Series'],
+      force: true,
+    });
+  });
+
+  it('match only asks for unmatched entries', () => {
+    cy.intercept('POST', '/api/v1/match', { statusCode: 202, body: { job: null } }).as('match');
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('button', 'Match').click();
+    cy.wait('@match').its('request.body').should('deep.equal', {
+      libraries: ['Movies', 'Series'],
+    });
+  });
 });

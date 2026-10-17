@@ -922,7 +922,9 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 // handle_rematch_all_start starts a background rematch run over every known
 // entry. It goes through the same job manager as the Match button, so it shares
 // the progress stream, and queues behind a running match job instead of failing
-// with a conflict.
+// with a conflict. A plain run re-matches every entry but leaves entries it can
+// no longer match as they were; force drops each entry's existing match before
+// re-evaluating it, so stale matches disappear instead of lingering.
 func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request) {
 	if s.matching == nil || s.matcher == nil {
 		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
@@ -934,6 +936,10 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 	}
 	var request struct {
 		Libraries []string `json:"libraries"`
+		// Force throws away the matches found so far before re-matching, so the
+		// catalog reflects exactly what the current matcher produces. See
+		// Matching.Run_force_rematch.
+		Force bool `json:"force"`
 	}
 	if r.Body != nil {
 		decoder := json.NewDecoder(r.Body)
@@ -951,9 +957,11 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	rematch := s.rematch_run(request.Force)
+
 	if len(names) == 0 {
 		job, err := s.matches.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-			return s.matching.Run_rematch(ctx, nil, progress)
+			return rematch(ctx, nil, progress)
 		})
 		if err != nil {
 			write_error(w, http.StatusConflict, job_running_error("a matching job is already running"))
@@ -968,7 +976,7 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 		name := name
 		mgr := s.match_job_manager(name)
 		job, err := mgr.Start_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-			return s.matching.Run_rematch(ctx, []string{name}, progress)
+			return rematch(ctx, []string{name}, progress)
 		})
 		if err != nil {
 			write_error(w, http.StatusConflict, job_running_error("a matching job is already running for "+name))
@@ -987,6 +995,17 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 		response["job"] = jobs[0]
 	}
 	write_json(w, http.StatusAccepted, response)
+}
+
+// rematch_run picks the background rematch flavour a request asked for: force
+// drops each entry's existing match before re-evaluating it, while a plain run
+// only refreshes entries that still match confidently. Both share the matching
+// job manager and progress stream.
+func (s *Server) rematch_run(force bool) func(context.Context, []string, func(matching.Progress)) (*matching.Result, error) {
+	if force {
+		return s.matching.Run_force_rematch
+	}
+	return s.matching.Run_rematch
 }
 
 // matching_unavailable_message explains why the background matching job cannot

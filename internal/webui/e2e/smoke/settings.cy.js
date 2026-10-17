@@ -106,6 +106,19 @@ describe('settings and libraries', () => {
     });
   });
 
+  it('force-rematches from scratch through the queued job manager', () => {
+    // The force variant drops each entry's existing match before re-running, so
+    // it must complete cleanly against the fixture catalog too.
+    cy.request({ method: 'POST', url: '/api/v1/match/rematch', body: { force: true } }).then((response) => {
+      expect(response.status).to.eq(202);
+      return wait_for_match();
+    }).then((job) => {
+      expect(job.running).to.eq(false);
+      expect(job.error || '').to.eq('');
+      expect(job.progress.total).to.be.at.least(1);
+    });
+  });
+
   it('refuses a second matching run while one is queued', () => {
     // Start and immediately re-request: the second call is either rejected or
     // queued, but it must never report a bogus success.

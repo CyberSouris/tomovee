@@ -159,6 +159,45 @@ func (s *Store) Update_catalog_entry(ctx context.Context, id int64, entry Catalo
 	})
 }
 
+// Reset_entry_match drops one entry's match-derived state so a force rematch
+// re-evaluates it from scratch. The entry returns to "needs_lookup" under the
+// given scanned title/year and every matched field — identifiers, overview,
+// rating, poster, genres, the show record, episode titles and pending
+// candidates — is cleared. Versions, episode numbering and media type survive,
+// so the files are still catalogued; only what matching added is thrown away.
+// The force rematch derives title/year from the files the way a scan would, so
+// an entry that no longer matches falls back to its raw name instead of the
+// title of the match it just dropped.
+func (s *Store) Reset_entry_match(ctx context.Context, id int64, title string, year int) error {
+	return s.with_tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE catalog_entry SET
+				title = ?, release_year = ?, original_title = NULL, overview = NULL,
+				runtime_minutes = NULL, rating = NULL, vote_count = NULL,
+				imdb_id = NULL, tmdb_id = NULL, poster_path = NULL,
+				status = 'needs_lookup', updated_at = datetime('now')
+			WHERE id = ?`, title, nullable_int(year), id); err != nil {
+			return fmt.Errorf("reset catalog entry %d: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM candidate WHERE catalog_entry_id = ?", id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM series_metadata WHERE catalog_entry_id = ?", id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entry_genre WHERE catalog_entry_id = ?", id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE episode SET title = NULL, overview = NULL, airdate = NULL,
+				status = 'needs_lookup', updated_at = datetime('now')
+			WHERE catalog_entry_id = ?`, id); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // Delete_catalog_entry removes a catalog entry and everything attached to it.
 // Dependent rows (episodes, metadata, candidates, genre links, and any version
 // still pointing at the entry) are dropped by their ON DELETE CASCADE foreign

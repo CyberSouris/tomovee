@@ -113,7 +113,8 @@ tomovee version
 |`POST` |`/api/v1/scan` |Start a background scan (`force: true` drops the selected libraries' catalogue and rebuilds it from scratch)
 |`GET` |`/api/v1/scan/status` |Current scan job
 |`GET` |`/api/v1/scan/stream` |Server-sent events with live scan progress
-|`POST` |`/api/v1/match` |Start a background matching job
+|`POST` |`/api/v1/match` |Start a background matching job over unmatched entries
+|`POST` |`/api/v1/match/rematch` |Re-run the matcher over every known title (`force: true` drops each entry's existing match first)
 |`GET` |`/api/v1/match/status` |Current matching job
 |`GET` |`/api/v1/match/stream` |Server-sent events with live match progress
 |`GET` |`/api/v1/settings` |Read settings and watch folders

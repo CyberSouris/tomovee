@@ -206,6 +206,90 @@ func Test_set_datasets_after_construction_enriches(t *testing.T) {
 	}
 }
 
+func Test_run_force_rematch_drops_unmatchable_match(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Matrix Reloaded", Release_year: 2003,
+		Overview: "stale overview", Runtime_minutes: 138, Rating: 7.1,
+		Vote_count: 5000, Imdb_id: "tt0234215", Tmdb_id: 604,
+		Poster_path: "/reloaded.jpg", Status: "matched", Genres: []string{"Action"},
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv",
+		Size_bytes: 9000, Hash: "hash-1",
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	// The fake matcher has no movie source, so a forced rematch cannot match
+	// this entry and must drop the accepted match instead of keeping it.
+	result, err := service.Run_force_rematch(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("force rematch: %v", err)
+	}
+	if result.Total != 1 || result.Matched != 0 || result.Unmatched != 1 {
+		t.Fatalf("result = %+v, want single unmatched", result)
+	}
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "needs_lookup" {
+		t.Errorf("status = %q, want needs_lookup", entry.Status)
+	}
+	if entry.Title != "The Matrix" || entry.Release_year != 1999 {
+		t.Errorf("title/year = %q/%d, want the file-derived The Matrix/1999", entry.Title, entry.Release_year)
+	}
+	if entry.Imdb_id != "" || entry.Tmdb_id != 0 || entry.Overview != "" ||
+		entry.Poster_path != "" || entry.Rating != 0 || entry.Vote_count != 0 {
+		t.Errorf("stale match metadata survived: %+v", entry)
+	}
+	if len(entry.Genres) != 0 {
+		t.Errorf("stale genres survived: %+v", entry.Genres)
+	}
+}
+
+func Test_run_force_rematch_rematches_series(t *testing.T) {
+	service, store := new_test_service(t)
+	ctx := context.Background()
+	entry_id, _, _ := add_series(t, store)
+	if _, err := service.Run(ctx, nil, nil); err != nil {
+		t.Fatalf("initial run: %v", err)
+	}
+
+	// Corrupt the accepted match so the force rematch has something to drop.
+	entry, err := store.Get_catalog_entry(ctx, entry_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	entry.Title = "Wrong Show"
+	entry.Imdb_id = "tt0000000"
+	if err := store.Update_catalog_entry(ctx, entry_id, *entry); err != nil {
+		t.Fatalf("corrupt entry: %v", err)
+	}
+
+	result, err := service.Run_force_rematch(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("force rematch: %v", err)
+	}
+	if result.Total != 1 || result.Matched != 1 {
+		t.Fatalf("result = %+v, want one matched", result)
+	}
+	fresh, err := store.Get_catalog_entry(ctx, entry_id)
+	if err != nil || fresh == nil {
+		t.Fatalf("get fresh entry: %v", err)
+	}
+	if fresh.Title != "Breaking Bad" || fresh.Imdb_id != "tt0903747" || fresh.Status != "matched" {
+		t.Errorf("entry = %+v, want re-matched Breaking Bad", fresh)
+	}
+}
+
 func Test_run_leaves_versionless_entries_unmatched(t *testing.T) {
 	service, store := new_test_service(t)
 	ctx := context.Background()

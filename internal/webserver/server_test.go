@@ -1128,6 +1128,54 @@ func Test_rematch_all_re_runs_matched_entries(t *testing.T) {
 	}
 }
 
+// Test_rematch_all_force_drops_unmatchable_match covers the Force rematch
+// button: entries the matcher can no longer match lose their stale match rather
+// than keeping it.
+func Test_rematch_all_force_drops_unmatchable_match(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	id := matched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", `{"force":true}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 0)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "needs_lookup" || entry.Imdb_id != "" || entry.Tmdb_id != 0 {
+		t.Fatalf("entry = %+v, want the stale match dropped", entry)
+	}
+	if entry.Title != "The Matrix" || entry.Release_year != 1999 {
+		t.Fatalf("entry = %+v, want the file-derived title/year", entry)
+	}
+}
+
+// Test_rematch_all_plain_keeps_unmatchable_match is the contrast to the force
+// variant: a plain rematch leaves an entry the matcher cannot match as it was.
+func Test_rematch_all_plain_keeps_unmatchable_match(t *testing.T) {
+	server, store := new_test_server_with_offline(t, fake_offline_low{})
+	ctx := context.Background()
+	id := matched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 0)
+
+	entry, err := store.Get_catalog_entry(ctx, id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v", err)
+	}
+	if entry.Status != "matched" || entry.Imdb_id != "tt0000000" {
+		t.Fatalf("plain rematch dropped an existing match: %+v", entry)
+	}
+}
+
 func Test_rematch_all_queues_behind_running_job(t *testing.T) {
 	server, _ := new_test_server(t)
 	id := unmatched_entry_with_version(t, server.store)

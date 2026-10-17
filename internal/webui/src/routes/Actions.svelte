@@ -17,6 +17,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
   let match_progress = null;
   let match_result = null;
   let match_running = false;
+  let match_force = false;
   let match_error = '';
   let match_source = null;
 
@@ -99,6 +100,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
     chain_match = false;
     match_error = '';
     match_result = null;
+    match_force = false;
     try {
       await api_send('/api/v1/match', 'POST', { libraries: selected.slice() });
       match_running = true;
@@ -107,13 +109,15 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
     }
   }
 
-  async function start_rematch() {
+  async function start_force_rematch() {
     match_error = '';
     match_result = null;
+    match_force = true;
     try {
-      await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice() });
+      await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice(), force: true });
       match_running = true;
     } catch (err) {
+      match_force = false;
       match_error = err.message;
     }
   }
@@ -174,6 +178,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
     });
     match_source.addEventListener('done', () => {
       match_running = false;
+      match_force = false;
       refresh_match();
     });
 
@@ -212,14 +217,11 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
         {all_selected ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>
-      <button on:click={start_match} disabled={busy || selected.length === 0}>
-        {match_running ? 'Matching…' : 'Match'}
+      <button on:click={start_match} disabled={busy || selected.length === 0} title="Look up titles for entries that are not matched yet. Entries that are already matched are left alone.">
+        {match_running && !match_force ? 'Matching…' : 'Match'}
       </button>
-      <button on:click={start_rematch} disabled={busy || selected.length === 0} title="Re-run the matcher over every known title, already matched ones included">
-        Rematch all
-      </button>
-      <button on:click={start_chain} disabled={busy || selected.length === 0}>
-        {chain_match ? 'Scan & Match…' : 'Scan & Match'}
+      <button on:click={start_force_rematch} disabled={busy || selected.length === 0} title="Drop every match found so far for the selected libraries and run the matcher over everything from scratch. Use after a matcher change.">
+        {match_running && match_force ? 'Rematching…' : 'Force rematch'}
       </button>
       <button on:click={start_scan} disabled={busy || selected.length === 0}>
         {scan_running && !scan_force ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}
@@ -227,9 +229,12 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
       <button
         on:click={start_force_scan}
         disabled={busy || selected.length === 0}
-        title="Drop the catalog entries and matches found for the selected libraries and rescan them from scratch. Use after a scanner or matcher change."
+        title="Drop all matches and files known for the selected libraries and scan them from scratch. Use when a smart scan got it wrong."
       >
         {scan_running && scan_force ? 'Rebuilding…' : 'Force rescan'}
+      </button>
+      <button on:click={start_chain} disabled={busy || selected.length === 0} title="Run a smart scan, then match any entries it added, in one go.">
+        {chain_match ? 'Scan & Match…' : 'Scan & Match'}
       </button>
     </div>
     <div class="list">

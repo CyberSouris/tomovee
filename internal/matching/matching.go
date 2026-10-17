@@ -87,7 +87,7 @@ func (m *Matching) Run(ctx context.Context, libraries []string, progress func(Pr
 	if err != nil {
 		return nil, err
 	}
-	return m.run_entries(ctx, entries, progress), nil
+	return m.run_entries(ctx, entries, false, progress), nil
 }
 
 // Run_rematch re-runs the automatic matcher over every entry that has a known
@@ -105,12 +105,32 @@ func (m *Matching) Run_rematch(ctx context.Context, libraries []string, progress
 	if err != nil {
 		return nil, err
 	}
-	return m.run_entries(ctx, entries, progress), nil
+	return m.run_entries(ctx, entries, false, progress), nil
+}
+
+// Run_force_rematch throws away every match already found and re-runs the
+// matcher over every entry from the start. Unlike Run_rematch, an entry the
+// matcher can no longer match confidently is not left as it was: its stale
+// match is dropped (status back to needs_lookup, matched metadata cleared) and
+// its title falls back to the name a scan would have derived from the files.
+// It backs the WebUI's force rematch, used after a matcher change when the
+// previously accepted matches can no longer be trusted.
+func (m *Matching) Run_force_rematch(ctx context.Context, libraries []string, progress func(Progress)) (*Result, error) {
+	entries, err := m.store.List_catalog_entries(ctx, database.Catalog_filter{
+		Statuses:  []string{"matched", "needs_lookup"},
+		Sort:      "added",
+		Libraries: libraries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return m.run_entries(ctx, entries, true, progress), nil
 }
 
 // run_entries matches a bounded worker pool over the given entries and reports
-// per-entry progress.
-func (m *Matching) run_entries(ctx context.Context, entries []database.Catalog_entry, progress func(Progress)) *Result {
+// per-entry progress. force makes each entry drop its previous match before it
+// is re-evaluated. See Run_force_rematch.
+func (m *Matching) run_entries(ctx context.Context, entries []database.Catalog_entry, force bool, progress func(Progress)) *Result {
 	result := &Result{}
 	result.Total = len(entries)
 
@@ -139,7 +159,7 @@ func (m *Matching) run_entries(ctx context.Context, entries []database.Catalog_e
 		go func() {
 			defer wg.Done()
 			for entry := range jobs {
-				ok, err := m.match_entry(ctx, entry)
+				ok, err := m.match_entry(ctx, entry, force)
 				if err != nil {
 					m.logger.Warn("matching: entry failed", "title", entry.Title, "error", err)
 				}
@@ -185,11 +205,30 @@ send_loop:
 
 // match_entry identifies one catalog entry and persists the result. It uses
 // the largest stored version so the OpenSubtitles hash can be looked up without
-// touching the file again.
-func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry) (bool, error) {
+// touching the file again. When force is set the entry's previous match is
+// dropped first, so the new result replaces it completely and an entry that no
+// longer matches ends up unmatched instead of keeping its stale match.
+func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry, force bool) (bool, error) {
 	version, ok, err := m.largest_version(ctx, entry)
 	if err != nil {
 		return false, err
+	}
+	if force {
+		title, year := entry.Title, entry.Release_year
+		if ok {
+			title, year = scanned_title_year(entry, version)
+		}
+		if title == "" {
+			title = entry.Title
+		}
+		if err := m.store.Reset_entry_match(ctx, entry.Id, title, year); err != nil {
+			return false, err
+		}
+		// Feed the rebuilt name back into the lookup: absolute-path series (the
+		// legacy rows lookup_name cannot resolve from a folder) are matched by
+		// the entry title, which we just replaced with the scanned one.
+		entry.Title = title
+		entry.Release_year = year
 	}
 	if !ok {
 		return false, nil
@@ -251,6 +290,44 @@ func lookup_name(entry database.Catalog_entry, version database.Version) (name s
 		return entry.Title, true
 	}
 	return filepath.Base(version.File_path), false
+}
+
+// scanned_title_year reconstructs the title and release year a scan would have
+// stored for an entry, so a forced rematch that leaves an entry unmatched falls
+// back to its raw name instead of the title of the match it dropped. It mirrors
+// scan.catalog_entry_from: a movie is named by its file; a series is named by the
+// folder that names the show — but only for library-scanned rows, whose paths
+// are relative, since an absolute path's show folder cannot be told apart from
+// the library root — and otherwise by its file. Series store no year, since the
+// folder is their grouping key and the matcher fills the real one.
+func scanned_title_year(entry database.Catalog_entry, version database.Version) (string, int) {
+	base := filepath.Base(version.File_path)
+	fallback := func() string {
+		name := strings.TrimSuffix(base, filepath.Ext(base))
+		if name == "" {
+			return entry.Title
+		}
+		return name
+	}
+	if entry.Media_type == "series" {
+		if !filepath.IsAbs(version.File_path) {
+			if folder := scanner.Series_folder_name(version.File_path); folder != "" {
+				if hint := matcher.Parse_foldername(folder); hint.Title != "" {
+					return hint.Title, 0
+				}
+				return folder, 0
+			}
+		}
+		if hint := matcher.Parse_filename(base); hint.Title != "" {
+			return hint.Title, 0
+		}
+		return fallback(), 0
+	}
+	hint := matcher.Parse_filename(base)
+	if hint.Title == "" {
+		return fallback(), hint.Year
+	}
+	return hint.Title, hint.Year
 }
 
 // largest_version picks the biggest stored file for an entry, walking series

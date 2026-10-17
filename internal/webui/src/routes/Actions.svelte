@@ -83,9 +83,29 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
     run_scan(true);
   }
 
-  async function run_scan(force) {
-    scan_error = '';
+  function clear_scan_panel() {
+    scan_progress = null;
     scan_result = null;
+    scan_error = '';
+  }
+
+  function clear_match_panel() {
+    match_progress = null;
+    match_result = null;
+    match_error = '';
+  }
+
+  // Starting a new action hides the previous action's progress and results, so
+  // the page only shows the run the user just triggered. The chain's internal
+  // match is not a new action — it belongs to the Scan & Match run already on
+  // screen — so it clears only its own panel and keeps the chain's scan results.
+  function clear_previous_action() {
+    clear_scan_panel();
+    clear_match_panel();
+  }
+
+  async function run_scan(force) {
+    clear_previous_action();
     scan_force = force;
     try {
       await api_send('/api/v1/scan', 'POST', { libraries: selected.slice(), force });
@@ -96,10 +116,16 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
     }
   }
 
-  async function start_match() {
+  // from_chain marks the match kicked off by Scan & Match. That run already
+  // showed its scan results, so they are kept; a directly triggered match hides
+  // them instead (see clear_previous_action).
+  async function start_match(from_chain) {
     chain_match = false;
-    match_error = '';
-    match_result = null;
+    if (from_chain) {
+      clear_match_panel();
+    } else {
+      clear_previous_action();
+    }
     match_force = false;
     try {
       await api_send('/api/v1/match', 'POST', { libraries: selected.slice() });
@@ -110,8 +136,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
   }
 
   async function start_force_rematch() {
-    match_error = '';
-    match_result = null;
+    clear_previous_action();
     match_force = true;
     try {
       await api_send('/api/v1/match/rematch', 'POST', { libraries: selected.slice(), force: true });
@@ -123,9 +148,8 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
   }
 
   async function start_chain() {
+    clear_previous_action();
     chain_match = true;
-    scan_error = '';
-    scan_result = null;
     scan_force = false;
     try {
       await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
@@ -161,7 +185,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
       // match) once the last selected library has finished.
       await refresh_scan();
       if (!scan_running && chain_match) {
-        start_match();
+        start_match(true);
       }
     });
 
@@ -220,7 +244,7 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
         {all_selected ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>
-      <button on:click={start_match} disabled={busy || selected.length === 0} title="Look up titles for entries that are not matched yet. Entries that are already matched are left alone.">
+      <button on:click={() => start_match(false)} disabled={busy || selected.length === 0} title="Look up titles for entries that are not matched yet. Entries that are already matched are left alone.">
         {match_running && !match_force ? 'Matching…' : 'Match'}
       </button>
       <button on:click={start_force_rematch} disabled={busy || selected.length === 0} title="Drop every match found so far for the selected libraries and run the matcher over everything from scratch. Use after a matcher change.">

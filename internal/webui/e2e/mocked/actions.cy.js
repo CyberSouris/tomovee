@@ -93,3 +93,64 @@ describe('actions page library selection', () => {
     });
   });
 });
+
+describe('actions page result panels', () => {
+  it('triggering a match hides the previous scan results', () => {
+    cy.intercept('GET', '/api/v1/scan/status', {
+      body: {
+        job: {
+          id: '1',
+          running: false,
+          progress: {
+            phase: 'done',
+            files_found: 3,
+            files_scanned: 3,
+            new_files: 1,
+            skipped: 0,
+            errors: 0,
+          },
+          result: { found: 3, new: 1, skipped: 0, missing: 0, errors: [] },
+        },
+      },
+    }).as('scanStatus');
+    cy.intercept('POST', '/api/v1/match', { statusCode: 202, body: { job: null } }).as('match');
+
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('h2', 'Scan result').should('exist');
+    cy.contains('h2', /^Scan$/).should('exist');
+
+    cy.contains('button', 'Match').click();
+    cy.wait('@match');
+
+    cy.contains('h2', 'Scan result').should('not.exist');
+    cy.contains('h2', /^Scan$/).should('not.exist');
+  });
+
+  it('triggering a scan hides the previous match results', () => {
+    cy.intercept('GET', '/api/v1/match/status', {
+      body: {
+        job: {
+          id: '1',
+          running: false,
+          progress: { phase: 'done', total: 4, done: 4, matched: 3, unmatched: 1, errors: 0 },
+          result: { total: 4, matched: 3, unmatched: 1, errors: [] },
+        },
+      },
+    }).as('matchStatus');
+    cy.intercept('POST', '/api/v1/scan', { statusCode: 202, body: { job: null } }).as('scan');
+
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('h2', 'Match result').should('exist');
+    cy.contains('h2', /^Match$/).should('exist');
+
+    cy.contains('button', 'Scan libraries').click();
+    cy.wait('@scan');
+
+    cy.contains('h2', 'Match result').should('not.exist');
+    cy.contains('h2', /^Match$/).should('not.exist');
+  });
+});

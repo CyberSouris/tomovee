@@ -80,6 +80,14 @@
     new_path = '';
     path_options = [];
     await save();
+    if (error) {
+      // The server rejected the root (for example a duplicate or nested path)
+      // and left the stored libraries untouched; drop the optimistic row so
+      // the form matches what was actually saved, keeping the error visible.
+      const message = error;
+      await load();
+      error = message;
+    }
   }
 
   async function remove_library(name) {

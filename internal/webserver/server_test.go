@@ -1176,6 +1176,34 @@ func Test_rematch_all_plain_keeps_unmatchable_match(t *testing.T) {
 	}
 }
 
+// Test_match_job_reports_done_phase guards the match SSE contract: the run must
+// end with a "done" phase so the stream emits its done event and the WebUI
+// re-enables its actions instead of staying stuck on "busy".
+func Test_match_job_reports_done_phase(t *testing.T) {
+	server, store := new_test_server(t)
+	unmatched_entry_with_version(t, store)
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+	wait_for_match_result(t, server, 1)
+
+	status := do_request(t, server, http.MethodGet, "/api/v1/match/status", "")
+	body := decode[struct {
+		Job *match_job_response `json:"job"`
+	}](t, status)
+	if body.Job == nil {
+		t.Fatal("no match job reported")
+	}
+	if body.Job.Progress.Phase != "done" {
+		t.Errorf("phase = %q, want done", body.Job.Progress.Phase)
+	}
+	if body.Job.Running {
+		t.Error("job still running after its done phase")
+	}
+}
+
 func Test_rematch_all_queues_behind_running_job(t *testing.T) {
 	server, _ := new_test_server(t)
 	id := unmatched_entry_with_version(t, server.store)

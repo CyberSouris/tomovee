@@ -128,8 +128,9 @@ func (m *Matching) Run_force_rematch(ctx context.Context, libraries []string, pr
 }
 
 // run_entries matches a bounded worker pool over the given entries and reports
-// per-entry progress. force makes each entry drop its previous match before it
-// is re-evaluated. See Run_force_rematch.
+// per-entry progress, ending with a "done" phase so SSE subscribers know the run
+// finished. force makes each entry drop its previous match before it is
+// re-evaluated. See Run_force_rematch.
 func (m *Matching) run_entries(ctx context.Context, entries []database.Catalog_entry, force bool, progress func(Progress)) *Result {
 	result := &Result{}
 	result.Total = len(entries)
@@ -200,6 +201,16 @@ send_loop:
 	}
 	close(jobs)
 	wg.Wait()
+	if progress != nil {
+		progress(Progress{
+			Phase:     "done",
+			Total:     result.Total,
+			Done:      done,
+			Matched:   result.Matched,
+			Unmatched: result.Unmatched,
+			Errors:    len(result.Errors),
+		})
+	}
 	return result
 }
 

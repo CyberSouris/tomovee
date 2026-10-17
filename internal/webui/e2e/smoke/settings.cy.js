@@ -88,6 +88,9 @@ describe('settings and libraries', () => {
       // error is omitempty, so an absent field is the success case.
       expect(job.error || '').to.eq('');
       expect(job.progress.total).to.be.at.least(1);
+      // The run must end with a "done" phase: the WebUI relies on the matching
+      // SSE stream's done event to re-enable its actions.
+      expect(job.progress.phase).to.eq('done');
     });
     cy.request('/api/v1/background').then((response) => {
       expect(response.status).to.eq(200);

@@ -154,11 +154,13 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
       scan_progress = JSON.parse(event.data).progress;
       scan_running = true;
     });
-    scan_source.addEventListener('done', () => {
-      scan_running = false;
+    scan_source.addEventListener('done', async () => {
       scan_force = false;
-      refresh_scan();
-      if (chain_match) {
+      // Per-library scans each emit their own "done"; re-derive the running
+      // state from the aggregated status so we only clear busy (and chain the
+      // match) once the last selected library has finished.
+      await refresh_scan();
+      if (!scan_running && chain_match) {
         start_match();
       }
     });
@@ -176,10 +178,11 @@ $: all_selected = libraries.length > 0 && libraries.every((library) => selected_
       match_progress = JSON.parse(event.data).progress;
       match_running = true;
     });
-    match_source.addEventListener('done', () => {
-      match_running = false;
+    match_source.addEventListener('done', async () => {
       match_force = false;
-      refresh_match();
+      // Like the scan stream, each per-library match emits its own "done"; the
+      // aggregated status clears busy only once the last library finishes.
+      await refresh_match();
     });
 
     return () => {

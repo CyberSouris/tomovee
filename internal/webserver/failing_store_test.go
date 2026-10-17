@@ -165,8 +165,9 @@ func contains(haystack, needle string) bool {
 }
 
 // Test_streams_refuse_past_the_subscriber_limit pins the SSE fan-out cap. The
-// limit is enforced on the job manager, so filling it directly is enough to make
-// the next stream request fail without opening any real connections.
+// scan and match streams subscribe to the shared fan-out feeds (which aggregate
+// the global and per-library managers), so filling a feed directly is enough to
+// make the next stream request fail without opening any real connections.
 func Test_streams_refuse_past_the_subscriber_limit(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -179,7 +180,7 @@ func Test_streams_refuse_past_the_subscriber_limit(t *testing.T) {
 			target: "/api/v1/scan/stream",
 			subs: func(t *testing.T, server *Server) {
 				for i := 0; i < max_subscribers; i++ {
-					_, unsubscribe, err := server.jobs.Subscribe()
+					_, unsubscribe, err := server.scanFeed.Subscribe()
 					if err != nil {
 						t.Fatalf("subscribe %d: %v", i, err)
 					}
@@ -193,7 +194,7 @@ func Test_streams_refuse_past_the_subscriber_limit(t *testing.T) {
 			target: "/api/v1/match/stream",
 			subs: func(t *testing.T, server *Server) {
 				for i := 0; i < max_subscribers; i++ {
-					_, unsubscribe, err := server.matches.Subscribe()
+					_, unsubscribe, err := server.matchFeed.Subscribe()
 					if err != nil {
 						t.Fatalf("subscribe %d: %v", i, err)
 					}

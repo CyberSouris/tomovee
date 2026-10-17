@@ -62,16 +62,20 @@ type Server struct {
 	// stream_datasets mirrors the Options field; see there.
 	stream_datasets func(index_db_path string)
 	// reload mirrors the Options field; see there.
-	reload    func() error
-	static    fs.FS
-	logger    *slog.Logger
-	mux       *http.ServeMux
-	jobs      *job_manager[scan.Progress, scan.Result]
-	scanMu    sync.Mutex
-	scanJobs  map[string]*job_manager[scan.Progress, scan.Result]
+	reload   func() error
+	static   fs.FS
+	logger   *slog.Logger
+	mux      *http.ServeMux
+	jobs     *job_manager[scan.Progress, scan.Result]
+	scanMu   sync.Mutex
+	scanJobs map[string]*job_manager[scan.Progress, scan.Result]
+	// scanFeed and matchFeed fan every job's progress (global and per-library)
+	// out to the SSE streams. See fanout.
+	scanFeed  *fanout[scan.Progress]
 	matches   *job_manager[matching.Progress, matching.Result]
 	matchMu   sync.Mutex
 	matchJobs map[string]*job_manager[matching.Progress, matching.Result]
+	matchFeed *fanout[matching.Progress]
 }
 
 // New builds a Server and registers its routes.
@@ -96,9 +100,16 @@ func New(opts Options) *Server {
 		mux:             http.NewServeMux(),
 		jobs:            new_job_manager[scan.Progress, scan.Result](logger),
 		scanJobs:        make(map[string]*job_manager[scan.Progress, scan.Result]),
+		scanFeed:        new_fanout[scan.Progress](),
 		matches:         new_job_manager[matching.Progress, matching.Result](logger),
 		matchJobs:       make(map[string]*job_manager[matching.Progress, matching.Result]),
+		matchFeed:       new_fanout[matching.Progress](),
 	}
+	// Feed the shared streams from every manager, including the per-library ones
+	// the handlers create on demand, so a selected-library scan or match still
+	// drives the SSE-driven WebUI.
+	s.jobs.mirror = s.scanFeed.publish
+	s.matches.mirror = s.matchFeed.publish
 	s.routes()
 	return s
 }

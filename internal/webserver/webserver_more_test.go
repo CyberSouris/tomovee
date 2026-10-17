@@ -639,7 +639,7 @@ func Test_handle_scan_stream_too_many_subscribers(t *testing.T) {
 	server, _ := new_test_server(t)
 	var unsubs []func()
 	for i := 0; i < max_subscribers; i++ {
-		_, unsubscribe, err := server.jobs.Subscribe()
+		_, unsubscribe, err := server.scanFeed.Subscribe()
 		if err != nil {
 			t.Fatalf("subscribe %d: %v", i, err)
 		}
@@ -652,6 +652,73 @@ func Test_handle_scan_stream_too_many_subscribers(t *testing.T) {
 	}()
 	if rec := do_request(t, server, http.MethodGet, "/api/v1/scan/stream", ""); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("full stream = %d, want 503", rec.Code)
+	}
+}
+
+// Test_per_library_jobs_reach_the_feed pins the fix for the stuck WebUI. A scan
+// or match started for a selected library runs on its own per-library manager,
+// so its progress must still reach the shared feed the SSE stream subscribes to
+// — otherwise the stream never emits "done", the Actions page never clears its
+// busy state, and a chained Scan & Match never starts its match step.
+func Test_per_library_jobs_reach_the_feed(t *testing.T) {
+	server, _ := new_test_server(t)
+
+	scan_progress, scan_unsubscribe, err := server.scanFeed.Subscribe()
+	if err != nil {
+		t.Fatalf("subscribe scan feed: %v", err)
+	}
+	defer scan_unsubscribe()
+
+	scan_mgr := server.scan_job_manager("lib-a")
+	if _, run_err := scan_mgr.Run_sync(func(_ context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+		progress(scan.Progress{Phase: "file", Path: "/m/movie.mkv", Files_scanned: 1})
+		progress(scan.Progress{Phase: "done", Files_found: 1, Files_scanned: 1})
+		return &scan.Result{Found: 1}, nil
+	}); run_err != nil {
+		t.Fatalf("per-library scan: %v", run_err)
+	}
+
+	scan_deadline := time.After(2 * time.Second)
+	scan_done := false
+	for !scan_done {
+		select {
+		case progress, ok := <-scan_progress:
+			if !ok {
+				t.Fatal("scan feed closed before the per-library done phase")
+			}
+			scan_done = progress.Phase == "done"
+		case <-scan_deadline:
+			t.Fatal("per-library scan progress never reached the scan feed")
+		}
+	}
+
+	match_progress, match_unsubscribe, err := server.matchFeed.Subscribe()
+	if err != nil {
+		t.Fatalf("subscribe match feed: %v", err)
+	}
+	defer match_unsubscribe()
+
+	match_mgr := server.match_job_manager("lib-a")
+	if _, run_err := match_mgr.Run_sync(func(_ context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		progress(matching.Progress{Phase: "done", Total: 1, Done: 1})
+		return &matching.Result{Total: 1}, nil
+	}); run_err != nil {
+		t.Fatalf("per-library match: %v", run_err)
+	}
+
+	match_deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case progress, ok := <-match_progress:
+			if !ok {
+				t.Fatal("match feed closed before the per-library done phase")
+			}
+			if progress.Phase == "done" {
+				return
+			}
+		case <-match_deadline:
+			t.Fatal("per-library match progress never reached the match feed")
+		}
 	}
 }
 

@@ -51,6 +51,11 @@ type job_manager[R any, T any] struct {
 	cancel context.CancelFunc
 	subs   map[int]chan R
 	next   int
+	// mirror, when set, is called with every progress update this manager emits.
+	// The server uses it to feed a shared fan-out so an SSE stream that connected
+	// before a per-library job was created still receives its progress and its
+	// terminal "done".
+	mirror func(R)
 }
 
 // Err_job_running is returned when a job is already in progress.
@@ -386,7 +391,66 @@ func (jm *job_manager[R, T]) broadcast(progress R) {
 	for _, ch := range jm.subs {
 		subs = append(subs, ch)
 	}
+	mirror := jm.mirror
 	jm.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- progress:
+		default:
+		}
+	}
+	if mirror != nil {
+		mirror(progress)
+	}
+}
+
+// fanout fans job progress out to SSE subscribers regardless of which job
+// manager produced it. The scan and match streams subscribe to one of these, so
+// a stream connected before a per-library job existed still sees that job's
+// progress and its terminal "done" — otherwise a scan started for a selected
+// library would run off-stream and leave the WebUI stuck in its busy state.
+type fanout[R any] struct {
+	mu   sync.Mutex
+	subs map[int]chan R
+	next int
+}
+
+func new_fanout[R any]() *fanout[R] {
+	return &fanout[R]{subs: make(map[int]chan R)}
+}
+
+// Subscribe registers a progress channel and returns it with an unsubscribe
+// function.
+func (f *fanout[R]) Subscribe() (<-chan R, func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.subs) >= max_subscribers {
+		return nil, nil, Err_too_many_subscribers
+	}
+	id := f.next
+	f.next++
+	ch := make(chan R, 32)
+	f.subs[id] = ch
+	unsubscribe := func() {
+		f.mu.Lock()
+		if existing, ok := f.subs[id]; ok {
+			delete(f.subs, id)
+			close(existing)
+		}
+		f.mu.Unlock()
+	}
+	return ch, unsubscribe, nil
+}
+
+// publish sends one progress update to every subscriber, dropping subscribers
+// whose buffer is full.
+func (f *fanout[R]) publish(progress R) {
+	f.mu.Lock()
+	subs := make([]chan R, 0, len(f.subs))
+	for _, ch := range f.subs {
+		subs = append(subs, ch)
+	}
+	f.mu.Unlock()
 	for _, ch := range subs {
 		select {
 		case ch <- progress:
@@ -531,6 +595,7 @@ func (s *Server) scan_job_manager(name string) *job_manager[scan.Progress, scan.
 		return mgr
 	}
 	mgr := new_job_manager[scan.Progress, scan.Result](s.logger)
+	mgr.mirror = s.scanFeed.publish
 	s.scanJobs[name] = mgr
 	return mgr
 }
@@ -545,6 +610,7 @@ func (s *Server) match_job_manager(name string) *job_manager[matching.Progress, 
 		return mgr
 	}
 	mgr := new_job_manager[matching.Progress, matching.Result](s.logger)
+	mgr.mirror = s.matchFeed.publish
 	s.matchJobs[name] = mgr
 	return mgr
 }
@@ -622,7 +688,9 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusAccepted, response)
 }
 
-func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
+// all_scan_jobs snapshots the global and every per-library scan job, tagged with
+// the library they belong to (empty for the global one).
+func (s *Server) all_scan_jobs() []*job_response {
 	scans := make([]*job_response, 0)
 	if snap := s.jobs.Snapshot(); snap != nil {
 		response := job_response_from(snap)
@@ -638,6 +706,30 @@ func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	s.scanMu.Unlock()
+	return scans
+}
+
+func (s *Server) all_match_jobs() []*match_job_response {
+	matches := make([]*match_job_response, 0)
+	if snap := s.matches.Snapshot(); snap != nil {
+		resp := match_job_response_from(snap)
+		resp.Library = ""
+		matches = append(matches, resp)
+	}
+	s.matchMu.Lock()
+	for lib, mgr := range s.matchJobs {
+		if snap := mgr.Snapshot(); snap != nil {
+			resp := match_job_response_from(snap)
+			resp.Library = lib
+			matches = append(matches, resp)
+		}
+	}
+	s.matchMu.Unlock()
+	return matches
+}
+
+func (s *Server) handle_scan_status(w http.ResponseWriter, _ *http.Request) {
+	scans := s.all_scan_jobs()
 	first := pick_scan_job(scans)
 	write_json(w, http.StatusOK, map[string]any{"job": first, "scans": scans, "jobs": scans})
 }
@@ -677,37 +769,8 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 		status := s.datasets.Snapshot()
 		datasets = &status
 	}
-	scans := make([]*job_response, 0)
-	if snap := s.jobs.Snapshot(); snap != nil {
-		response := job_response_from(snap)
-		response.Library = ""
-		scans = append(scans, response)
-	}
-	s.scanMu.Lock()
-	for lib, mgr := range s.scanJobs {
-		if snap := mgr.Snapshot(); snap != nil {
-			response := job_response_from(snap)
-			response.Library = lib
-			scans = append(scans, response)
-		}
-	}
-	s.scanMu.Unlock()
-
-	matches := make([]*match_job_response, 0)
-	if snap := s.matches.Snapshot(); snap != nil {
-		resp := match_job_response_from(snap)
-		resp.Library = ""
-		matches = append(matches, resp)
-	}
-	s.matchMu.Lock()
-	for lib, mgr := range s.matchJobs {
-		if snap := mgr.Snapshot(); snap != nil {
-			resp := match_job_response_from(snap)
-			resp.Library = lib
-			matches = append(matches, resp)
-		}
-	}
-	s.matchMu.Unlock()
+	scans := s.all_scan_jobs()
+	matches := s.all_match_jobs()
 
 	first := pick_scan_job(scans)
 	firstMatch := pick_match_job(matches)
@@ -731,7 +794,7 @@ func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe, err := s.jobs.Subscribe()
+	progress, unsubscribe, err := s.scanFeed.Subscribe()
 	if err != nil {
 		write_error(w, http.StatusServiceUnavailable, "too many scan stream subscribers")
 		return
@@ -749,7 +812,7 @@ func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return true
 	}
-	send("status", map[string]any{"job": job_response_from(s.jobs.Snapshot())})
+	send("status", map[string]any{"job": pick_scan_job(s.all_scan_jobs())})
 
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
@@ -1073,7 +1136,7 @@ func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe, err := s.matches.Subscribe()
+	progress, unsubscribe, err := s.matchFeed.Subscribe()
 	if err != nil {
 		write_error(w, http.StatusServiceUnavailable, "too many match stream subscribers")
 		return
@@ -1091,7 +1154,7 @@ func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return true
 	}
-	send("status", map[string]any{"job": match_job_response_from(s.matches.Snapshot())})
+	send("status", map[string]any{"job": pick_match_job(s.all_match_jobs())})
 
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()

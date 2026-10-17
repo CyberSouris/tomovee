@@ -175,9 +175,9 @@ func parse_retry_after(value string) time.Duration {
 }
 
 func snippet(body []byte) string {
-	const max = 200
-	if len(body) > max {
-		return string(body[:max]) + "…"
+	const maxBodySize = 200
+	if len(body) > maxBodySize {
+		return string(body[:maxBodySize]) + "…"
 	}
 	return string(body)
 }

@@ -68,7 +68,7 @@ func Parse_filename(name string) Filename_hint {
 			Season:    episode.Season,
 			Episode:   episode.Episode,
 		}
-		if year, loc := last_year(base); year > 0 && loc != nil {
+		if year, loc := last_year(base); year > 0 && len(loc) != 0 {
 			hint.Year = year
 		}
 		return hint
@@ -76,7 +76,7 @@ func Parse_filename(name string) Filename_hint {
 
 	year, loc := last_year(base)
 	cutoff := len(base)
-	if loc != nil && loc[0] > 0 {
+	if len(loc) != 0 && loc[0] > 0 {
 		cutoff = loc[0]
 	} else {
 		year = 0
@@ -96,7 +96,7 @@ func Parse_foldername(name string) Filename_hint {
 	// A trailing year range ("Some.Show.2001-2005.D5") ends the title before its
 	// first year; without this, cutting at the last year would leave that year
 	// stranded in the title ("Some Show 2001").
-	if match := year_range_re.FindStringSubmatchIndex(name); match != nil && match[0] > 0 {
+	if match := year_range_re.FindStringSubmatchIndex(name); len(match) != 0 && match[0] > 0 {
 		if year, err := strconv.Atoi(name[match[2]:match[3]]); err == nil {
 			title := clean_title(name[:match[0]])
 			if title == "" {
@@ -107,7 +107,7 @@ func Parse_foldername(name string) Filename_hint {
 	}
 	year, loc := last_year(name)
 	cutoff := len(name)
-	if loc != nil && loc[0] > 0 {
+	if len(loc) != 0 && loc[0] > 0 {
 		cutoff = loc[0]
 	} else {
 		year = 0

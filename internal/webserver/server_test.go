@@ -814,6 +814,65 @@ func Test_scan_job_runs(t *testing.T) {
 	t.Fatal("scan job did not finish in time")
 }
 
+// Test_handle_scan_start_force_rebuilds_catalog verifies the force flag reaches
+// the scanner: the seeded catalog (entry plus version) is dropped, and with no
+// files on disk nothing is rebuilt.
+func Test_handle_scan_start_force_rebuilds_catalog(t *testing.T) {
+	server, store := new_test_server(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	if err := store.Upsert_library(ctx, "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) != 1 {
+		t.Fatalf("libraries = %+v, %v", libraries, err)
+	}
+	entry, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "Stale", Status: "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "Stale.mkv", Size_bytes: 1,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/scan",
+		`{"libraries":["lib1"],"force":true}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", start.Code, start.Body)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := do_request(t, server, http.MethodGet, "/api/v1/scan/status", "")
+		body := decode[struct {
+			Scans []*job_response `json:"scans"`
+		}](t, status)
+		if len(body.Scans) == 0 {
+			t.Fatalf("status has no scan jobs")
+		}
+		running := false
+		for _, job := range body.Scans {
+			if job == nil || job.Running {
+				running = true
+			}
+		}
+		if !running {
+			if got, err := store.Get_catalog_entry(ctx, entry); err != nil || got != nil {
+				t.Fatalf("force rescan kept the stale entry: %+v, %v", got, err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("force scan job did not finish in time")
+}
+
 // Test_parallel_match_primary_is_stable guards the singular "match" field of
 // the background status against map iteration order: with several finished
 // per-library match jobs and no global job, the primary job must not change

@@ -5,10 +5,12 @@
   let libraries = [];
   let selected_set = {};
 $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
+$: all_selected = libraries.length > 0 && libraries.every((library) => selected_set[library.name]);
 
   let scan_progress = null;
   let scan_result = null;
   let scan_running = false;
+  let scan_force = false;
   let scan_error = '';
   let scan_source = null;
 
@@ -62,23 +64,8 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
     }
   }
 
-  function is_selected(name) {
-    return !!selected_set[name];
-  }
-
-  function toggle(name) {
-    const next = { ...selected_set };
-    if (next[name]) delete next[name];
-    else next[name] = true;
-    selected_set = next;
-  }
-
-  function all_selected() {
-    return libraries.length > 0 && libraries.every((library) => selected_set[library.name]);
-  }
-
   function toggle_all() {
-    if (all_selected()) {
+    if (all_selected) {
       selected_set = {};
       return;
     }
@@ -88,12 +75,22 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
   }
 
   async function start_scan() {
+    run_scan(false);
+  }
+
+  async function start_force_scan() {
+    run_scan(true);
+  }
+
+  async function run_scan(force) {
     scan_error = '';
     scan_result = null;
+    scan_force = force;
     try {
-      await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
+      await api_send('/api/v1/scan', 'POST', { libraries: selected.slice(), force });
       scan_running = true;
     } catch (err) {
+      scan_force = false;
       scan_error = err.message;
     }
   }
@@ -125,6 +122,7 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
     chain_match = true;
     scan_error = '';
     scan_result = null;
+    scan_force = false;
     try {
       await api_send('/api/v1/scan', 'POST', { libraries: selected.slice() });
       scan_running = true;
@@ -154,6 +152,7 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
     });
     scan_source.addEventListener('done', () => {
       scan_running = false;
+      scan_force = false;
       refresh_scan();
       if (chain_match) {
         start_match();
@@ -210,7 +209,7 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
   {#if libraries.length}
     <div class="controls">
       <button class="secondary" on:click={toggle_all} disabled={busy || libraries.length === 0}>
-        {all_selected() ? 'Select none' : 'Select all'}
+        {all_selected ? 'Select none' : 'Select all'}
       </button>
       <span class="spacer"></span>
       <button on:click={start_match} disabled={busy || selected.length === 0}>
@@ -223,12 +222,19 @@ $: selected = Object.keys(selected_set).filter((name) => selected_set[name]);
         {chain_match ? 'Scan & Match…' : 'Scan & Match'}
       </button>
       <button on:click={start_scan} disabled={busy || selected.length === 0}>
-        {scan_running ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}
+        {scan_running && !scan_force ? 'Scanning…' : `Scan ${selected.length === 1 ? 'library' : 'libraries'}`}
+      </button>
+      <button
+        on:click={start_force_scan}
+        disabled={busy || selected.length === 0}
+        title="Drop the catalog entries and matches found for the selected libraries and rescan them from scratch. Use after a scanner or matcher change."
+      >
+        {scan_running && scan_force ? 'Rebuilding…' : 'Force rescan'}
       </button>
     </div>
     <div class="list">
       {#each libraries as library}
-        <label class="lib" class:checked={is_selected(library.name)}>
+        <label class="lib" class:checked={!!selected_set[library.name]}>
           <input type="checkbox" bind:checked={selected_set[library.name]} on:change={() => { selected_set = { ...selected_set }; }} disabled={busy} />
           <span class="name">{library.name}</span>
           <span class="path muted">{library.path}</span>

@@ -124,6 +124,85 @@ func (s *Store) Delete_library(ctx context.Context, name string) error {
 		DELETE FROM library WHERE name = ?`, name, name)
 }
 
+// Reset_catalogs drops the derived catalog belonging to the given libraries so
+// a following scan rebuilds every entry from scratch. It deletes the selected
+// libraries' version rows, then prunes the episodes and catalog entries that
+// lost their last backing file (metadata, genres, candidates and tracks fall
+// away through ON DELETE CASCADE). Only entries that were backed by one of the
+// selected libraries are considered, so entries shared with another library
+// survive. It is used by the WebUI's force rescan when a scanner or matcher
+// change invalidates the existing grouping. lookup_cache is left intact so
+// repeated online lookups stay cached. An empty list of libraries is a no-op.
+func (s *Store) Reset_catalogs(ctx context.Context, library_ids []int64) error {
+	if len(library_ids) == 0 {
+		return nil
+	}
+	return s.with_tx(ctx, func(tx *sql.Tx) error {
+		for _, id := range library_ids {
+			if err := reset_library_catalog_tx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// reset_library_catalog_tx removes one library's versions and then prunes the
+// episodes and catalog entries that lost their last file. The prune is scoped
+// to the entries this library backed, so entries still held by another library
+// (or unrelated orphans) are left alone.
+func reset_library_catalog_tx(ctx context.Context, tx *sql.Tx, library_id int64) error {
+	entries, err := entry_ids_backed_by_library_tx(ctx, tx, library_id)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM version WHERE library_id = ?", library_id); err != nil {
+		return err
+	}
+	for _, entry_id := range entries {
+		// Episodes whose only file belonged to this library.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM episode
+			WHERE catalog_entry_id = ?
+			  AND id NOT IN (SELECT episode_id FROM version WHERE episode_id IS NOT NULL)`, entry_id); err != nil {
+			return err
+		}
+		// The entry itself, once nothing references it.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM catalog_entry
+			WHERE id = ?
+			  AND id NOT IN (SELECT catalog_entry_id FROM version WHERE catalog_entry_id IS NOT NULL)
+			  AND id NOT IN (SELECT catalog_entry_id FROM episode)`, entry_id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// entry_ids_backed_by_library_tx lists the catalog entries owning a version in
+// the given library, whether the version attaches to the entry directly or
+// through an episode.
+func entry_ids_backed_by_library_tx(ctx context.Context, tx *sql.Tx, library_id int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT COALESCE(v.catalog_entry_id, ep.catalog_entry_id)
+		FROM version v
+		LEFT JOIN episode ep ON ep.id = v.episode_id
+		WHERE v.library_id = ? AND COALESCE(v.catalog_entry_id, ep.catalog_entry_id) IS NOT NULL`, library_id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // Touch_library records the completion time of a watcher's scan.
 func (s *Store) Touch_library(ctx context.Context, name, last_scan string) error {
 	return s.exec_tx(ctx, "UPDATE library SET last_scan = ? WHERE name = ?", last_scan, name)

@@ -45,4 +45,28 @@ describe('actions page library selection', () => {
     cy.get('input[type="checkbox"]').should('not.be.checked');
     cy.contains('button', 'Select all').should('exist');
   });
+
+  it('force rescan sends a force scan for the selected libraries', () => {
+    cy.intercept('POST', '/api/v1/scan', { statusCode: 202, body: { job: null } }).as('scan');
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('button', 'Force rescan').click();
+    cy.wait('@scan').its('request.body').should('deep.equal', {
+      libraries: ['Movies', 'Series'],
+      force: true,
+    });
+  });
+
+  it('a plain scan omits the force flag', () => {
+    cy.intercept('POST', '/api/v1/scan', { statusCode: 202, body: { job: null } }).as('scan');
+    cy.visit('/#/scan');
+    cy.wait('@settings');
+    cy.contains('button', 'Select all').click();
+    cy.contains('button', 'Scan libraries').click();
+    cy.wait('@scan').its('request.body').should('deep.equal', {
+      libraries: ['Movies', 'Series'],
+      force: false,
+    });
+  });
 });

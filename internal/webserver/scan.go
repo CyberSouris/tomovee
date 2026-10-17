@@ -556,6 +556,9 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	}
 	var request struct {
 		Libraries []string `json:"libraries"`
+		// Force drops the selected libraries' derived catalog before scanning,
+		// so unchanged files are rebuilt from scratch. See Scanner.Force_libraries.
+		Force bool `json:"force"`
 	}
 	if r.Body != nil {
 		decoder := json.NewDecoder(r.Body)
@@ -576,6 +579,9 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 
 	if len(names) == 0 {
 		job, err := s.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+			if request.Force {
+				return s.scanner.Force_libraries(ctx, nil, progress)
+			}
 			return s.scanner.Run_libraries(ctx, nil, progress)
 		})
 		if err != nil {
@@ -591,6 +597,9 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		name := name
 		mgr := s.scan_job_manager(name)
 		job, err := mgr.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
+			if request.Force {
+				return s.scanner.Force_libraries(ctx, []string{name}, progress)
+			}
 			return s.scanner.Run_libraries(ctx, []string{name}, progress)
 		})
 		if err != nil {

@@ -110,7 +110,7 @@ tomovee version
 |`POST` |`/api/v1/versions/{version_id}/split` |Cut one file out and match it as a movie of its own
 |`POST` |`/api/v1/versions/{version_id}/episode` |Attach one file to an episode (`{"season": 1, "episode": 9}`)
 |`GET` |`/api/v1/unmatched` |Entries awaiting manual review
-|`POST` |`/api/v1/scan` |Start a background scan
+|`POST` |`/api/v1/scan` |Start a background scan (`force: true` drops the selected libraries' catalogue and rebuilds it from scratch)
 |`GET` |`/api/v1/scan/status` |Current scan job
 |`GET` |`/api/v1/scan/stream` |Server-sent events with live scan progress
 |`POST` |`/api/v1/match` |Start a background matching job

@@ -626,3 +626,91 @@ func Test_version_tracks_lists_subtitles_with_unknown_fields(t *testing.T) {
 		t.Error("reading tracks from a closed database should fail")
 	}
 }
+
+func Test_reset_catalogs_scopes_to_named_libraries(t *testing.T) {
+	ctx := context.Background()
+	store := new_test_store(t)
+
+	for _, name := range []string{"A", "B"} {
+		if err := store.Upsert_library(ctx, name, "/media/"+name, false); err != nil {
+			t.Fatalf("upsert library %s: %v", name, err)
+		}
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil {
+		t.Fatalf("list libraries: %v", err)
+	}
+	ids := map[string]int64{}
+	for _, library := range libraries {
+		ids[library.Name] = library.Id
+	}
+
+	only_a, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Only A", Status: "needs_lookup"})
+	shared, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Shared", Status: "needs_lookup"})
+	only_b, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Only B", Status: "needs_lookup"})
+
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: only_a, Library_id: ids["A"], File_path: "Only.A.mkv", Size_bytes: 1}); err != nil {
+		t.Fatalf("save only-a: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: shared, Library_id: ids["A"], File_path: "Shared.A.mkv", Size_bytes: 1}); err != nil {
+		t.Fatalf("save shared-a: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: shared, Library_id: ids["B"], File_path: "Shared.B.mkv", Size_bytes: 1}); err != nil {
+		t.Fatalf("save shared-b: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: only_b, Library_id: ids["B"], File_path: "Only.B.mkv", Size_bytes: 1}); err != nil {
+		t.Fatalf("save only-b: %v", err)
+	}
+
+	// A series episode backed only by library A must go with it.
+	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Only A Series", Status: "needs_lookup"})
+	episode, err := store.Upsert_episode(ctx, Episode{
+		Catalog_entry_id: series, Season_number: 1, Episode_number: 1, Status: "needs_lookup"})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Episode_id: episode, Library_id: ids["A"], File_path: "Only.A.S01E01.mkv", Size_bytes: 1}); err != nil {
+		t.Fatalf("save episode version: %v", err)
+	}
+
+	// An empty list is a no-op.
+	if err := store.Reset_catalogs(ctx, nil); err != nil {
+		t.Fatalf("reset empty: %v", err)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, only_a); entry == nil {
+		t.Fatal("empty reset dropped an entry")
+	}
+
+	if err := store.Reset_catalogs(ctx, []int64{ids["A"]}); err != nil {
+		t.Fatalf("reset A: %v", err)
+	}
+
+	if entry, _ := store.Get_catalog_entry(ctx, only_a); entry != nil {
+		t.Errorf("entry backed only by A survived: %+v", entry)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, series); entry != nil {
+		t.Errorf("series backed only by an A episode survived: %+v", entry)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, only_b); entry == nil {
+		t.Error("entry backed only by B was dropped")
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, shared); entry == nil {
+		t.Error("entry shared with B was dropped")
+	}
+	versions, err := store.List_versions_for_entry(ctx, shared)
+	if err != nil {
+		t.Fatalf("list shared versions: %v", err)
+	}
+	if len(versions) != 1 || versions[0].File_path != "Shared.B.mkv" {
+		t.Errorf("shared versions = %+v, want only the B file", versions)
+	}
+}

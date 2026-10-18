@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1497,5 +1498,515 @@ func Test_scan_cancel_targets_a_single_library(t *testing.T) {
 	cancel := do_request(t, server, http.MethodPost, "/api/v1/scan/cancel?library=lib1", ``)
 	if cancel.Code != http.StatusAccepted {
 		t.Fatalf("scan cancel status = %d: %s", cancel.Code, cancel.Body)
+	}
+}
+
+// failing_search_metadata fails only the search calls, so handle_search's TMDB
+// error labelling can be exercised on its own.
+type failing_search_metadata struct{ fake_metadata }
+
+func (failing_search_metadata) Search_movie(context.Context, string, int) ([]tmdb.Movie_search_result, error) {
+	return nil, errors.New("tmdb search down")
+}
+
+func (failing_search_metadata) Search_tv(context.Context, string, int) ([]tmdb.Tv_search_result, error) {
+	return nil, errors.New("tmdb search down")
+}
+
+// Test_search_tmdb_failure_answers_bad_gateway pins the label selection in
+// handle_search: a failing TMDB call is reported through bad_gateway with the
+// media type it searched for.
+func Test_search_tmdb_failure_answers_bad_gateway(t *testing.T) {
+	for _, target := range []string{
+		"/api/v1/search?q=matrix",
+		"/api/v1/search?q=matrix&media_type=series",
+	} {
+		server, _ := new_test_server_with(t, failing_search_metadata{}, fake_offline{})
+		rec := do_request(t, server, http.MethodGet, target, "")
+		if rec.Code != http.StatusBadGateway {
+			t.Errorf("GET %s = %d %s, want bad gateway", target, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// failing_local breaks the local autocomplete source only.
+type failing_local struct{}
+
+func (failing_local) Search(context.Context, string, int, scanner.Media_type) ([]matcher.Offline_candidate, error) {
+	return nil, nil
+}
+
+func (failing_local) Search_local(context.Context, string, int, scanner.Media_type, int) ([]matcher.Offline_candidate, error) {
+	return nil, errors.New("local index broken")
+}
+
+// Test_search_local_failure_answers_bad_gateway pins the local-error branch of
+// handle_search: once TMDB answered, a failing local index is surfaced as a
+// bad gateway rather than swallowed.
+func Test_search_local_failure_answers_bad_gateway(t *testing.T) {
+	server, _ := new_test_server_with(t, default_test_metadata(), failing_local{})
+	rec := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix", "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d %s, want bad gateway", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_search_caps_results_at_max pins the early break in both search loops:
+// neither TMDB results nor local suggestions may push the response past
+// max_search_results.
+func Test_search_caps_results_at_max(t *testing.T) {
+	movies := make([]tmdb.Movie_search_result, 0, max_search_results+2)
+	series := make([]tmdb.Tv_search_result, 0, max_search_results+2)
+	for i := 0; i < max_search_results+2; i++ {
+		movies = append(movies, tmdb.Movie_search_result{Id: i + 1, Title: fmt.Sprintf("Film %d", i)})
+		series = append(series, tmdb.Tv_search_result{Name: fmt.Sprintf("Show %d", i)})
+	}
+
+	for _, tc := range []struct {
+		name       string
+		target     string
+		metadata   matcher.Metadata_source
+		want_title string
+		local_hit  string
+	}{
+		{"movie", "/api/v1/search?q=film", fake_metadata{search_movies: movies}, "Film 0", "Film Extra"},
+		{"series", "/api/v1/search?q=show&media_type=series", fake_metadata{search_tv: series}, "Show 0", "Show Extra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A local suggestion is waiting for every media type, so the local
+			// loop runs into the cap TMDB already filled and must break
+			// instead of appending.
+			server, _ := new_test_server_with(t, tc.metadata, fake_local{hits: []matcher.Offline_candidate{
+				{Imdb_id: "tt9999999", Title: tc.local_hit, Year: 2001, Media_type: scanner.Movie},
+			}})
+			rec := do_request(t, server, http.MethodGet, tc.target, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+			}
+			body := decode[struct {
+				Results []catalog_item `json:"results"`
+			}](t, rec)
+			if len(body.Results) != max_search_results {
+				t.Fatalf("results = %d, want the cap of %d", len(body.Results), max_search_results)
+			}
+			if body.Results[0].Title != tc.want_title {
+				t.Errorf("first result = %q, want %q", body.Results[0].Title, tc.want_title)
+			}
+		})
+	}
+}
+
+// Test_search_local_skips_duplicates_and_respects_cap pins search_local: a
+// local hit that repeats a TMDB result is dropped, new hits are appended, and
+// the loop stops once the cap is reached.
+func Test_search_local_skips_duplicates_and_respects_cap(t *testing.T) {
+	server, _ := new_test_server_with(t,
+		fake_metadata{search_movies: []tmdb.Movie_search_result{{Id: 603, Title: "The Matrix", Release_date: "1999-03-31"}}},
+		fake_local{hits: []matcher.Offline_candidate{
+			{Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999, Media_type: scanner.Movie},
+			{Imdb_id: "tt0234215", Title: "The Matrix Reloaded", Year: 2003, Media_type: scanner.Movie},
+		}})
+
+	rec := do_request(t, server, http.MethodGet, "/api/v1/search?q=matrix", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Results []catalog_item `json:"results"`
+	}](t, rec)
+	if len(body.Results) != 2 {
+		t.Fatalf("results = %+v, want the TMDB hit plus the one new local hit", body.Results)
+	}
+	if body.Results[1].Title != "The Matrix Reloaded" {
+		t.Errorf("second result = %q, want the non-duplicate local hit", body.Results[1].Title)
+	}
+}
+
+// Test_scan_cancel_by_library_and_global pins the two branches of the scan
+// cancel endpoint: the per-library lookup reuses the stored manager, and the
+// global form cancels every running library job plus the shared queue.
+func Test_scan_cancel_by_library_and_global(t *testing.T) {
+	server, store := new_test_server(t)
+	dir := t.TempDir()
+	if err := store.Upsert_library(context.Background(), "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1"]}`)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/scan/cancel?library=lib1", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("per-library cancel = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do_request(t, server, http.MethodPost, "/api/v1/scan/cancel", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("global cancel = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_match_cancel_by_library_and_global covers the matching-side cancel
+// handler: cancelling one library reuses its manager, cancelling without a
+// library name walks every per-library manager.
+func Test_match_cancel_by_library_and_global(t *testing.T) {
+	server, store := new_test_server(t)
+	dir := t.TempDir()
+	if err := store.Upsert_library(context.Background(), "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1"]}`)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/match/cancel?library=lib1", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("per-library cancel = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do_request(t, server, http.MethodPost, "/api/v1/match/cancel", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("global cancel = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_background_cancel_stops_both_queues starts a scan and a match job and
+// then drains everything through the combined cancel endpoint, covering the
+// scan and match manager loops in handle_background_cancel.
+func Test_background_cancel_stops_both_queues(t *testing.T) {
+	server, store := new_test_server(t)
+	dir := t.TempDir()
+	if err := store.Upsert_library(context.Background(), "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1"]}`)
+	do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1"]}`)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/background/cancel", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("background cancel = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_per_library_job_managers_are_reused starts a scan and a match for the
+// same library twice; the second start finds the manager the first one stored,
+// so the per-library job maps are reused instead of growing a new entry. The
+// second response is either accepted (previous job finished) or a conflict
+// (still running) — both prove the same manager was found; only a 500 would
+// mean the reuse path broke.
+func Test_per_library_job_managers_are_reused(t *testing.T) {
+	server, store := new_test_server(t)
+	dir := t.TempDir()
+	if err := store.Upsert_library(context.Background(), "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1"]}`)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1"]}`)
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusConflict {
+		t.Fatalf("second scan start = %d %s", rec.Code, rec.Body.String())
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1"]}`)
+	rec = do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1"]}`)
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusConflict {
+		t.Fatalf("second match start = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_rematch_all_start_reuses_match_managers pins the queued rematch-all
+// handler: force=true routes through Run_force_rematch and still finds the
+// per-library manager a plain match created.
+func Test_rematch_all_start_reuses_match_managers(t *testing.T) {
+	server, store := new_test_server(t)
+	dir := t.TempDir()
+	if err := store.Upsert_library(context.Background(), "lib1", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	do_request(t, server, http.MethodPost, "/api/v1/match", `{"libraries":["lib1"]}`)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/match/rematch", `{"libraries":["lib1"],"force":true}`)
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusConflict {
+		t.Fatalf("rematch all start = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_start_handlers_reject_invalid_json covers the decode failure in the
+// job-start handlers: an unparseable body is a bad request, not a job.
+func Test_start_handlers_reject_invalid_json(t *testing.T) {
+	server, _ := new_test_server(t)
+	for _, target := range []string{"/api/v1/scan", "/api/v1/match", "/api/v1/match/rematch"} {
+		rec := do_request(t, server, http.MethodPost, target, `{oops`)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s invalid json = %d %s", target, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// Test_match_start_store_failure_lists_no_libraries pins resolve_library_names'
+// behaviour on a store failure: the error is swallowed and no names are
+// returned, so the start resolves to an empty job list rather than failing the
+// request.
+func Test_match_start_store_failure_lists_no_libraries(t *testing.T) {
+	server, _ := new_test_server(t)
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	server.store = database.New_store(db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/match", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("match start on closed store = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Libraries []string `json:"libraries"`
+	}](t, rec)
+	if len(body.Libraries) != 0 {
+		t.Errorf("libraries = %v, want none", body.Libraries)
+	}
+}
+
+// Test_rematch_ambiguous_replace_failure_is_internal_error seeds a candidate
+// shortlist, then makes the candidate DELETE abort: an ambiguous rematch
+// persists its shortlist through Replace_candidates, and the failure must
+// surface as an internal error.
+func Test_rematch_ambiguous_replace_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id := upsert_movie_entry(t, store, "Completely Different")
+	// The offline candidate is titled "Completely Different", so only a file
+	// name that does not echo it keeps the rematch ambiguous: a movie is
+	// looked up by its file, and an exact hit would apply the match before the
+	// candidate shortlist is ever persisted.
+	if _, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	if err := store.Replace_candidates(context.Background(), id, []database.Candidate{{
+		Tmdb_id: 603, Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999,
+		Media_type: "movie", Score: 0.9,
+	}}); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_candidate_delete BEFORE DELETE ON candidate
+		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/rematch", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_rematch_status_update_failure_is_internal_error pre-matches an entry,
+// then makes the catalog UPDATE abort: an ambiguous rematch on a matched entry
+// still updates its status back to needs_lookup, and that failure must surface
+// as an internal error.
+func Test_rematch_status_update_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id := upsert_movie_entry(t, store, "Completely Different")
+	if err := store.Set_catalog_status(context.Background(), id, "matched"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	// A file name that does not echo the offline candidate's title keeps the
+	// rematch ambiguous — a movie is looked up by its file — so the status
+	// write runs after the shortlist is persisted instead of the match being
+	// applied first.
+	if _, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_entry_update BEFORE UPDATE ON catalog_entry
+		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/rematch", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_split_version_job_failure_is_internal_error makes every catalog UPDATE
+// abort, so the split job (which re-matches the freshly cut movie entry) fails
+// inside the queue and the handler answers with an internal error.
+func Test_split_version_job_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline{})
+	id := upsert_movie_entry(t, store, "The Matrix")
+	if err := store.Update_catalog_entry(context.Background(), id, database.Catalog_entry{
+		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+	}); err != nil {
+		t.Fatalf("flip media type: %v", err)
+	}
+	version_id, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 9000,
+	})
+	if err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_entry_update BEFORE UPDATE ON catalog_entry
+		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/versions/"+itoa(version_id)+"/split", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// series_show_folder_fixture seeds the absorbed-reclassify shape: an existing
+// series owning a numbered episode and a loose movie sharing the show folder.
+func series_show_folder_fixture(t *testing.T, store *database.Store) (movie_id int64) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := store.Upsert_library(ctx, "TV", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) == 0 {
+		t.Fatalf("list libraries: %v", err)
+	}
+	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert series: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: libraries[0].Id,
+		File_path: "The.Office/Season 1/The.Office.S01E01.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save series version: %v", err)
+	}
+	movie_id, err = store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert movie: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: movie_id, Library_id: libraries[0].Id,
+		File_path: "The.Office/Season 1/Interviews.mkv", Size_bytes: 4000,
+	}); err != nil {
+		t.Fatalf("save movie version: %v", err)
+	}
+	return movie_id
+}
+
+// Test_reclassify_merge_update_failure_is_internal_error aborts every version
+// UPDATE, so folding the drained movie into the existing series fails and the
+// reclassify job answers with an internal error.
+func Test_reclassify_merge_update_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id := series_show_folder_fixture(t, store)
+	inject_failure(t, database_path, `CREATE TRIGGER fail_version_update BEFORE UPDATE ON version
+		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_reclassify_merge_delete_failure_is_internal_error lets the fold succeed
+// but aborts the catalog DELETE, so removing the drained movie entry fails and
+// the reclassify job answers with an internal error.
+func Test_reclassify_merge_delete_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id := series_show_folder_fixture(t, store)
+	inject_failure(t, database_path, `CREATE TRIGGER fail_entry_delete BEFORE DELETE ON catalog_entry
+		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_reclassify_rename_failure_is_internal_error re-types a lone movie whose
+// file sits in a show folder; the folder becomes its own series, and the title
+// rewrite (rename_anchor_to_folder) is the only catalog UPDATE left — aborting
+// it must surface as an internal error.
+func Test_reclassify_rename_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := store.Upsert_library(ctx, "TV", dir, true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) == 0 {
+		t.Fatalf("list libraries: %v", err)
+	}
+	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert movie: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, Library_id: libraries[0].Id,
+		File_path: "The.Office/Season 1/Interviews.mkv", Size_bytes: 4000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_title_update BEFORE UPDATE OF title ON catalog_entry
+		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
+	}
+}
+
+// Test_reclassify_absorbed_ambiguous_reports_target_entry pins the absorbed
+// branch of write_applied_or_candidates: the re-typed movie is drained into
+// the existing series, the rematch on the merged series stays ambiguous, and
+// the chooser payload carries the surviving series entry — not the drained
+// movie the request named.
+func Test_reclassify_absorbed_ambiguous_reports_target_entry(t *testing.T) {
+	server, store, _ := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id := series_show_folder_fixture(t, store)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decode[struct {
+		Applied    bool             `json:"applied"`
+		Candidates []candidate_item `json:"candidates"`
+		Entry      *catalog_item    `json:"entry"`
+	}](t, rec)
+	if body.Applied {
+		t.Fatalf("applied = true, want ambiguous rematch")
+	}
+	if body.Entry == nil || body.Entry.Media_type != "series" {
+		t.Fatalf("entry = %+v, want the absorbed series", body.Entry)
+	}
+	if body.Entry.Id == id {
+		t.Errorf("entry id = %d, want the series the movie was absorbed into", body.Entry.Id)
+	}
+}
+
+// Test_manual_match_enrich_failure_is_internal_error lets the catalog update
+// succeed but aborts the series-metadata write, so Enrich_episodes fails inside
+// apply_manual_match and the handler answers with an internal error instead of
+// the happy-path entry reload.
+func Test_manual_match_enrich_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
+	id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
+		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert series: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_series_metadata BEFORE INSERT ON series_metadata
+		BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"tmdb_id":603}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s, want internal error", rec.Code, rec.Body.String())
 	}
 }

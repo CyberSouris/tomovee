@@ -615,6 +615,82 @@ func (s *Server) match_job_manager(name string) *job_manager[matching.Progress, 
 	return mgr
 }
 
+// decode_optional_body decodes a JSON request body when one is present; an
+// empty body is fine, a malformed one writes the failure response.
+func decode_optional_body(w http.ResponseWriter, body io.ReadCloser, out any) bool {
+	if body == nil {
+		return true
+	}
+	if err := json.NewDecoder(body).Decode(out); err != nil && !errors.Is(err, io.EOF) {
+		write_error(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
+}
+
+// resolve_library_names falls back to every enabled library when the request
+// did not name any.
+func (s *Server) resolve_library_names(ctx context.Context, names []string) []string {
+	if len(names) > 0 {
+		return names
+	}
+	libs, err := s.store.Enabled_libraries(ctx)
+	if err != nil {
+		return names
+	}
+	resolved := make([]string, 0, len(libs))
+	for _, library := range libs {
+		resolved = append(resolved, library.Name)
+	}
+	return resolved
+}
+
+// ensure_matching_configured writes the failure response and reports false
+// when matching is missing or has no source to match against.
+func (s *Server) ensure_matching_configured(w http.ResponseWriter) bool {
+	if s.matching == nil || s.matcher == nil {
+		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
+		return false
+	}
+	if !s.matcher.Has_sources() {
+		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
+		return false
+	}
+	return true
+}
+
+// write_scan_jobs answers a per-library scan start with one job response per
+// library, plus the first job under "job" for single-job clients.
+func write_scan_jobs(w http.ResponseWriter, started []*job[scan.Progress, scan.Result], names []string) {
+	jobs := make([]*job_response, 0, len(started))
+	for i, job := range started {
+		resp := job_response_from(job)
+		resp.Library = names[i]
+		jobs = append(jobs, resp)
+	}
+	response := map[string]any{"jobs": jobs}
+	if len(jobs) > 0 {
+		response["job"] = jobs[0]
+	}
+	write_json(w, http.StatusAccepted, response)
+}
+
+// write_match_jobs answers a per-library match start with one job response per
+// library, plus the first job under "job" for single-job clients.
+func write_match_jobs(w http.ResponseWriter, started []*job[matching.Progress, matching.Result], names []string) {
+	jobs := make([]*match_job_response, 0, len(started))
+	for i, job := range started {
+		resp := match_job_response_from(job)
+		resp.Library = names[i]
+		jobs = append(jobs, resp)
+	}
+	response := map[string]any{"jobs": jobs, "matches": jobs}
+	if len(jobs) > 0 {
+		response["job"] = jobs[0]
+	}
+	write_json(w, http.StatusAccepted, response)
+}
+
 func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 	if s.scanner == nil {
 		write_error(w, http.StatusServiceUnavailable, "scanner is not configured")
@@ -626,29 +702,21 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		// so unchanged files are rebuilt from scratch. See Scanner.Force_libraries.
 		Force bool `json:"force"`
 	}
-	if r.Body != nil {
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
-			write_error(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
+	if !decode_optional_body(w, r.Body, &request) {
+		return
 	}
+	names := s.resolve_library_names(r.Context(), request.Libraries)
 
-	names := append([]string(nil), request.Libraries...)
-	if len(names) == 0 {
-		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
-			for _, library := range libs {
-				names = append(names, library.Name)
-			}
+	run := func(ctx context.Context, progress func(scan.Progress), libraries []string) (*scan.Result, error) {
+		if request.Force {
+			return s.scanner.Force_libraries(ctx, libraries, progress)
 		}
+		return s.scanner.Run_libraries(ctx, libraries, progress)
 	}
 
 	if len(names) == 0 {
 		job, err := s.jobs.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
-			if request.Force {
-				return s.scanner.Force_libraries(ctx, nil, progress)
-			}
-			return s.scanner.Run_libraries(ctx, nil, progress)
+			return run(ctx, progress, nil)
 		})
 		if err != nil {
 			write_error(w, http.StatusConflict, job_running_error("a scan is already running"))
@@ -663,10 +731,7 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		name := name
 		mgr := s.scan_job_manager(name)
 		job, err := mgr.Start(func(ctx context.Context, progress func(scan.Progress)) (*scan.Result, error) {
-			if request.Force {
-				return s.scanner.Force_libraries(ctx, []string{name}, progress)
-			}
-			return s.scanner.Run_libraries(ctx, []string{name}, progress)
+			return run(ctx, progress, []string{name})
 		})
 		if err != nil {
 			write_error(w, http.StatusConflict, job_running_error("a scan is already running for "+name))
@@ -674,18 +739,7 @@ func (s *Server) handle_scan_start(w http.ResponseWriter, r *http.Request) {
 		}
 		started = append(started, job)
 	}
-
-	jobs := make([]*job_response, 0, len(started))
-	for i, job := range started {
-		resp := job_response_from(job)
-		resp.Library = names[i]
-		jobs = append(jobs, resp)
-	}
-	response := map[string]any{"jobs": jobs}
-	if len(jobs) > 0 {
-		response["job"] = jobs[0]
-	}
-	write_json(w, http.StatusAccepted, response)
+	write_scan_jobs(w, started, names)
 }
 
 // all_scan_jobs snapshots the global and every per-library scan job, tagged with
@@ -917,32 +971,16 @@ func (s *Server) Auto_match() {
 }
 
 func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
-	if s.matching == nil || s.matcher == nil {
-		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
-		return
-	}
-	if !s.matcher.Has_sources() {
-		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
+	if !s.ensure_matching_configured(w) {
 		return
 	}
 	var request struct {
 		Libraries []string `json:"libraries"`
 	}
-	if r.Body != nil {
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
-			write_error(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
+	if !decode_optional_body(w, r.Body, &request) {
+		return
 	}
-	names := append([]string(nil), request.Libraries...)
-	if len(names) == 0 {
-		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
-			for _, library := range libs {
-				names = append(names, library.Name)
-			}
-		}
-	}
+	names := s.resolve_library_names(r.Context(), request.Libraries)
 
 	if len(names) == 0 {
 		job, err := s.matches.Start(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
@@ -969,17 +1007,7 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 		}
 		started = append(started, job)
 	}
-	jobs := make([]*match_job_response, 0, len(started))
-	for i, job := range started {
-		resp := match_job_response_from(job)
-		resp.Library = names[i]
-		jobs = append(jobs, resp)
-	}
-	response := map[string]any{"jobs": jobs, "matches": jobs}
-	if len(jobs) > 0 {
-		response["job"] = jobs[0]
-	}
-	write_json(w, http.StatusAccepted, response)
+	write_match_jobs(w, started, names)
 }
 
 // handle_rematch_all_start starts a background rematch run over every known
@@ -989,12 +1017,7 @@ func (s *Server) handle_match_start(w http.ResponseWriter, r *http.Request) {
 // no longer match as they were; force drops each entry's existing match before
 // re-evaluating it, so stale matches disappear instead of lingering.
 func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request) {
-	if s.matching == nil || s.matcher == nil {
-		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
-		return
-	}
-	if !s.matcher.Has_sources() {
-		write_error(w, http.StatusServiceUnavailable, s.matching_unavailable_message())
+	if !s.ensure_matching_configured(w) {
 		return
 	}
 	var request struct {
@@ -1004,21 +1027,10 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 		// Matching.Run_force_rematch.
 		Force bool `json:"force"`
 	}
-	if r.Body != nil {
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
-			write_error(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
+	if !decode_optional_body(w, r.Body, &request) {
+		return
 	}
-	names := append([]string(nil), request.Libraries...)
-	if len(names) == 0 {
-		if libs, err := s.store.Enabled_libraries(r.Context()); err == nil {
-			for _, library := range libs {
-				names = append(names, library.Name)
-			}
-		}
-	}
+	names := s.resolve_library_names(r.Context(), request.Libraries)
 
 	rematch := s.rematch_run(request.Force)
 
@@ -1047,17 +1059,7 @@ func (s *Server) handle_rematch_all_start(w http.ResponseWriter, r *http.Request
 		}
 		started = append(started, job)
 	}
-	jobs := make([]*match_job_response, 0, len(started))
-	for i, job := range started {
-		resp := match_job_response_from(job)
-		resp.Library = names[i]
-		jobs = append(jobs, resp)
-	}
-	response := map[string]any{"jobs": jobs, "matches": jobs}
-	if len(jobs) > 0 {
-		response["job"] = jobs[0]
-	}
-	write_json(w, http.StatusAccepted, response)
+	write_match_jobs(w, started, names)
 }
 
 // rematch_run picks the background rematch flavour a request asked for: force

@@ -265,38 +265,61 @@ func Open_with_progress_context(ctx context.Context, path string, logs *slog.Log
 		dir = filepath.Dir(path)
 	}
 	db_path := filepath.Join(dir, Index_db_name)
-	if !index_db_fresh(path, db_path) {
-		if files, err := dataset_files(path); err == nil {
-			if on_progress != nil {
-				total := int64(0)
-				for file := range files {
-					if stat, err := os.Stat(file); err == nil {
-						total += stat.Size()
-					}
-				}
-				on_progress(Build_progress{Step: Build_stale, Total: total})
-			}
-			if err := build_index_db(path, db_path, logs, on_progress); err != nil {
-				return nil, err
-			}
-			if on_progress != nil {
-				on_progress(Build_progress{Step: Build_ready})
-			}
-		} else if index_reusable(db_path) {
-			if on_progress != nil {
-				on_progress(Build_progress{Step: Build_reuse})
-			}
-		} else {
-			return nil, fmt.Errorf("imdb_datasets: %s: %w", path, err)
-		}
-	} else if on_progress != nil {
-		on_progress(Build_progress{Step: Build_reuse})
+	if err := ensure_index_db(path, db_path, logs, on_progress); err != nil {
+		return nil, err
 	}
 	db, err := open_file_db(db_path)
 	if err != nil {
 		return nil, fmt.Errorf("imdb_datasets: open index: %w", err)
 	}
 	return &Index{db: db}, nil
+}
+
+// ensure_index_db makes sure db_path holds an index for path: an up-to-date
+// one is reused as-is (Build_reuse), a stale one is rebuilt (Build_stale
+// through Build_ready), and when neither can be determined the reusable index
+// is preferred over failing.
+func ensure_index_db(path, db_path string, logs *slog.Logger, on_progress func(Build_progress)) error {
+	if index_db_fresh(path, db_path) {
+		report_progress(on_progress, Build_progress{Step: Build_reuse})
+		return nil
+	}
+	files, err := dataset_files(path)
+	if err == nil {
+		if on_progress != nil {
+			on_progress(Build_progress{Step: Build_stale, Total: dataset_total_bytes(files)})
+		}
+		if err := build_index_db(path, db_path, logs, on_progress); err != nil {
+			return err
+		}
+		report_progress(on_progress, Build_progress{Step: Build_ready})
+		return nil
+	}
+	if index_reusable(db_path) {
+		report_progress(on_progress, Build_progress{Step: Build_reuse})
+		return nil
+	}
+	return fmt.Errorf("imdb_datasets: %s: %w", path, err)
+}
+
+// dataset_total_bytes sums the source file sizes, so Build_stale can report
+// how many bytes the rebuild will read.
+func dataset_total_bytes(files map[string]string) int64 {
+	var total int64
+	for file := range files {
+		if stat, err := os.Stat(file); err == nil {
+			total += stat.Size()
+		}
+	}
+	return total
+}
+
+// report_progress sends p to on_progress when the caller asked for progress;
+// a nil callback keeps the plain behaviour.
+func report_progress(on_progress func(Build_progress), p Build_progress) {
+	if on_progress != nil {
+		on_progress(p)
+	}
 }
 
 // byte_counter records the number of bytes read from the wrapped reader, used

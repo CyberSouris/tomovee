@@ -72,29 +72,16 @@ func New(cfg Config) *Client {
 func (c *Client) Get_json(ctx context.Context, url string, headers map[string]string, out any) error {
 	var last_err error
 	for attempt := 0; attempt <= c.max_retries; attempt++ {
-		if attempt > 0 {
-			delay := c.backoff(attempt)
-			c.logger.Debug("retrying http request", "attempt", attempt, "delay", delay, "error", last_err)
-			if err := sleep_ctx(ctx, delay); err != nil {
-				return err
-			}
+		if err := c.wait_before_retry(ctx, attempt, last_err); err != nil {
+			return err
 		}
 		if err := c.limiter.Wait(ctx); err != nil {
 			return err
 		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		req, err := c.create_get_request(ctx, url, headers)
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Accept", "application/json")
-		if c.user_agent != "" {
-			req.Header.Set("User-Agent", c.user_agent)
-		}
-		for key, value := range headers {
-			req.Header.Set(key, value)
-		}
-
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -103,35 +90,76 @@ func (c *Client) Get_json(ctx context.Context, url string, headers map[string]st
 			last_err = err
 			continue
 		}
-		body, read_err := io.ReadAll(io.LimitReader(resp.Body, max_body_bytes))
-		_ = resp.Body.Close()
+		body, read_err := read_limited_body(resp)
 		if read_err != nil {
 			last_err = read_err
 			continue
 		}
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			if out == nil {
-				return nil
-			}
-			if err := json.Unmarshal(body, out); err != nil {
-				return fmt.Errorf("httpclient: decode response: %w", err)
-			}
-			return nil
+		retry, err := c.handle_response(ctx, resp, body, out)
+		if !retry {
+			return err
 		}
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			last_err = fmt.Errorf("http %d: %s", resp.StatusCode, snippet(body))
-			if wait := parse_retry_after(resp.Header.Get("Retry-After")); wait > 0 {
-				if err := sleep_ctx(ctx, wait); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		return fmt.Errorf("httpclient: http %d: %s", resp.StatusCode, snippet(body))
+		last_err = err
 	}
 	return fmt.Errorf("httpclient: request failed after %d attempt(s): %w", c.max_retries+1, last_err)
+}
+
+// wait_before_retry logs and sleeps through the backoff delay before a retry;
+// the first attempt passes straight through.
+func (c *Client) wait_before_retry(ctx context.Context, attempt int, last_err error) error {
+	if attempt == 0 {
+		return nil
+	}
+	delay := c.backoff(attempt)
+	c.logger.Debug("retrying http request", "attempt", attempt, "delay", delay, "error", last_err)
+	return sleep_ctx(ctx, delay)
+}
+
+func (c *Client) create_get_request(ctx context.Context, url string, headers map[string]string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.user_agent != "" {
+		req.Header.Set("User-Agent", c.user_agent)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return req, nil
+}
+
+// read_limited_body reads at most max_body_bytes from resp.Body and always
+// closes it.
+func read_limited_body(resp *http.Response) ([]byte, error) {
+	defer resp.Body.Close()
+	return io.ReadAll(io.LimitReader(resp.Body, max_body_bytes))
+}
+
+// handle_response inspects a completed response. A 2xx decodes into out and
+// ends the request (retry=false, err=nil). 429/5xx honours Retry-After and
+// reports a retryable failure (retry=true). Anything else fails permanently.
+func (c *Client) handle_response(ctx context.Context, resp *http.Response, body []byte, out any) (retry bool, err error) {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if out == nil {
+			return false, nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			return false, fmt.Errorf("httpclient: decode response: %w", err)
+		}
+		return false, nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		retry_err := fmt.Errorf("http %d: %s", resp.StatusCode, snippet(body))
+		if wait := parse_retry_after(resp.Header.Get("Retry-After")); wait > 0 {
+			if err := sleep_ctx(ctx, wait); err != nil {
+				return false, err
+			}
+		}
+		return true, retry_err
+	}
+	return false, fmt.Errorf("httpclient: http %d: %s", resp.StatusCode, snippet(body))
 }
 
 // backoff returns an exponential delay for the given (1-based) attempt.

@@ -539,12 +539,60 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 		root_by_library[library.Id] = library.Path
 	}
 
-	roots := make([]string, 0, 1)
 	anchor_versions, err := m.store.List_versions_for_entry(ctx, entry_id)
 	if err != nil {
 		return entry_id, err
 	}
-	for _, version := range anchor_versions {
+	roots := show_folder_roots(anchor_versions, root_by_library)
+	if len(roots) == 0 {
+		// No show folder to group around: the re-typed entry's own files still
+		// have to end up as episodes.
+		return entry_id, m.number_series_versions(ctx, entry_id, anchor_versions)
+	}
+
+	owners, err := m.collect_folder_owners(ctx, roots, root_by_library)
+	if err != nil {
+		return entry_id, err
+	}
+	if len(owners) == 0 {
+		return entry_id, nil
+	}
+
+	target := merge_target(owners, entry_id)
+	drain := drain_set(owners, entry_id, target)
+
+	loose, err := m.fold_drained_versions(ctx, owners, target, drain)
+	if err != nil {
+		return entry_id, err
+	}
+	if err := m.delete_drained_owners(ctx, drain); err != nil {
+		return entry_id, err
+	}
+	if target == entry_id {
+		// The flipped entry becomes the show-wide entry; name it after the
+		// folder so re-scans group it again instead of spawning a duplicate.
+		if err := m.rename_anchor_to_folder(ctx, target, roots[0]); err != nil {
+			return entry_id, err
+		}
+	}
+	if err := m.number_series_versions(ctx, target, loose); err != nil {
+		return entry_id, err
+	}
+	return target, nil
+}
+
+// owner_bucket groups every file one catalog entry owns under the show folder,
+// and remembers whether that entry is already a series.
+type owner_bucket struct {
+	versions []database.Owned_version
+	series   bool
+}
+
+// show_folder_roots returns the unique show folders the entry's files sit in;
+// files directly under a library root (no show folder) are left out.
+func show_folder_roots(versions []database.Version, root_by_library map[int64]string) []string {
+	roots := make([]string, 0, 1)
+	for _, version := range versions {
 		path := root_by_library[version.Library_id]
 		if path == "" {
 			continue
@@ -557,21 +605,18 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			roots = append(roots, root)
 		}
 	}
-	if len(roots) == 0 {
-		// No show folder to group around: the re-typed entry's own files still
-		// have to end up as episodes.
-		return entry_id, m.number_series_versions(ctx, entry_id, anchor_versions)
-	}
+	return roots
+}
 
+// collect_folder_owners buckets every file under the show folders by its
+// owning catalog entry, so the caller can decide which entries to fold
+// together. Entries owning no file under the folders are left out.
+func (m *Matching) collect_folder_owners(ctx context.Context, roots []string, root_by_library map[int64]string) (map[int64]*owner_bucket, error) {
 	owned, err := m.store.List_owned_versions(ctx)
 	if err != nil {
-		return entry_id, err
+		return nil, err
 	}
-	type bucket struct {
-		versions []database.Owned_version
-		series   bool
-	}
-	owners := make(map[int64]*bucket)
+	owners := make(map[int64]*owner_bucket)
 	for _, version := range owned {
 		path := root_by_library[version.Library_id]
 		if path == "" {
@@ -585,7 +630,7 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 		}
 		b := owners[version.Entry_id]
 		if b == nil {
-			b = &bucket{}
+			b = &owner_bucket{}
 			owners[version.Entry_id] = b
 		}
 		b.versions = append(b.versions, version)
@@ -593,17 +638,26 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			b.series = true
 		}
 	}
-	if len(owners) == 0 {
-		return entry_id, nil
-	}
+	return owners, nil
+}
 
-	target := entry_id
-	drain := make(map[int64]bool)
+// merge_target picks the entry the show folder's files end up under: an
+// existing series already owning files there, or the re-typed entry itself
+// when no other series is involved.
+func merge_target(owners map[int64]*owner_bucket, entry_id int64) int64 {
 	for id, b := range owners {
 		if b.series && id != entry_id && len(b.versions) > 0 {
-			target = id
+			return id
 		}
 	}
+	return entry_id
+}
+
+// drain_set marks which owners get folded into the target: every non-series
+// under the folder, plus every other owner once an external series is the
+// merge target. The target itself is never drained.
+func drain_set(owners map[int64]*owner_bucket, entry_id, target int64) map[int64]bool {
+	drain := make(map[int64]bool)
 	for id, b := range owners {
 		if b.series || id == entry_id {
 			continue
@@ -617,10 +671,14 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			}
 		}
 	}
+	return drain
+}
 
-	// Fold every file of a drained entry, plus the anchor's own files when it
-	// re-uses the freshly flipped row, into the target series. Files the target
-	// already placed on its episodes are left where the user or a scan put them.
+// fold_drained_versions folds every file of a drained entry, plus the anchor's
+// own files when it re-uses the freshly flipped row, into the target series.
+// Files the target already placed on its episodes are left where the user or a
+// scan put them. It returns the files that ended up on no episode row.
+func (m *Matching) fold_drained_versions(ctx context.Context, owners map[int64]*owner_bucket, target int64, drain map[int64]bool) ([]database.Version, error) {
 	loose := make([]database.Version, 0, 8)
 	for id, b := range owners {
 		if id != target && !drain[id] {
@@ -632,7 +690,7 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			}
 			numbered, err := m.fold_series_version(ctx, target, version)
 			if err != nil {
-				return entry_id, err
+				return nil, err
 			}
 			if !numbered {
 				loose = append(loose, database.Version{
@@ -641,40 +699,41 @@ func (m *Matching) group_folder_series(ctx context.Context, entry_id int64) (int
 			}
 		}
 	}
+	return loose, nil
+}
 
+// delete_drained_owners removes drained entries that no longer own any file;
+// one still holding files outside the folder is left alone.
+func (m *Matching) delete_drained_owners(ctx context.Context, drain map[int64]bool) error {
 	for id := range drain {
 		versions, err := m.store.List_versions_for_entry(ctx, id)
 		if err != nil {
-			return entry_id, err
+			return err
 		}
 		if len(versions) > 0 {
 			continue // the entry still owns files outside the folder, leave it alone
 		}
 		if err := m.store.Delete_catalog_entry(ctx, id); err != nil {
-			return entry_id, err
+			return err
 		}
 	}
+	return nil
+}
 
-	if target == entry_id {
-		// The flipped entry becomes the show-wide entry; name it after the
-		// folder so re-scans group it again instead of spawning a duplicate.
-		anchor, err := m.store.Get_catalog_entry(ctx, target)
-		if err != nil {
-			return entry_id, err
-		}
-		folder := matcher.Parse_foldername(filepath.Base(roots[0]))
-		if anchor != nil && folder.Title != "" && anchor.Title != folder.Title {
-			anchor.Title = folder.Title
-			anchor.Release_year = 0
-			if err := m.store.Update_catalog_entry(ctx, target, *anchor); err != nil {
-				return entry_id, err
-			}
-		}
+// rename_anchor_to_folder names the show-wide entry after its folder so
+// re-scans group it again instead of spawning a duplicate.
+func (m *Matching) rename_anchor_to_folder(ctx context.Context, target_id int64, root string) error {
+	anchor, err := m.store.Get_catalog_entry(ctx, target_id)
+	if err != nil {
+		return err
 	}
-	if err := m.number_series_versions(ctx, target, loose); err != nil {
-		return entry_id, err
+	folder := matcher.Parse_foldername(filepath.Base(root))
+	if anchor == nil || folder.Title == "" || anchor.Title == folder.Title {
+		return nil
 	}
-	return target, nil
+	anchor.Title = folder.Title
+	anchor.Release_year = 0
+	return m.store.Update_catalog_entry(ctx, target_id, *anchor)
 }
 
 // fold_series_version moves one stored file under a series' show folder. Files

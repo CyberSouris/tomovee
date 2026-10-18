@@ -278,39 +278,72 @@ const version_columns = `
 	       COALESCE(v.frame_rate, 0), COALESCE(v.bit_depth, 0), COALESCE(v.hash, '')
 	FROM version v`
 
-func catalog_where(filter Catalog_filter) (string, []any) {
-	var clauses []string
-	var args []any
+// where_builder accumulates SQL WHERE clauses and their bind arguments, one
+// pair per filter dimension, so each clause helper stays a flat two-liner.
+type where_builder struct {
+	clauses []string
+	args    []any
+}
+
+func (w *where_builder) add(clause string, args ...any) {
+	w.clauses = append(w.clauses, clause)
+	w.args = append(w.args, args...)
+}
+
+// string_args widens a []string into []any so it can be spread over add.
+func string_args(values []string) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
+}
+
+func add_media_type_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Media_type != "" {
-		clauses = append(clauses, "ce.media_type = ?")
-		args = append(args, filter.Media_type)
+		w.add("ce.media_type = ?", filter.Media_type)
 	}
+}
+
+func add_status_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Status != "" {
-		clauses = append(clauses, "ce.status = ?")
-		args = append(args, filter.Status)
+		w.add("ce.status = ?", filter.Status)
 	}
-	if len(filter.Statuses) > 0 {
-		placeholders := strings.Repeat("?,", len(filter.Statuses))
-		placeholders = strings.TrimSuffix(placeholders, ",")
-		clauses = append(clauses, "ce.status IN ("+placeholders+")")
-		for _, status := range filter.Statuses {
-			args = append(args, status)
-		}
+}
+
+func add_statuses_clause(w *where_builder, filter Catalog_filter) {
+	if len(filter.Statuses) == 0 {
+		return
 	}
+	placeholders := strings.Repeat("?,", len(filter.Statuses))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	w.add("ce.status IN ("+placeholders+")", string_args(filter.Statuses)...)
+}
+
+func add_search_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Search != "" {
-		clauses = append(clauses, "(ce.title LIKE ? OR ce.original_title LIKE ?)")
 		like := "%" + filter.Search + "%"
-		args = append(args, like, like)
+		w.add("(ce.title LIKE ? OR ce.original_title LIKE ?)", like, like)
 	}
+}
+
+func add_year_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Year > 0 {
-		clauses = append(clauses, "ce.release_year = ?")
-		args = append(args, filter.Year)
+		w.add("ce.release_year = ?", filter.Year)
 	}
+}
+
+// genre_exists is the per-genre EXISTS shared by the single-genre filter and
+// the genre list; it needs one bind argument per call.
+func genre_exists() string {
+	return `EXISTS (
+		SELECT 1 FROM catalog_entry_genre ceg JOIN genre g ON g.id = ceg.genre_id
+		WHERE ceg.catalog_entry_id = ce.id AND g.name = ?)`
+}
+
+func add_genre_clauses(w *where_builder, filter Catalog_filter) {
 	if filter.Genre != "" {
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM catalog_entry_genre ceg JOIN genre g ON g.id = ceg.genre_id
-			WHERE ceg.catalog_entry_id = ce.id AND g.name = ?)`)
-		args = append(args, filter.Genre)
+		w.add(genre_exists(), filter.Genre)
 	}
 	// One EXISTS per genre means an entry must carry all of them, so browsing
 	// into a second category intersects rather than widens the previous one.
@@ -318,46 +351,68 @@ func catalog_where(filter Catalog_filter) (string, []any) {
 		if genre == "" {
 			continue
 		}
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM catalog_entry_genre ceg JOIN genre g ON g.id = ceg.genre_id
-			WHERE ceg.catalog_entry_id = ce.id AND g.name = ?)`)
-		args = append(args, genre)
+		w.add(genre_exists(), genre)
 	}
-	if filter.Has_poster {
-		clauses = append(clauses, "ce.poster_path IS NOT NULL AND ce.poster_path != ''")
-	}
-	if filter.Resolution != "" {
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM version v WHERE v.catalog_entry_id = ce.id AND v.resolution_label = ?)`)
-		args = append(args, filter.Resolution)
-	}
-	if filter.Language != "" {
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM version v JOIN audio_track a ON a.version_id = v.id
-			WHERE v.catalog_entry_id = ce.id AND a.language = ?)`)
-		args = append(args, filter.Language)
-	}
-	if filter.Library != "" {
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
-			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`)
-		args = append(args, filter.Library)
-	}
-	if len(filter.Libraries) > 0 {
-		placeholders := strings.Repeat("?,", len(filter.Libraries))
-		placeholders = strings.TrimSuffix(placeholders, ",")
-		clauses = append(clauses, `EXISTS (
-			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
-			WHERE v.catalog_entry_id = ce.id AND lib.name IN (`+placeholders+`))`)
-		for _, name := range filter.Libraries {
-			args = append(args, name)
-		}
-	}
+}
 
-	if len(clauses) == 0 {
-		return "", args
+func add_has_poster_clause(w *where_builder, filter Catalog_filter) {
+	if filter.Has_poster {
+		w.add("ce.poster_path IS NOT NULL AND ce.poster_path != ''")
 	}
-	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func add_resolution_clause(w *where_builder, filter Catalog_filter) {
+	if filter.Resolution != "" {
+		w.add(`EXISTS (
+			SELECT 1 FROM version v WHERE v.catalog_entry_id = ce.id AND v.resolution_label = ?)`,
+			filter.Resolution)
+	}
+}
+
+func add_language_clause(w *where_builder, filter Catalog_filter) {
+	if filter.Language != "" {
+		w.add(`EXISTS (
+			SELECT 1 FROM version v JOIN audio_track a ON a.version_id = v.id
+			WHERE v.catalog_entry_id = ce.id AND a.language = ?)`,
+			filter.Language)
+	}
+}
+
+func add_library_clauses(w *where_builder, filter Catalog_filter) {
+	if filter.Library != "" {
+		w.add(`EXISTS (
+			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`,
+			filter.Library)
+	}
+	if len(filter.Libraries) == 0 {
+		return
+	}
+	placeholders := strings.Repeat("?,", len(filter.Libraries))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	w.add(`EXISTS (
+		SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+		WHERE v.catalog_entry_id = ce.id AND lib.name IN (`+placeholders+`))`,
+		string_args(filter.Libraries)...)
+}
+
+func catalog_where(filter Catalog_filter) (string, []any) {
+	var w where_builder
+	add_media_type_clause(&w, filter)
+	add_status_clause(&w, filter)
+	add_statuses_clause(&w, filter)
+	add_search_clause(&w, filter)
+	add_year_clause(&w, filter)
+	add_genre_clauses(&w, filter)
+	add_has_poster_clause(&w, filter)
+	add_resolution_clause(&w, filter)
+	add_language_clause(&w, filter)
+	add_library_clauses(&w, filter)
+
+	if len(w.clauses) == 0 {
+		return "", w.args
+	}
+	return " WHERE " + strings.Join(w.clauses, " AND "), w.args
 }
 
 func catalog_order(filter Catalog_filter) string {

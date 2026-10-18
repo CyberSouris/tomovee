@@ -24,37 +24,71 @@ func init() {
 // (seeking), HEAD, and If-Modified-Since. The file is resolved against its
 // library root, so a request can never escape the configured libraries.
 func (s *Server) handle_version_file(w http.ResponseWriter, r *http.Request) {
+	version, ok := s.load_version_or_error(w, r)
+	if !ok {
+		return
+	}
+	path, ok := s.version_path_or_error(w, r, version)
+	if !ok {
+		return
+	}
+	s.attach_audio_tracks(r, version)
+	s.serve_with_transcode(w, r, path, version)
+}
+
+// load_version_or_error resolves the version_id path parameter and loads the
+// version row, writing the failure response itself when that is not possible.
+func (s *Server) load_version_or_error(w http.ResponseWriter, r *http.Request) (*database.Version, bool) {
 	version_id, err := strconv.ParseInt(r.PathValue("version_id"), 10, 64)
 	if err != nil || version_id <= 0 {
 		write_error(w, http.StatusBadRequest, "invalid version id")
-		return
+		return nil, false
 	}
 	version, err := s.store.Get_version(r.Context(), version_id)
 	if err != nil {
 		s.internal_error(w, err, "load version")
-		return
+		return nil, false
 	}
 	if version == nil {
 		write_error(w, http.StatusNotFound, "version not found")
-		return
+		return nil, false
 	}
+	return version, true
+}
+
+// version_path_or_error resolves the version's file against its library root
+// and confirms it exists on disk, writing the failure response itself when it
+// does not.
+func (s *Server) version_path_or_error(w http.ResponseWriter, r *http.Request, version *database.Version) (string, bool) {
 	path, err := s.version_file_path(r.Context(), *version)
 	if err != nil {
-		s.logger.Debug("version file path resolution failed", "version_id", version_id, "error", err)
+		s.logger.Debug("version file path resolution failed", "version_id", version.Id, "error", err)
 		write_error(w, http.StatusNotFound, "media file not found")
-		return
+		return "", false
 	}
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		write_error(w, http.StatusNotFound, "media file not found")
+		return "", false
+	}
+	return path, true
+}
+
+// attach_audio_tracks loads the version's audio tracks so the transcode
+// decisions can inspect them; Get_version returns only the version row, not
+// its track tables. A load failure merely disables the codec gate.
+func (s *Server) attach_audio_tracks(r *http.Request, version *database.Version) {
+	audio, _, err := s.store.Version_tracks(r.Context(), version.Id)
+	if err != nil {
+		s.logger.Debug("loading version audio tracks failed; codec gate disabled", "version_id", version.Id, "error", err)
 		return
 	}
-	// Load the version's audio tracks so the codec gate below can inspect
-	// them; Get_version returns only the version row, not its track tables.
-	if audio, _, err := s.store.Version_tracks(r.Context(), version_id); err != nil {
-		s.logger.Debug("loading version audio tracks failed; codec gate disabled", "version_id", version_id, "error", err)
-	} else {
-		version.Audio = audio
-	}
+	version.Audio = audio
+}
+
+// serve_with_transcode serves the file, transcoding or remuxing it first when
+// the configured stream.transcode mode calls for it; when transcoding is off
+// or fails, the original file is served as-is.
+func (s *Server) serve_with_transcode(w http.ResponseWriter, r *http.Request, path string, version *database.Version) {
 	if s.cfg != nil {
 		switch s.cfg.Stream.Transcode {
 		case "live":

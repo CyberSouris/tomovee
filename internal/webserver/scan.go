@@ -295,14 +295,14 @@ func (s *Server) handle_match_cancel(w http.ResponseWriter, r *http.Request) {
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-func (s *Server) handle_datasets_cancel(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handle_datasets_cancel(w http.ResponseWriter, _ *http.Request) {
 	if s.datasets != nil {
 		s.datasets.Cancel()
 	}
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-func (s *Server) handle_background_cancel(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handle_background_cancel(w http.ResponseWriter, _ *http.Request) {
 	s.jobs.Cancel()
 	s.scan_mu.Lock()
 	for _, mgr := range s.scan_jobs {

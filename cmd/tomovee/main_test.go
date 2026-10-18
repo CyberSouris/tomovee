@@ -402,6 +402,55 @@ poster_cache_dir: `+poster_file+`
 	}
 }
 
+// A database path that cannot be opened has to surface from init_server as an
+// error with no partial results, so the caller never serves without a store.
+func Test_init_server_database_error(t *testing.T) {
+	// An existing directory cannot be opened as a SQLite file.
+	db_path := t.TempDir()
+	path := write_config(t, "database_path: "+db_path+"\n")
+
+	cfg, logger, db, store, err := init_server([]string{"--config", path})
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("init_server accepted a database path that is a directory")
+	}
+	if cfg != nil || logger != nil || db != nil || store != nil {
+		t.Errorf("partial results on error: cfg=%v logger=%v db=%v store=%v",
+			cfg, logger, db, store)
+	}
+}
+
+func Test_setup_poster_cache(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "posters")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cache, err := setup_poster_cache(&config.Config{Poster_cache_dir: dir}, logger)
+	if err != nil {
+		t.Fatalf("setup_poster_cache: %v", err)
+	}
+	if cache == nil {
+		t.Fatal("cache nil")
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("poster cache dir not created: %v", err)
+	}
+}
+
+// The cache is rooted at a directory that has to be creatable; one below a
+// regular file is not.
+func Test_setup_poster_cache_dir_error(t *testing.T) {
+	file_path := filepath.Join(t.TempDir(), "posters")
+	if err := os.WriteFile(file_path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Poster_cache_dir: filepath.Join(file_path, "sub")}
+
+	if _, err := setup_poster_cache(cfg, logger); err == nil {
+		t.Error("setup_poster_cache accepted a cache dir below a regular file")
+	}
+}
+
 // copy_testdata copies a directory of committed sample files into dir, which
 // the importer then treats as an ordinary IMDb export directory. It copies
 // rather than pointing at the repository because the index database is written

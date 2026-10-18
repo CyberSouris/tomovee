@@ -2,12 +2,15 @@ package webserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +25,7 @@ import (
 	"github.com/cybersouris/tomovee/internal/scan"
 	"github.com/cybersouris/tomovee/internal/scanner"
 	"github.com/cybersouris/tomovee/internal/thumbnail"
+	"github.com/cybersouris/tomovee/internal/tmdb"
 )
 
 func Test_content_type_for(t *testing.T) {
@@ -1269,5 +1273,229 @@ func Test_handle_version_split_waits_for_a_running_job(t *testing.T) {
 	}](t, rec)
 	if !body.Applied || body.Entry == nil || body.Entry.Media_type != "movie" {
 		t.Fatalf("body = %+v, want the new movie matched", body)
+	}
+}
+
+// failing_metadata fails every TMDB details lookup, which is the only way a
+// manual match can hit the "enrich from tmdb" failure response.
+type failing_metadata struct{ fake_metadata }
+
+func (failing_metadata) Movie_details(context.Context, int) (*tmdb.Movie_details, error) {
+	return nil, errors.New("tmdb unavailable")
+}
+
+// imdb_find_metadata resolves the Matrix IMDb id through TMDB find, so a bare
+// IMDb match can be enriched without any offline index.
+type imdb_find_metadata struct{ fake_metadata }
+
+func (imdb_find_metadata) Find_by_imdb(_ context.Context, imdb_id string) (*tmdb.Find_result, error) {
+	if imdb_id != "tt0133093" {
+		return &tmdb.Find_result{}, nil
+	}
+	return &tmdb.Find_result{Movie_results: []tmdb.Movie_search_result{{Id: 603}}}, nil
+}
+
+func upsert_movie_entry(t *testing.T, store *database.Store, title string) int64 {
+	t.Helper()
+	id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
+		Media_type: "movie", Title: title, Status: "needs_lookup",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	return id
+}
+
+// inject_failure installs a SQLite trigger that aborts the given statement, so
+// a store write can be made to fail after earlier calls have succeeded. SQLite
+// keeps triggers in the schema, so a second connection to the same file sees
+// them; the database must therefore be file-backed rather than :memory:.
+func inject_failure(t *testing.T, database_path, trigger string) {
+	t.Helper()
+	dsn := "file:" + url.PathEscape(database_path) + "?_pragma=journal_mode(WAL)"
+	raw, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.Exec(trigger); err != nil {
+		t.Fatalf("install trigger: %v", err)
+	}
+}
+
+// new_trigger_server opens a file-backed database, applies migrations through
+// the normal Open path, and hands back the path so a failure trigger can be
+// added before the request runs.
+func new_trigger_server(t *testing.T, metadata matcher.Metadata_source, offline matcher.Offline_source) (*Server, *database.Store, string) {
+	t.Helper()
+	database_path := filepath.Join(t.TempDir(), "trigger.db")
+	d, err := database.Open(database_path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	store := database.New_store(d)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := matcher.New(matcher.Options{Metadata: metadata, Offline: offline, Logger: logger})
+	matching_service := matching.New(store, m, nil, logger)
+	server := New(Options{
+		Store: store, Matcher: m, Metadata: metadata,
+		Matching: matching_service, Logger: logger,
+	})
+	return server, store, database_path
+}
+
+func Test_manual_match_tmdb_enrich_failure_answers_bad_gateway(t *testing.T) {
+	server, store := new_test_server_with(t, failing_metadata{}, fake_offline{})
+	id := upsert_movie_entry(t, store, "The Matrix")
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"tmdb_id":603}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("enrich failure status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_manual_match_imdb_unresolvable_answers_bad_gateway(t *testing.T) {
+	server, store := new_test_server(t)
+	id := upsert_movie_entry(t, store, "The Matrix")
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"imdb_id":"tt9999999"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("unresolvable imdb status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_manual_match_requires_an_identifier(t *testing.T) {
+	server, store := new_test_server(t)
+	id := upsert_movie_entry(t, store, "The Matrix")
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty match request status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_manual_match_imdb_resolves_via_tmdb_find(t *testing.T) {
+	server, store := new_test_server_with(t, imdb_find_metadata{default_test_metadata()}, fake_offline{})
+	id := upsert_movie_entry(t, store, "matrix")
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"imdb_id":"tt0133093"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("imdb match status = %d: %s", rec.Code, rec.Body)
+	}
+	body := decode[struct {
+		Entry *catalog_item `json:"entry"`
+	}](t, rec)
+	if body.Entry == nil {
+		t.Fatalf("body = %+v, want the matched entry", body)
+	}
+	if body.Entry.Title != "The Matrix" || body.Entry.Imdb_id != "tt0133093" {
+		t.Errorf("entry = %+v", body.Entry)
+	}
+	if body.Entry.Status != "matched" {
+		t.Errorf("status = %q, want matched", body.Entry.Status)
+	}
+}
+
+func Test_manual_match_update_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, imdb_find_metadata{default_test_metadata()}, fake_offline{})
+	id := upsert_movie_entry(t, store, "The Matrix")
+	inject_failure(t, database_path, `CREATE TRIGGER fail_catalog_update BEFORE UPDATE ON catalog_entry
+		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"imdb_id":"tt0133093"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("update failure status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_rematch_candidate_delete_failure_is_internal_error(t *testing.T) {
+	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline{})
+	id := upsert_movie_entry(t, store, "The Matrix")
+	if _, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: id, File_path: "/media/matrix.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+	// A stored candidate row is required: SQLite fires a BEFORE DELETE trigger
+	// only per row examined, so clearing an empty shortlist would never reach
+	// it. The confident match then clears that shortlist and hits the failure.
+	if err := store.Replace_candidates(context.Background(), id, []database.Candidate{{
+		Tmdb_id: 603, Imdb_id: "tt0133093", Title: "The Matrix", Year: 1999,
+		Media_type: "movie", Score: 0.9,
+	}}); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
+	inject_failure(t, database_path, `CREATE TRIGGER fail_candidate_delete BEFORE DELETE ON candidate
+		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`)
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/rematch", ``)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("candidate delete failure status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_reclassify_invalid_catalog_id_is_bad_request(t *testing.T) {
+	server, _ := new_test_server(t)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/not-a-number/reclassify", `{"media_type":"series"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid id status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_rematch_invalid_catalog_id_is_bad_request(t *testing.T) {
+	server, _ := new_test_server(t)
+	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/not-a-number/rematch", ``)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid id status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_search_media_type_series(t *testing.T) {
+	server, _ := new_test_server_with(t, fake_metadata{
+		search_tv: []tmdb.Tv_search_result{{Id: 2993, Name: "The Office", First_air_date: "2005-03-24"}},
+	}, fake_offline{})
+
+	rec := do_request(t, server, http.MethodGet, "/api/v1/search?q=office&media_type=series", ``)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d: %s", rec.Code, rec.Body)
+	}
+	body := decode[struct {
+		Results []search_item `json:"results"`
+	}](t, rec)
+	if len(body.Results) == 0 {
+		t.Fatal("series search returned no results")
+	}
+	if body.Results[0].Title != "The Office" || body.Results[0].Media_type != "series" {
+		t.Errorf("results = %+v", body.Results)
+	}
+}
+
+func Test_match_start_falls_back_to_enabled_libraries(t *testing.T) {
+	server, store := new_test_server(t)
+	if err := store.Upsert_library(context.Background(), "lib1", t.TempDir(), true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	rec := do_request(t, server, http.MethodPost, "/api/v1/match", `{}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("match without libraries status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func Test_scan_cancel_targets_a_single_library(t *testing.T) {
+	server, store := new_test_server(t)
+	if err := store.Upsert_library(context.Background(), "lib1", t.TempDir(), true); err != nil {
+		t.Fatalf("upsert library: %v", err)
+	}
+
+	start := do_request(t, server, http.MethodPost, "/api/v1/scan", `{"libraries":["lib1"]}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("scan start status = %d: %s", start.Code, start.Body)
+	}
+	cancel := do_request(t, server, http.MethodPost, "/api/v1/scan/cancel?library=lib1", ``)
+	if cancel.Code != http.StatusAccepted {
+		t.Fatalf("scan cancel status = %d: %s", cancel.Code, cancel.Body)
 	}
 }

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -305,6 +306,223 @@ func Test_list_catalog_entries_filtered_by_library(t *testing.T) {
 	}
 	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Libraries: []string{"Nope"}}); len(got) != 0 {
 		t.Errorf("unknown library filter = %d, want 0", len(got))
+	}
+}
+
+// seed_clause_catalog fills a fresh store with the fixture the catalog WHERE
+// clause tests query against: two libraries and three entries, each with a
+// single version. The Matrix is a matched 1999 Action/Sci-Fi movie with a
+// poster in Movies at 1080p with an eng track; Blade Runner is a matched 1982
+// Drama/Sci-Fi movie without a poster in Movies at 4K with a fre track;
+// Breaking Bad is an unmatched 2008 Crime/Drama series with a poster in Shows
+// at 1080p with an eng track.
+func seed_clause_catalog(t *testing.T) *Store {
+	t.Helper()
+	store := new_test_store(t)
+	ctx := context.Background()
+
+	if err := store.Upsert_library(ctx, "Movies", "/media/movies", true); err != nil {
+		t.Fatalf("upsert movies: %v", err)
+	}
+	if err := store.Upsert_library(ctx, "Shows", "/media/shows", true); err != nil {
+		t.Fatalf("upsert shows: %v", err)
+	}
+	libraries, err := store.List_libraries(ctx)
+	if err != nil || len(libraries) != 2 {
+		t.Fatalf("libraries = %+v, %v", libraries, err)
+	}
+	lib_id := func(name string) int64 {
+		for _, library := range libraries {
+			if library.Name == name {
+				return library.Id
+			}
+		}
+		return 0
+	}
+
+	matrix, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
+		Status: "matched", Poster_path: "/p/matrix.jpg",
+		Genres: []string{"Action", "Sci-Fi"},
+	})
+	if err != nil {
+		t.Fatalf("upsert matrix: %v", err)
+	}
+	runner, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Blade Runner", Release_year: 1982,
+		Status: "matched", Genres: []string{"Drama", "Sci-Fi"},
+	})
+	if err != nil {
+		t.Fatalf("upsert runner: %v", err)
+	}
+	bad, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Breaking Bad", Release_year: 2008,
+		Status: "needs_lookup", Poster_path: "/p/bb.jpg",
+		Genres: []string{"Crime", "Drama"},
+	})
+	if err != nil {
+		t.Fatalf("upsert breaking bad: %v", err)
+	}
+
+	versions := []struct {
+		entry      int64
+		library    string
+		file       string
+		resolution string
+		language   string
+	}{
+		{matrix, "Movies", "matrix.mkv", "1080p", "eng"},
+		{runner, "Movies", "blade-runner.mkv", "4K", "fre"},
+		{bad, "Shows", "bb.s01e01.mkv", "1080p", "eng"},
+	}
+	for _, version := range versions {
+		if _, err := store.Save_version(ctx, Version{
+			Catalog_entry_id: version.entry, Library_id: lib_id(version.library),
+			File_path: version.file, Size_bytes: 1, Mtime: "2026-01-01T00:00:00Z",
+			Resolution_label: version.resolution,
+			Audio:            []Audio_track{{Language: version.language}},
+		}); err != nil {
+			t.Fatalf("save version %s: %v", version.file, err)
+		}
+	}
+	return store
+}
+
+// list_titles lists the catalog matching filter and returns the sorted titles
+// so the filter tests can compare whole result sets regardless of row order.
+func list_titles(t *testing.T, store *Store, ctx context.Context, filter Catalog_filter) []string {
+	t.Helper()
+	entries, err := store.List_catalog_entries(ctx, filter)
+	if err != nil {
+		t.Fatalf("list catalog entries: %v", err)
+	}
+	titles := make([]string, len(entries))
+	for i, entry := range entries {
+		titles[i] = entry.Title
+	}
+	sort.Strings(titles)
+	return titles
+}
+
+// The plural status filter binds one IN-list placeholder per value, so it has
+// to accept any list length and match every status it names.
+func Test_list_catalog_entries_statuses_filter(t *testing.T) {
+	store := seed_clause_catalog(t)
+	ctx := context.Background()
+
+	if got := list_titles(t, store, ctx, Catalog_filter{}); len(got) != 3 {
+		t.Fatalf("unfiltered = %v, want 3 entries", got)
+	}
+	both := list_titles(t, store, ctx,
+		Catalog_filter{Statuses: []string{"matched", "needs_lookup"}})
+	if want := []string{"Blade Runner", "Breaking Bad", "The Matrix"}; !reflect.DeepEqual(both, want) {
+		t.Errorf("statuses [matched needs_lookup] = %v, want %v", both, want)
+	}
+	matched := list_titles(t, store, ctx,
+		Catalog_filter{Statuses: []string{"matched"}})
+	if want := []string{"Blade Runner", "The Matrix"}; !reflect.DeepEqual(matched, want) {
+		t.Errorf("statuses [matched] = %v, want %v", matched, want)
+	}
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Statuses: []string{"needs_lookup"}}); !reflect.DeepEqual(got, []string{"Breaking Bad"}) {
+		t.Errorf("statuses [needs_lookup] = %v, want Breaking Bad", got)
+	}
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Statuses: []string{"nope"}}); len(got) != 0 {
+		t.Errorf("unknown status = %v, want nothing", got)
+	}
+	// An empty status list must not filter at all: the clause builder guards
+	// zero-length lists before it ever reaches the placeholder join.
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Statuses: nil}); len(got) != 3 {
+		t.Errorf("empty status list = %v, want all 3 entries", got)
+	}
+}
+
+// Each remaining filter dimension adds its own clause, and each has to both
+// match on its own and exclude what does not match.
+func Test_list_catalog_entries_year_genres_poster_library_filters(t *testing.T) {
+	store := seed_clause_catalog(t)
+	ctx := context.Background()
+
+	if got := list_titles(t, store, ctx, Catalog_filter{Year: 1999}); !reflect.DeepEqual(got, []string{"The Matrix"}) {
+		t.Errorf("year 1999 = %v, want The Matrix", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{Year: 2000}); len(got) != 0 {
+		t.Errorf("year 2000 = %v, want nothing", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{Year: 0}); len(got) != 3 {
+		t.Errorf("no year = %v, want all 3 entries", got)
+	}
+
+	if got := list_titles(t, store, ctx, Catalog_filter{Genres: []string{"Sci-Fi"}}); len(got) != 2 {
+		t.Errorf("genres [Sci-Fi] = %v, want the two Sci-Fi movies", got)
+	}
+	// Genres intersect: Blade Runner is the only entry carrying both.
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Genres: []string{"Sci-Fi", "Drama"}}); !reflect.DeepEqual(got, []string{"Blade Runner"}) {
+		t.Errorf("genres [Sci-Fi Drama] = %v, want Blade Runner", got)
+	}
+	// An empty genre name is skipped rather than matching nothing.
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Genres: []string{"", "Drama"}}); len(got) != 2 {
+		t.Errorf("genres [<empty> Drama] = %v, want the two Drama entries", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{Genres: []string{"Nope"}}); len(got) != 0 {
+		t.Errorf("genres [Nope] = %v, want nothing", got)
+	}
+
+	if got := list_titles(t, store, ctx, Catalog_filter{Has_poster: true}); len(got) != 2 {
+		t.Errorf("has_poster = %v, want the two entries with posters", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{}); len(got) != 3 {
+		t.Errorf("no poster filter = %v, want all 3 entries", got)
+	}
+
+	if got := list_titles(t, store, ctx, Catalog_filter{Library: "Movies"}); len(got) != 2 {
+		t.Errorf("library Movies = %v, want the two movies", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{Library: "Shows"}); !reflect.DeepEqual(got, []string{"Breaking Bad"}) {
+		t.Errorf("library Shows = %v, want Breaking Bad", got)
+	}
+	if got := list_titles(t, store, ctx, Catalog_filter{Library: "Nope"}); len(got) != 0 {
+		t.Errorf("unknown library = %v, want nothing", got)
+	}
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Libraries: []string{"Movies", "Shows"}}); len(got) != 3 {
+		t.Errorf("libraries [Movies Shows] = %v, want all 3 entries", got)
+	}
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Libraries: nil}); len(got) != 3 {
+		t.Errorf("empty libraries = %v, want all 3 entries", got)
+	}
+}
+
+// Stacking the filters builds one WHERE clause per dimension, so the combined
+// query has to intersect them rather than let any single clause widen it.
+func Test_list_catalog_entries_combined_clause_filters(t *testing.T) {
+	store := seed_clause_catalog(t)
+	ctx := context.Background()
+
+	both := list_titles(t, store, ctx, Catalog_filter{
+		Statuses: []string{"matched", "needs_lookup"}, Resolution: "1080p",
+		Language: "eng", Libraries: []string{"Movies", "Shows"},
+	})
+	if want := []string{"Breaking Bad", "The Matrix"}; !reflect.DeepEqual(both, want) {
+		t.Errorf("combined 1080p/eng = %v, want %v", both, want)
+	}
+	narrowed := list_titles(t, store, ctx, Catalog_filter{
+		Statuses: []string{"matched", "needs_lookup"}, Resolution: "1080p",
+		Language: "eng", Libraries: []string{"Shows"},
+	})
+	if !reflect.DeepEqual(narrowed, []string{"Breaking Bad"}) {
+		t.Errorf("combined narrowed to Shows = %v, want Breaking Bad", narrowed)
+	}
+	// Blade Runner is 4K with a fre track, so a 4K/eng combination matches
+	// nothing at all.
+	if got := list_titles(t, store, ctx,
+		Catalog_filter{Resolution: "4K", Language: "eng"}); len(got) != 0 {
+		t.Errorf("4K/eng = %v, want nothing", got)
 	}
 }
 

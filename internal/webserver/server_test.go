@@ -123,14 +123,13 @@ func new_test_server(t *testing.T) (*Server, *database.Store) {
 
 func new_test_server_with_offline(t *testing.T, offline matcher.Offline_source) (*Server, *database.Store) {
 	t.Helper()
-	d, err := database.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open database: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	return new_test_server_with(t, default_test_metadata(), offline)
+}
 
-	store := database.New_store(d)
-	metadata := fake_metadata{
+// default_test_metadata is the canned TMDB catalogue every test server starts
+// with: the Matrix, which the offline sources also know about.
+func default_test_metadata() fake_metadata {
+	return fake_metadata{
 		movies: map[int]*tmdb.Movie_details{
 			603: {
 				Id: 603, Imdb_id: "tt0133093", Title: "The Matrix",
@@ -141,6 +140,20 @@ func new_test_server_with_offline(t *testing.T, offline matcher.Offline_source) 
 			},
 		},
 	}
+}
+
+// new_test_server_with builds a server around a caller-supplied metadata
+// source, so tests can drive TMDB error and search paths the default fixture
+// never takes.
+func new_test_server_with(t *testing.T, metadata matcher.Metadata_source, offline matcher.Offline_source) (*Server, *database.Store) {
+	t.Helper()
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	store := database.New_store(d)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := matcher.New(matcher.Options{Metadata: metadata, Offline: offline, Logger: logger})
 	runner := scan.New(store, scan.Options{Logger: logger})

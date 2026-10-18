@@ -3,6 +3,7 @@ package imdb_datasets
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -500,6 +501,62 @@ func Test_open_with_progress_reports_build_stages(t *testing.T) {
 	defer index.Close()
 	if reuse == nil {
 		t.Error("expected a reuse event when reopening a fresh index")
+	}
+}
+
+func Test_open_with_progress_context_cancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "title.basics.tsv"), []byte(test_tsv), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	index, err := Open_with_progress_context(ctx, dir, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if index != nil {
+		_ = index.Close()
+		t.Error("cancelled open returned an index")
+	}
+}
+
+// A directory with no exports and no reusable index beside it cannot be
+// indexed, so the open has to report the export error instead of returning an
+// empty index.
+func Test_open_without_datasets_reports_an_error(t *testing.T) {
+	index, err := Open(t.TempDir(), nil)
+	if index != nil {
+		_ = index.Close()
+		t.Fatal("open returned an index for a directory without exports")
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not look like IMDb export data") {
+		t.Fatalf("err = %v, want the export-data error", err)
+	}
+}
+
+// An export that resolves but cannot be parsed fails after dataset_files has
+// accepted it; that build failure has to reach the caller rather than leave a
+// half-built index behind.
+func Test_open_reports_a_failed_build(t *testing.T) {
+	dir := t.TempDir()
+	// A header missing the required tconst column makes the import fail.
+	bad := "titleType\tprimaryTitle\n" + "movie\tThe Matrix\n"
+	if err := os.WriteFile(filepath.Join(dir, "title.basics.tsv"), []byte(bad), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	index, err := Open(dir, nil)
+	if index != nil {
+		_ = index.Close()
+		t.Fatal("open returned an index for an unparseable export")
+	}
+	if err == nil || !strings.Contains(err.Error(), "missing column") {
+		t.Fatalf("err = %v, want the missing-column build error", err)
+	}
+	if _, stat_err := os.Stat(filepath.Join(dir, Index_db_name)); !os.IsNotExist(stat_err) {
+		t.Errorf("failed build left an index behind: %v", stat_err)
 	}
 }
 

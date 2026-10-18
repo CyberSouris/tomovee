@@ -625,3 +625,90 @@ func Test_ensure_frame_poster_prefers_existing_art_and_never_fails_the_scan(t *t
 		t.Errorf("poster = %q, want %q", got, thumbnail.Local_marker)
 	}
 }
+
+// Test_run_reports_done_progress_with_totals pins the tail of run: after the
+// last file the caller gets one final "done" snapshot carrying the scan
+// totals, and the same totals come back in the returned result.
+func Test_run_reports_done_progress_with_totals(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "The.Matrix.1999.1080p.mkv", 1000)
+	write_file(t, dir, "The.Matrix.1999.2160p.mkv", 2000)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	var events []Progress
+	result, err := s.Run_libraries(context.Background(), nil, func(p Progress) {
+		events = append(events, p)
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result == nil || result.Found != 2 || result.New != 2 {
+		t.Fatalf("result = %+v, want 2 found and 2 new", result)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected progress events")
+	}
+	done := events[len(events)-1]
+	if done.Phase != "done" {
+		t.Fatalf("last phase = %q, want done", done.Phase)
+	}
+	if done.Files_found != result.Found || done.New_files != result.New || done.Skipped != result.Skipped || done.Errors != len(result.Errors) {
+		t.Errorf("done event = %+v, want the totals of result %+v", done, result)
+	}
+}
+
+// Test_run_appends_mark_missing_failure pins the failure tail of run: a store
+// failure inside mark_missing is appended to the result errors instead of
+// aborting the scan, and the "done" event still fires with the error counted.
+func Test_run_appends_mark_missing_failure(t *testing.T) {
+	dir := t.TempDir()
+	write_file(t, dir, "Old.Movie.2001.mkv", 1000)
+
+	d, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := database.New_store(d)
+	if err := store.Ensure_library(context.Background(), "Media", dir, false); err != nil {
+		t.Fatalf("register library: %v", err)
+	}
+	s := New(store, Options{})
+	s.probe = fake_probe
+	s.hash = no_hash
+
+	// The progress callback runs synchronously inside the scan, so closing the
+	// database there deterministically breaks mark_missing's store query.
+	closed := false
+	var done Progress
+	result, err := s.Run_libraries(context.Background(), nil, func(p Progress) {
+		if p.Phase == "done" {
+			done = p
+			return
+		}
+		if !closed {
+			closed = true
+			_ = d.Close()
+		}
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	saw_failure := false
+	for _, message := range result.Errors {
+		if strings.HasPrefix(message, "mark missing: ") {
+			saw_failure = true
+		}
+	}
+	if !saw_failure {
+		t.Fatalf("errors = %v, want a mark missing failure appended", result.Errors)
+	}
+	if done.Phase != "done" {
+		t.Fatalf("done event = %+v, want the final progress event", done)
+	}
+	if done.Errors != len(result.Errors) {
+		t.Errorf("done errors = %d, want %d (the totals must include the failure)", done.Errors, len(result.Errors))
+	}
+}

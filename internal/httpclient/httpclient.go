@@ -95,7 +95,7 @@ func (c *Client) Get_json(ctx context.Context, url string, headers map[string]st
 			last_err = read_err
 			continue
 		}
-		retry, err := c.handle_response(ctx, resp, body, out)
+		retry, err := handle_response(ctx, resp, body, out)
 		if !retry {
 			return err
 		}
@@ -140,7 +140,7 @@ func read_limited_body(resp *http.Response) ([]byte, error) {
 // handle_response inspects a completed response. A 2xx decodes into out and
 // ends the request (retry=false, err=nil). 429/5xx honours Retry-After and
 // reports a retryable failure (retry=true). Anything else fails permanently.
-func (c *Client) handle_response(ctx context.Context, resp *http.Response, body []byte, out any) (retry bool, err error) {
+func handle_response(ctx context.Context, resp *http.Response, body []byte, out any) (retry bool, err error) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if out == nil {
 			return false, nil

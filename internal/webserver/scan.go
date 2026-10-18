@@ -257,9 +257,9 @@ func (jm *job_manager[R, T]) next_pending_locked() *pending_run[R, T] {
 
 func (s *Server) handle_scan_cancel(w http.ResponseWriter, r *http.Request) {
 	if library := r.URL.Query().Get("library"); library != "" {
-		s.scanMu.Lock()
-		mgr, ok := s.scanJobs[library]
-		s.scanMu.Unlock()
+		s.scan_mu.Lock()
+		mgr, ok := s.scan_jobs[library]
+		s.scan_mu.Unlock()
 		if ok && mgr != nil {
 			mgr.Cancel()
 		}
@@ -267,19 +267,19 @@ func (s *Server) handle_scan_cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.jobs.Cancel()
-	s.scanMu.Lock()
-	for _, mgr := range s.scanJobs {
+	s.scan_mu.Lock()
+	for _, mgr := range s.scan_jobs {
 		mgr.Cancel()
 	}
-	s.scanMu.Unlock()
+	s.scan_mu.Unlock()
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
 func (s *Server) handle_match_cancel(w http.ResponseWriter, r *http.Request) {
 	if library := r.URL.Query().Get("library"); library != "" {
-		s.matchMu.Lock()
-		mgr, ok := s.matchJobs[library]
-		s.matchMu.Unlock()
+		s.match_mu.Lock()
+		mgr, ok := s.match_jobs[library]
+		s.match_mu.Unlock()
 		if ok && mgr != nil {
 			mgr.Cancel()
 		}
@@ -287,11 +287,11 @@ func (s *Server) handle_match_cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.matches.Cancel()
-	s.matchMu.Lock()
-	for _, mgr := range s.matchJobs {
+	s.match_mu.Lock()
+	for _, mgr := range s.match_jobs {
 		mgr.Cancel()
 	}
-	s.matchMu.Unlock()
+	s.match_mu.Unlock()
 	write_json(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
@@ -304,17 +304,17 @@ func (s *Server) handle_datasets_cancel(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handle_background_cancel(w http.ResponseWriter, r *http.Request) {
 	s.jobs.Cancel()
-	s.scanMu.Lock()
-	for _, mgr := range s.scanJobs {
+	s.scan_mu.Lock()
+	for _, mgr := range s.scan_jobs {
 		mgr.Cancel()
 	}
-	s.scanMu.Unlock()
+	s.scan_mu.Unlock()
 	s.matches.Cancel()
-	s.matchMu.Lock()
-	for _, mgr := range s.matchJobs {
+	s.match_mu.Lock()
+	for _, mgr := range s.match_jobs {
 		mgr.Cancel()
 	}
-	s.matchMu.Unlock()
+	s.match_mu.Unlock()
 	if s.datasets != nil {
 		s.datasets.Cancel()
 	}
@@ -342,8 +342,8 @@ func (jm *job_manager[R, T]) snapshot_locked() *job[R, T] {
 	if jm.job == nil {
 		return nil
 	}
-	jobCopy := *jm.job
-	return &jobCopy
+	job_copy := *jm.job
+	return &job_copy
 }
 
 // Subscribe registers a progress channel and returns it with an unsubscribe
@@ -586,32 +586,32 @@ func job_response_from(job *job[scan.Progress, scan.Result]) *job_response {
 // scan_job_manager returns the per-library job manager, creating it on demand so
 // each library can be scanned (and cancelled, and tracked) independently.
 func (s *Server) scan_job_manager(name string) *job_manager[scan.Progress, scan.Result] {
-	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
-	if s.scanJobs == nil {
-		s.scanJobs = make(map[string]*job_manager[scan.Progress, scan.Result])
+	s.scan_mu.Lock()
+	defer s.scan_mu.Unlock()
+	if s.scan_jobs == nil {
+		s.scan_jobs = make(map[string]*job_manager[scan.Progress, scan.Result])
 	}
-	if mgr, ok := s.scanJobs[name]; ok {
+	if mgr, ok := s.scan_jobs[name]; ok {
 		return mgr
 	}
 	mgr := new_job_manager[scan.Progress, scan.Result](s.logger)
-	mgr.mirror = s.scanFeed.publish
-	s.scanJobs[name] = mgr
+	mgr.mirror = s.scan_feed.publish
+	s.scan_jobs[name] = mgr
 	return mgr
 }
 
 func (s *Server) match_job_manager(name string) *job_manager[matching.Progress, matching.Result] {
-	s.matchMu.Lock()
-	defer s.matchMu.Unlock()
-	if s.matchJobs == nil {
-		s.matchJobs = make(map[string]*job_manager[matching.Progress, matching.Result])
+	s.match_mu.Lock()
+	defer s.match_mu.Unlock()
+	if s.match_jobs == nil {
+		s.match_jobs = make(map[string]*job_manager[matching.Progress, matching.Result])
 	}
-	if mgr, ok := s.matchJobs[name]; ok {
+	if mgr, ok := s.match_jobs[name]; ok {
 		return mgr
 	}
 	mgr := new_job_manager[matching.Progress, matching.Result](s.logger)
-	mgr.mirror = s.matchFeed.publish
-	s.matchJobs[name] = mgr
+	mgr.mirror = s.match_feed.publish
+	s.match_jobs[name] = mgr
 	return mgr
 }
 
@@ -697,15 +697,15 @@ func (s *Server) all_scan_jobs() []*job_response {
 		response.Library = ""
 		scans = append(scans, response)
 	}
-	s.scanMu.Lock()
-	for lib, mgr := range s.scanJobs {
+	s.scan_mu.Lock()
+	for lib, mgr := range s.scan_jobs {
 		if snap := mgr.Snapshot(); snap != nil {
 			response := job_response_from(snap)
 			response.Library = lib
 			scans = append(scans, response)
 		}
 	}
-	s.scanMu.Unlock()
+	s.scan_mu.Unlock()
 	return scans
 }
 
@@ -716,15 +716,15 @@ func (s *Server) all_match_jobs() []*match_job_response {
 		resp.Library = ""
 		matches = append(matches, resp)
 	}
-	s.matchMu.Lock()
-	for lib, mgr := range s.matchJobs {
+	s.match_mu.Lock()
+	for lib, mgr := range s.match_jobs {
 		if snap := mgr.Snapshot(); snap != nil {
 			resp := match_job_response_from(snap)
 			resp.Library = lib
 			matches = append(matches, resp)
 		}
 	}
-	s.matchMu.Unlock()
+	s.match_mu.Unlock()
 	return matches
 }
 
@@ -773,11 +773,11 @@ func (s *Server) handle_background_status(w http.ResponseWriter, _ *http.Request
 	matches := s.all_match_jobs()
 
 	first := pick_scan_job(scans)
-	firstMatch := pick_match_job(matches)
+	first_match := pick_match_job(matches)
 	write_json(w, http.StatusOK, background_status{
 		Scan:     first,
 		Scans:    scans,
-		Match:    firstMatch,
+		Match:    first_match,
 		Matches:  matches,
 		Datasets: datasets,
 	})
@@ -794,7 +794,7 @@ func (s *Server) handle_scan_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe, err := s.scanFeed.Subscribe()
+	progress, unsubscribe, err := s.scan_feed.Subscribe()
 	if err != nil {
 		write_error(w, http.StatusServiceUnavailable, "too many scan stream subscribers")
 		return
@@ -1112,15 +1112,15 @@ func (s *Server) handle_match_status(w http.ResponseWriter, _ *http.Request) {
 		resp.Library = ""
 		matches = append(matches, resp)
 	}
-	s.matchMu.Lock()
-	for lib, mgr := range s.matchJobs {
+	s.match_mu.Lock()
+	for lib, mgr := range s.match_jobs {
 		if snap := mgr.Snapshot(); snap != nil {
 			resp := match_job_response_from(snap)
 			resp.Library = lib
 			matches = append(matches, resp)
 		}
 	}
-	s.matchMu.Unlock()
+	s.match_mu.Unlock()
 	first := pick_match_job(matches)
 	write_json(w, http.StatusOK, map[string]any{"job": first, "jobs": matches, "matches": matches})
 }
@@ -1136,7 +1136,7 @@ func (s *Server) handle_match_stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	progress, unsubscribe, err := s.matchFeed.Subscribe()
+	progress, unsubscribe, err := s.match_feed.Subscribe()
 	if err != nil {
 		write_error(w, http.StatusServiceUnavailable, "too many match stream subscribers")
 		return

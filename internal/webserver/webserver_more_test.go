@@ -639,7 +639,7 @@ func Test_handle_scan_stream_too_many_subscribers(t *testing.T) {
 	server, _ := new_test_server(t)
 	var unsubs []func()
 	for i := 0; i < max_subscribers; i++ {
-		_, unsubscribe, err := server.scanFeed.Subscribe()
+		_, unsubscribe, err := server.scan_feed.Subscribe()
 		if err != nil {
 			t.Fatalf("subscribe %d: %v", i, err)
 		}
@@ -663,7 +663,7 @@ func Test_handle_scan_stream_too_many_subscribers(t *testing.T) {
 func Test_per_library_jobs_reach_the_feed(t *testing.T) {
 	server, _ := new_test_server(t)
 
-	scan_progress, scan_unsubscribe, err := server.scanFeed.Subscribe()
+	scan_progress, scan_unsubscribe, err := server.scan_feed.Subscribe()
 	if err != nil {
 		t.Fatalf("subscribe scan feed: %v", err)
 	}
@@ -692,7 +692,7 @@ func Test_per_library_jobs_reach_the_feed(t *testing.T) {
 		}
 	}
 
-	match_progress, match_unsubscribe, err := server.matchFeed.Subscribe()
+	match_progress, match_unsubscribe, err := server.match_feed.Subscribe()
 	if err != nil {
 		t.Fatalf("subscribe match feed: %v", err)
 	}

@@ -45,7 +45,7 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	entry, ok := s.load_catalog_entry(r.Context(), w, id)
 	if !ok {
 		return
 	}
@@ -58,11 +58,11 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		media_type = scanner.Movie
 	}
 
-	result, ok := s.resolve_manual_candidate(w, r.Context(), id, media_type, request)
+	result, ok := s.resolve_manual_candidate(r.Context(), w, id, media_type, request)
 	if !ok {
 		return
 	}
-	if !s.apply_manual_match(w, r.Context(), id, result) {
+	if !s.apply_manual_match(r.Context(), w, id, result) {
 		return
 	}
 	fresh, err := s.store.Get_catalog_entry(r.Context(), id)
@@ -77,7 +77,7 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 // result: TMDB when a key is configured, the persisted offline shortlist as
 // fallback. It writes the failure response itself and returns ok=false when
 // the identifier cannot be resolved.
-func (s *Server) resolve_manual_candidate(w http.ResponseWriter, ctx context.Context, entry_id int64, media_type scanner.Media_type, request match_request) (*matcher.Result, bool) {
+func (s *Server) resolve_manual_candidate(ctx context.Context, w http.ResponseWriter, entry_id int64, media_type scanner.Media_type, request match_request) (*matcher.Result, bool) {
 	switch {
 	case request.Tmdb_id > 0:
 		if s.metadata != nil {
@@ -117,7 +117,7 @@ func (s *Server) resolve_manual_candidate(w http.ResponseWriter, ctx context.Con
 // apply_manual_match stores the resolved match on the entry and re-enriches
 // episode titles when the match was confident. It writes the failure response
 // itself and returns ok=false on a storage failure.
-func (s *Server) apply_manual_match(w http.ResponseWriter, ctx context.Context, id int64, result *matcher.Result) bool {
+func (s *Server) apply_manual_match(ctx context.Context, w http.ResponseWriter, id int64, result *matcher.Result) bool {
 	updated := scan.Catalog_entry_from_match(result)
 	updated.Id = id
 	if err := s.store.Update_catalog_entry(ctx, id, updated); err != nil {
@@ -135,7 +135,7 @@ func (s *Server) apply_manual_match(w http.ResponseWriter, ctx context.Context, 
 
 // load_catalog_entry loads a catalog entry, writing the failure response
 // itself when it cannot be loaded.
-func (s *Server) load_catalog_entry(w http.ResponseWriter, ctx context.Context, id int64) (*database.Catalog_entry, bool) {
+func (s *Server) load_catalog_entry(ctx context.Context, w http.ResponseWriter, id int64) (*database.Catalog_entry, bool) {
 	entry, err := s.store.Get_catalog_entry(ctx, id)
 	if err != nil {
 		s.internal_error(w, err, "load catalog entry")
@@ -209,7 +209,7 @@ func (s *Server) record_match_outcome(ctx context.Context, progress func(matchin
 // write_applied_or_candidates answers a single-entry match request: an
 // applied match returns the reloaded entry, an ambiguous one the candidate
 // shortlist (plus the surviving entry when the re-typed entry was absorbed).
-func (s *Server) write_applied_or_candidates(w http.ResponseWriter, ctx context.Context, entry_id int64, absorbed_id int64, media_type string, applied bool, candidates []matcher.Candidate) {
+func (s *Server) write_applied_or_candidates(ctx context.Context, w http.ResponseWriter, entry_id int64, absorbed_id int64, media_type string, applied bool, candidates []matcher.Candidate) {
 	if applied {
 		fresh, err := s.store.Get_catalog_entry(ctx, entry_id)
 		if err != nil || fresh == nil {
@@ -248,7 +248,7 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "invalid catalog id")
 		return
 	}
-	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	entry, ok := s.load_catalog_entry(r.Context(), w, id)
 	if !ok {
 		return
 	}
@@ -258,7 +258,7 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 		s.internal_error(w, err, "run matching job")
 		return
 	}
-	s.write_applied_or_candidates(w, r.Context(), id, 0, entry.Media_type, applied, candidates)
+	s.write_applied_or_candidates(r.Context(), w, id, 0, entry.Media_type, applied, candidates)
 }
 
 // run_rematch_one runs a single-entry rematch through the shared job manager.
@@ -415,7 +415,7 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "invalid catalog id")
 		return
 	}
-	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	entry, ok := s.load_catalog_entry(r.Context(), w, id)
 	if !ok {
 		return
 	}
@@ -437,7 +437,7 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		s.internal_error(w, err, "run matching job")
 		return
 	}
-	s.write_applied_or_candidates(w, r.Context(), result_id, id, media_type, applied, candidates)
+	s.write_applied_or_candidates(r.Context(), w, result_id, id, media_type, applied, candidates)
 }
 
 // run_reclassify flips an entry's media type and rematches it under the new

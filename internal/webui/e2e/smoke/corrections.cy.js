@@ -35,7 +35,7 @@ describe('per-file corrections over the real API', () => {
       // The fixture videos are committed and the size floor is lowered in the
       // config, so an empty scan means the repository is missing test data —
       // a real failure, not something to skip over.
-      expect(job && job.result && job.result.new, 'scan result').to.be.greaterThan(0);
+      expect(job?.result?.new, 'scan result').to.be.greaterThan(0);
     });
 
     cy.request('/api/v1/catalog?limit=50').then((response) => {

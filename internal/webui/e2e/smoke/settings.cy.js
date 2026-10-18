@@ -144,7 +144,7 @@ describe('settings and libraries', () => {
 function wait_for_match(attempts = 400) {
   return cy.request('/api/v1/match/status').then((response) => {
     const job = response.body.job;
-    if (job && job.running) {
+    if (job?.running) {
       if (attempts <= 0) throw new Error('matching never finished');
       return cy.wait(250).then(() => wait_for_match(attempts - 1));
     }

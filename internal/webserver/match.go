@@ -223,7 +223,7 @@ func (s *Server) write_applied_or_candidates(ctx context.Context, w http.Respons
 	// When the re-typed entry was absorbed into an existing series it no longer
 	// exists, so the UI needs the surviving entry to follow.
 	if absorbed_id != 0 && absorbed_id != entry_id {
-		if fresh, err := s.store.Get_catalog_entry(ctx, absorbed_id); err == nil && fresh != nil {
+		if fresh, err := s.store.Get_catalog_entry(ctx, entry_id); err == nil && fresh != nil {
 			body["entry"] = catalog_item_from(*fresh)
 		}
 	}

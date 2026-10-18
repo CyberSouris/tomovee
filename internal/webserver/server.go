@@ -62,20 +62,20 @@ type Server struct {
 	// stream_datasets mirrors the Options field; see there.
 	stream_datasets func(index_db_path string)
 	// reload mirrors the Options field; see there.
-	reload   func() error
-	static   fs.FS
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	jobs     *job_manager[scan.Progress, scan.Result]
-	scanMu   sync.Mutex
-	scanJobs map[string]*job_manager[scan.Progress, scan.Result]
-	// scanFeed and matchFeed fan every job's progress (global and per-library)
+	reload    func() error
+	static    fs.FS
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	jobs      *job_manager[scan.Progress, scan.Result]
+	scan_mu   sync.Mutex
+	scan_jobs map[string]*job_manager[scan.Progress, scan.Result]
+	// scan_feed and match_feed fan every job's progress (global and per-library)
 	// out to the SSE streams. See fanout.
-	scanFeed  *fanout[scan.Progress]
-	matches   *job_manager[matching.Progress, matching.Result]
-	matchMu   sync.Mutex
-	matchJobs map[string]*job_manager[matching.Progress, matching.Result]
-	matchFeed *fanout[matching.Progress]
+	scan_feed  *fanout[scan.Progress]
+	matches    *job_manager[matching.Progress, matching.Result]
+	match_mu   sync.Mutex
+	match_jobs map[string]*job_manager[matching.Progress, matching.Result]
+	match_feed *fanout[matching.Progress]
 }
 
 // New builds a Server and registers its routes.
@@ -99,17 +99,17 @@ func New(opts Options) *Server {
 		logger:          logger,
 		mux:             http.NewServeMux(),
 		jobs:            new_job_manager[scan.Progress, scan.Result](logger),
-		scanJobs:        make(map[string]*job_manager[scan.Progress, scan.Result]),
-		scanFeed:        new_fanout[scan.Progress](),
+		scan_jobs:       make(map[string]*job_manager[scan.Progress, scan.Result]),
+		scan_feed:       new_fanout[scan.Progress](),
 		matches:         new_job_manager[matching.Progress, matching.Result](logger),
-		matchJobs:       make(map[string]*job_manager[matching.Progress, matching.Result]),
-		matchFeed:       new_fanout[matching.Progress](),
+		match_jobs:      make(map[string]*job_manager[matching.Progress, matching.Result]),
+		match_feed:      new_fanout[matching.Progress](),
 	}
 	// Feed the shared streams from every manager, including the per-library ones
 	// the handlers create on demand, so a selected-library scan or match still
 	// drives the SSE-driven WebUI.
-	s.jobs.mirror = s.scanFeed.publish
-	s.matches.mirror = s.matchFeed.publish
+	s.jobs.mirror = s.scan_feed.publish
+	s.matches.mirror = s.match_feed.publish
 	s.routes()
 	return s
 }

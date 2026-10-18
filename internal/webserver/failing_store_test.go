@@ -180,7 +180,7 @@ func Test_streams_refuse_past_the_subscriber_limit(t *testing.T) {
 			target: "/api/v1/scan/stream",
 			subs: func(t *testing.T, server *Server) {
 				for i := 0; i < max_subscribers; i++ {
-					_, unsubscribe, err := server.scanFeed.Subscribe()
+					_, unsubscribe, err := server.scan_feed.Subscribe()
 					if err != nil {
 						t.Fatalf("subscribe %d: %v", i, err)
 					}
@@ -194,7 +194,7 @@ func Test_streams_refuse_past_the_subscriber_limit(t *testing.T) {
 			target: "/api/v1/match/stream",
 			subs: func(t *testing.T, server *Server) {
 				for i := 0; i < max_subscribers; i++ {
-					_, unsubscribe, err := server.matchFeed.Subscribe()
+					_, unsubscribe, err := server.match_feed.Subscribe()
 					if err != nil {
 						t.Fatalf("subscribe %d: %v", i, err)
 					}

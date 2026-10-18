@@ -39,13 +39,13 @@ func Test_is_junk(t *testing.T) {
 			t.Errorf("Is_junk(%q) = false, want true", name)
 		}
 	}
-	validFiles := []string{
+	valid_files := []string{
 		"Fight.Club.1999.1080p.BluRay.x264.mkv",
 		"The Matrix (1999).mkv",
 		"Marcel.Review.mkv",
 		"Weekend.Movie.mkv",
 	}
-	for _, name := range validFiles {
+	for _, name := range valid_files {
 		if Is_junk(name) {
 			t.Errorf("Is_junk(%q) = true, want false", name)
 		}
@@ -93,7 +93,7 @@ func Test_parse_episode_series(t *testing.T) {
 }
 
 func Test_classify(t *testing.T) {
-	const minSize = 50 * 1024 * 1024
+	const min_size = 50 * 1024 * 1024
 
 	cases := []struct {
 		name  string
@@ -108,7 +108,7 @@ func Test_classify(t *testing.T) {
 		{"readme.txt", 1024, Not_video, Movie},
 	}
 	for _, c := range cases {
-		got := Classify(c.name, c.size, minSize)
+		got := Classify(c.name, c.size, min_size)
 		if got.Kind != c.kind {
 			t.Errorf("Classify(%q).Kind = %v, want %v", c.name, got.Kind, c.kind)
 		}

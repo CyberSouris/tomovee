@@ -357,31 +357,57 @@ func listen_address(addr string) string {
 	return addr
 }
 
-func cmd_serve(args []string) error {
+// init_server loads the config, logger, database, and store for the serve
+// command, merging the settings persisted from the web UI over the config file.
+// The caller owns the returned database and must close it.
+func init_server(args []string) (*config.Config, *slog.Logger, *database.Database, *database.Store, error) {
 	cfg, err := load_config(args)
 	if err != nil {
-		return err
+		return nil, nil, nil, nil, err
 	}
 	logger := build_logger(cfg.Log_level)
 	db, err := open_database(cfg)
 	if err != nil {
-		return err
+		return nil, nil, nil, nil, err
 	}
-	defer db.Close()
-
-	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o750); err != nil {
-		return err
-	}
-
 	store := database.New_store(db)
 
 	// Settings changed from the web UI (API keys, datasets path) are persisted
 	// in the config table; merge them over the config file so they take effect
 	// from this run onward.
 	if overrides, err := store.Config_all(context.Background()); err != nil {
-		return err
+		_ = db.Close()
+		return nil, nil, nil, nil, err
 	} else if len(overrides) > 0 {
 		config.Apply_overrides(cfg, overrides)
+	}
+
+	return cfg, logger, db, store, nil
+}
+
+// setup_poster_cache makes the poster cache directory and builds the cache
+// rooted there.
+func setup_poster_cache(cfg *config.Config, logger *slog.Logger) (*poster_cache.Cache, error) {
+	if err := os.MkdirAll(cfg.Poster_cache_dir, 0o750); err != nil {
+		return nil, err
+	}
+	return poster_cache.New(poster_cache.Options{
+		Dir:        cfg.Poster_cache_dir,
+		User_agent: cfg.Api.Opensubtitles_user_agent,
+		Logger:     logger,
+	}), nil
+}
+
+func cmd_serve(args []string) error {
+	cfg, logger, db, store, err := init_server(args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	posters, err := setup_poster_cache(cfg, logger)
+	if err != nil {
+		return err
 	}
 
 	pipe, err := build_pipeline(logger, cfg, store)
@@ -397,12 +423,6 @@ func cmd_serve(args []string) error {
 	if err := register_libraries(context.Background(), store, cfg, cfg.Watch_enabled); err != nil {
 		return err
 	}
-
-	posters := poster_cache.New(poster_cache.Options{
-		Dir:        cfg.Poster_cache_dir,
-		User_agent: cfg.Api.Opensubtitles_user_agent,
-		Logger:     logger,
-	})
 
 	matching_service := matching.New(store, pipe.matcher, nil, logger)
 

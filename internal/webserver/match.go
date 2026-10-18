@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/cybersouris/tomovee/internal/database"
 	"github.com/cybersouris/tomovee/internal/matcher"
@@ -46,13 +45,8 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := s.store.Get_catalog_entry(r.Context(), id)
-	if err != nil {
-		s.internal_error(w, err, "load catalog entry")
-		return
-	}
-	if entry == nil {
-		write_error(w, http.StatusNotFound, "catalog entry not found")
+	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	if !ok {
 		return
 	}
 
@@ -64,56 +58,12 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		media_type = scanner.Movie
 	}
 
-	var result *matcher.Result
-	switch {
-	case request.Tmdb_id > 0:
-		if s.metadata != nil {
-			enriched, err := s.matcher.Enrich_by_tmdb(r.Context(), media_type, request.Tmdb_id)
-			if err != nil {
-				s.bad_gateway(w, err, "enrich from tmdb")
-				return
-			}
-			result = enriched
-		} else if resolved := s.offline_from_candidate(r.Context(), id, request.Tmdb_id, ""); resolved != nil {
-			result = resolved
-		} else {
-			write_error(w, http.StatusServiceUnavailable, "matching by TMDB id requires a TMDB API key")
-			return
-		}
-	case request.Imdb_id != "":
-		if s.metadata != nil {
-			enriched, err := s.matcher.Enrich_by_imdb(r.Context(), media_type, request.Imdb_id)
-			if err == nil {
-				result = enriched
-				break
-			}
-		}
-		if resolved, ok := s.matcher.Resolve_by_imdb_offline(r.Context(), request.Imdb_id); ok {
-			result = resolved
-			break
-		}
-		if s.metadata == nil {
-			write_error(w, http.StatusServiceUnavailable, "matching by IMDb id requires a TMDB API key or a local IMDb index entry")
-			return
-		}
-		write_error(w, http.StatusBadGateway, "could not resolve IMDb id "+request.Imdb_id)
-		return
-	default:
-		write_error(w, http.StatusBadRequest, "tmdb_id or imdb_id is required")
+	result, ok := s.resolve_manual_candidate(w, r.Context(), id, media_type, request)
+	if !ok {
 		return
 	}
-
-	updated := scan.Catalog_entry_from_match(result)
-	updated.Id = id
-	if err := s.store.Update_catalog_entry(r.Context(), id, updated); err != nil {
-		s.internal_error(w, err, "update catalog entry")
+	if !s.apply_manual_match(w, r.Context(), id, result) {
 		return
-	}
-	if result.Matched && s.matching != nil {
-		if err := s.matching.Enrich_episodes(r.Context(), id, result); err != nil {
-			s.internal_error(w, err, "enrich episodes")
-			return
-		}
 	}
 	fresh, err := s.store.Get_catalog_entry(r.Context(), id)
 	if err != nil || fresh == nil {
@@ -121,6 +71,81 @@ func (s *Server) handle_manual_match(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write_json(w, http.StatusOK, map[string]any{"entry": catalog_item_from(*fresh)})
+}
+
+// resolve_manual_candidate turns the identifier a user picked into a matcher
+// result: TMDB when a key is configured, the persisted offline shortlist as
+// fallback. It writes the failure response itself and returns ok=false when
+// the identifier cannot be resolved.
+func (s *Server) resolve_manual_candidate(w http.ResponseWriter, ctx context.Context, entry_id int64, media_type scanner.Media_type, request match_request) (*matcher.Result, bool) {
+	switch {
+	case request.Tmdb_id > 0:
+		if s.metadata != nil {
+			enriched, err := s.matcher.Enrich_by_tmdb(ctx, media_type, request.Tmdb_id)
+			if err != nil {
+				s.bad_gateway(w, err, "enrich from tmdb")
+				return nil, false
+			}
+			return enriched, true
+		}
+		if resolved := s.offline_from_candidate(ctx, entry_id, request.Tmdb_id, ""); resolved != nil {
+			return resolved, true
+		}
+		write_error(w, http.StatusServiceUnavailable, "matching by TMDB id requires a TMDB API key")
+		return nil, false
+	case request.Imdb_id != "":
+		if s.metadata != nil {
+			if enriched, err := s.matcher.Enrich_by_imdb(ctx, media_type, request.Imdb_id); err == nil {
+				return enriched, true
+			}
+		}
+		if resolved, ok := s.matcher.Resolve_by_imdb_offline(ctx, request.Imdb_id); ok {
+			return resolved, true
+		}
+		if s.metadata == nil {
+			write_error(w, http.StatusServiceUnavailable, "matching by IMDb id requires a TMDB API key or a local IMDb index entry")
+			return nil, false
+		}
+		write_error(w, http.StatusBadGateway, "could not resolve IMDb id "+request.Imdb_id)
+		return nil, false
+	default:
+		write_error(w, http.StatusBadRequest, "tmdb_id or imdb_id is required")
+		return nil, false
+	}
+}
+
+// apply_manual_match stores the resolved match on the entry and re-enriches
+// episode titles when the match was confident. It writes the failure response
+// itself and returns ok=false on a storage failure.
+func (s *Server) apply_manual_match(w http.ResponseWriter, ctx context.Context, id int64, result *matcher.Result) bool {
+	updated := scan.Catalog_entry_from_match(result)
+	updated.Id = id
+	if err := s.store.Update_catalog_entry(ctx, id, updated); err != nil {
+		s.internal_error(w, err, "update catalog entry")
+		return false
+	}
+	if result.Matched && s.matching != nil {
+		if err := s.matching.Enrich_episodes(ctx, id, result); err != nil {
+			s.internal_error(w, err, "enrich episodes")
+			return false
+		}
+	}
+	return true
+}
+
+// load_catalog_entry loads a catalog entry, writing the failure response
+// itself when it cannot be loaded.
+func (s *Server) load_catalog_entry(w http.ResponseWriter, ctx context.Context, id int64) (*database.Catalog_entry, bool) {
+	entry, err := s.store.Get_catalog_entry(ctx, id)
+	if err != nil {
+		s.internal_error(w, err, "load catalog entry")
+		return nil, false
+	}
+	if entry == nil {
+		write_error(w, http.StatusNotFound, "catalog entry not found")
+		return nil, false
+	}
+	return entry, true
 }
 
 // offline_from_candidate resolves a picked candidate against the persisted
@@ -149,6 +174,62 @@ func (s *Server) offline_from_candidate(ctx context.Context, entry_id int64, tmd
 	return nil
 }
 
+// record_match_outcome persists what a single-entry match attempt produced:
+// an applied match clears the stored candidates, an ambiguous one replaces the
+// candidate shortlist (and flags the entry for manual lookup). It also builds
+// the job's result and reports the final progress tick.
+func (s *Server) record_match_outcome(ctx context.Context, progress func(matching.Progress), entry_id int64, media_type string, prev_status string, title string, applied bool, candidates []matcher.Candidate) (*matching.Result, error) {
+	result := &matching.Result{Total: 1}
+	if applied {
+		result.Matched = 1
+		if err := s.store.Clear_candidates(ctx, entry_id); err != nil {
+			return nil, err
+		}
+	} else {
+		result.Unmatched = 1
+		result.Candidates = len(candidates)
+		if err := s.store.Replace_candidates(ctx, entry_id, candidates_to_db(media_type, candidates)); err != nil {
+			return nil, err
+		}
+		if len(candidates) > 0 && prev_status != "needs_lookup" {
+			if err := s.store.Set_catalog_status(ctx, entry_id, "needs_lookup"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if progress != nil {
+		progress(matching.Progress{
+			Phase: "file", Title: title, Total: 1, Done: 1,
+			Matched: result.Matched, Unmatched: result.Unmatched,
+		})
+	}
+	return result, nil
+}
+
+// write_applied_or_candidates answers a single-entry match request: an
+// applied match returns the reloaded entry, an ambiguous one the candidate
+// shortlist (plus the surviving entry when the re-typed entry was absorbed).
+func (s *Server) write_applied_or_candidates(w http.ResponseWriter, ctx context.Context, entry_id int64, absorbed_id int64, media_type string, applied bool, candidates []matcher.Candidate) {
+	if applied {
+		fresh, err := s.store.Get_catalog_entry(ctx, entry_id)
+		if err != nil || fresh == nil {
+			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
+			return
+		}
+		write_json(w, http.StatusOK, map[string]any{"applied": true, "entry": catalog_item_from(*fresh)})
+		return
+	}
+	body := map[string]any{"applied": false, "candidates": candidate_items(candidates, media_type)}
+	// When the re-typed entry was absorbed into an existing series it no longer
+	// exists, so the UI needs the surviving entry to follow.
+	if absorbed_id != 0 && absorbed_id != entry_id {
+		if fresh, err := s.store.Get_catalog_entry(ctx, absorbed_id); err == nil && fresh != nil {
+			body["entry"] = catalog_item_from(*fresh)
+		}
+	}
+	write_json(w, http.StatusOK, body)
+}
+
 // handle_rematch re-runs the automatic matcher for one catalog entry through
 // the same job manager as a full matching run, so the rematch shows up in the
 // global background status and SSE feed. When a matching job is already in
@@ -167,67 +248,32 @@ func (s *Server) handle_rematch(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "invalid catalog id")
 		return
 	}
+	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	if !ok {
+		return
+	}
 
-	entry, err := s.store.Get_catalog_entry(r.Context(), id)
+	applied, candidates, err := s.run_rematch_one(id, entry)
 	if err != nil {
-		s.internal_error(w, err, "load catalog entry")
+		s.internal_error(w, err, "run matching job")
 		return
 	}
-	if entry == nil {
-		write_error(w, http.StatusNotFound, "catalog entry not found")
-		return
-	}
+	s.write_applied_or_candidates(w, r.Context(), id, 0, entry.Media_type, applied, candidates)
+}
 
+// run_rematch_one runs a single-entry rematch through the shared job manager.
+func (s *Server) run_rematch_one(id int64, entry *database.Catalog_entry) (bool, []matcher.Candidate, error) {
 	var applied bool
 	var candidates []matcher.Candidate
-	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	_, err := s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		var run_err error
 		applied, candidates, run_err = s.matching.Rematch_one(ctx, id)
 		if run_err != nil {
 			return nil, run_err
 		}
-		result := &matching.Result{Total: 1}
-		if applied {
-			result.Matched = 1
-			if err := s.store.Clear_candidates(ctx, id); err != nil {
-				return nil, err
-			}
-		} else {
-			result.Unmatched = 1
-			result.Candidates = len(candidates)
-			if err := s.store.Replace_candidates(ctx, id, candidates_to_db(entry.Media_type, candidates)); err != nil {
-				return nil, err
-			}
-			if len(candidates) > 0 && entry.Status != "needs_lookup" {
-				if err := s.store.Set_catalog_status(ctx, id, "needs_lookup"); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if progress != nil {
-			progress(matching.Progress{
-				Phase: "file", Title: entry.Title, Total: 1, Done: 1,
-				Matched: result.Matched, Unmatched: result.Unmatched,
-			})
-		}
-		return result, nil
+		return s.record_match_outcome(ctx, progress, id, entry.Media_type, entry.Status, entry.Title, applied, candidates)
 	})
-	if err != nil {
-		s.internal_error(w, err, "run matching job")
-		return
-	}
-
-	if applied {
-		fresh, err := s.store.Get_catalog_entry(r.Context(), id)
-		if err != nil || fresh == nil {
-			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
-			return
-		}
-		write_json(w, http.StatusOK, map[string]any{"applied": true, "entry": catalog_item_from(*fresh)})
-		return
-	}
-	views := candidate_items(candidates, entry.Media_type)
-	write_json(w, http.StatusOK, map[string]any{"applied": false, "candidates": views})
+	return applied, candidates, err
 }
 
 // candidates_to_db maps matcher candidates (which carry no media type) onto
@@ -252,18 +298,8 @@ func (s *Server) handle_version_episode(w http.ResponseWriter, r *http.Request) 
 		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
 		return
 	}
-	version_id, err := strconv.ParseInt(r.PathValue("version_id"), 10, 64)
-	if err != nil || version_id <= 0 {
-		write_error(w, http.StatusBadRequest, "invalid version id")
-		return
-	}
-	version, err := s.store.Get_version(r.Context(), version_id)
-	if err != nil {
-		s.internal_error(w, err, "load version")
-		return
-	}
-	if version == nil {
-		write_error(w, http.StatusNotFound, "version not found")
+	version, ok := s.load_version_or_error(w, r)
+	if !ok {
 		return
 	}
 	var request episode_assign_request
@@ -275,7 +311,7 @@ func (s *Server) handle_version_episode(w http.ResponseWriter, r *http.Request) 
 		write_error(w, http.StatusBadRequest, "season must be >= 0 and episode must be >= 1")
 		return
 	}
-	episode_id, err := s.matching.Assign_version_to_episode(r.Context(), version_id, request.Season, request.Episode)
+	episode_id, err := s.matching.Assign_version_to_episode(r.Context(), version.Id, request.Season, request.Episode)
 	if err != nil {
 		s.internal_error(w, err, "assign version to episode")
 		return
@@ -304,68 +340,12 @@ func (s *Server) handle_version_split(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusServiceUnavailable, "matching is not configured")
 		return
 	}
-	version_id, err := strconv.ParseInt(r.PathValue("version_id"), 10, 64)
-	if err != nil || version_id <= 0 {
-		write_error(w, http.StatusBadRequest, "invalid version id")
-		return
-	}
-	version, err := s.store.Get_version(r.Context(), version_id)
-	if err != nil {
-		s.internal_error(w, err, "load version")
-		return
-	}
-	if version == nil {
-		write_error(w, http.StatusNotFound, "version not found")
+	version, ok := s.load_version_or_error(w, r)
+	if !ok {
 		return
 	}
 
-	var applied bool
-	var candidates []matcher.Candidate
-	var new_id int64
-	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
-		var run_err error
-		new_id, run_err = s.matching.Split_version_to_movie(ctx, version_id)
-		if run_err != nil {
-			return nil, run_err
-		}
-		if new_id == 0 {
-			return nil, nil
-		}
-		title := ""
-		fresh, get_err := s.store.Get_catalog_entry(ctx, new_id)
-		if get_err != nil {
-			return nil, get_err
-		}
-		if fresh != nil {
-			title = fresh.Title
-			applied, candidates, run_err = s.matching.Rematch_one(ctx, new_id)
-			if run_err != nil {
-				return nil, run_err
-			}
-		}
-		result := &matching.Result{Total: 1}
-		if applied {
-			result.Matched = 1
-			if err := s.store.Clear_candidates(ctx, new_id); err != nil {
-				return nil, err
-			}
-		} else {
-			result.Unmatched = 1
-			if len(candidates) > 0 {
-				result.Candidates = len(candidates)
-				if err := s.store.Replace_candidates(ctx, new_id, candidates_to_db("movie", candidates)); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if progress != nil {
-			progress(matching.Progress{
-				Phase: "file", Title: title, Total: 1, Done: 1,
-				Matched: result.Matched, Unmatched: result.Unmatched,
-			})
-		}
-		return result, nil
-	})
+	new_id, applied, candidates, err := s.run_split_version(version.Id)
 	if err != nil {
 		s.internal_error(w, err, "run matching job")
 		return
@@ -386,6 +366,38 @@ func (s *Server) handle_version_split(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// run_split_version splits a version into its own movie entry and rematches
+// the new entry, all inside one queued matching job.
+func (s *Server) run_split_version(version_id int64) (int64, bool, []matcher.Candidate, error) {
+	var applied bool
+	var candidates []matcher.Candidate
+	var new_id int64
+	_, err := s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+		var run_err error
+		new_id, run_err = s.matching.Split_version_to_movie(ctx, version_id)
+		if run_err != nil {
+			return nil, run_err
+		}
+		if new_id == 0 {
+			return nil, nil
+		}
+		title := ""
+		fresh, get_err := s.store.Get_catalog_entry(ctx, new_id)
+		if get_err != nil {
+			return nil, get_err
+		}
+		if fresh != nil {
+			title = fresh.Title
+			applied, candidates, run_err = s.matching.Rematch_one(ctx, new_id)
+			if run_err != nil {
+				return nil, run_err
+			}
+		}
+		return s.record_match_outcome(ctx, progress, new_id, "movie", "needs_lookup", title, applied, candidates)
+	})
+	return new_id, applied, candidates, err
+}
+
 // handle_reclassify forces a catalog entry to the opposite media type the
 // scanner gave it (series<->movie or movie<->series) and re-runs automatic
 // matching for it under the flipped classification through the same job manager
@@ -403,13 +415,8 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "invalid catalog id")
 		return
 	}
-	entry, err := s.store.Get_catalog_entry(r.Context(), id)
-	if err != nil {
-		s.internal_error(w, err, "load catalog entry")
-		return
-	}
-	if entry == nil {
-		write_error(w, http.StatusNotFound, "catalog entry not found")
+	entry, ok := s.load_catalog_entry(w, r.Context(), id)
+	if !ok {
 		return
 	}
 
@@ -425,63 +432,27 @@ func (s *Server) handle_reclassify(w http.ResponseWriter, r *http.Request) {
 	}
 	as_series := media_type == "series"
 
+	result_id, applied, candidates, err := s.run_reclassify(id, entry, as_series, media_type)
+	if err != nil {
+		s.internal_error(w, err, "run matching job")
+		return
+	}
+	s.write_applied_or_candidates(w, r.Context(), result_id, id, media_type, applied, candidates)
+}
+
+// run_reclassify flips an entry's media type and rematches it under the new
+// classification, all inside one queued matching job.
+func (s *Server) run_reclassify(id int64, entry *database.Catalog_entry, as_series bool, media_type string) (int64, bool, []matcher.Candidate, error) {
 	var applied bool
 	var candidates []matcher.Candidate
 	var result_id int64
-	_, err = s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
+	_, err := s.matches.Run_sync_queued(func(ctx context.Context, progress func(matching.Progress)) (*matching.Result, error) {
 		var run_err error
 		result_id, applied, candidates, run_err = s.matching.Reclassify(ctx, id, as_series)
 		if run_err != nil {
 			return nil, run_err
 		}
-		result := &matching.Result{Total: 1}
-		if applied {
-			result.Matched = 1
-			if err := s.store.Clear_candidates(ctx, result_id); err != nil {
-				return nil, err
-			}
-		} else {
-			result.Unmatched = 1
-			result.Candidates = len(candidates)
-			if err := s.store.Replace_candidates(ctx, result_id, candidates_to_db(media_type, candidates)); err != nil {
-				return nil, err
-			}
-			if len(candidates) > 0 && entry.Status != "needs_lookup" {
-				if err := s.store.Set_catalog_status(ctx, result_id, "needs_lookup"); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if progress != nil {
-			progress(matching.Progress{
-				Phase: "file", Title: entry.Title, Total: 1, Done: 1,
-				Matched: result.Matched, Unmatched: result.Unmatched,
-			})
-		}
-		return result, nil
+		return s.record_match_outcome(ctx, progress, result_id, media_type, entry.Status, entry.Title, applied, candidates)
 	})
-	if err != nil {
-		s.internal_error(w, err, "run matching job")
-		return
-	}
-
-	if applied {
-		fresh, err := s.store.Get_catalog_entry(r.Context(), result_id)
-		if err != nil || fresh == nil {
-			write_error(w, http.StatusInternalServerError, "failed to reload catalog entry")
-			return
-		}
-		write_json(w, http.StatusOK, map[string]any{"applied": true, "entry": catalog_item_from(*fresh)})
-		return
-	}
-	views := candidate_items(candidates, media_type)
-	body := map[string]any{"applied": false, "candidates": views}
-	// When the re-typed entry was absorbed into an existing series it no longer
-	// exists, so the UI needs the surviving entry to follow.
-	if result_id != id {
-		if fresh, err := s.store.Get_catalog_entry(r.Context(), result_id); err == nil && fresh != nil {
-			body["entry"] = catalog_item_from(*fresh)
-		}
-	}
-	write_json(w, http.StatusOK, body)
+	return result_id, applied, candidates, err
 }

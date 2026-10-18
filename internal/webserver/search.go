@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,75 +42,104 @@ func (s *Server) handle_search(w http.ResponseWriter, r *http.Request) {
 		write_error(w, http.StatusBadRequest, "q query parameter is required")
 		return
 	}
-	media_type := r.URL.Query().Get("media_type")
-	if media_type != "series" {
-		media_type = "movie"
-	}
+	media_type := search_media_type(r)
 	year := int_query(r, "year")
 
 	ctx := r.Context()
 	items := make([]search_item, 0, max_search_results)
 
 	if s.metadata != nil {
-		if media_type == "series" {
-			results, err := s.metadata.Search_tv(ctx, query, year)
-			if err != nil {
-				s.bad_gateway(w, err, "tmdb search tv")
-				return
+		var err error
+		if items, err = s.search_tmdb(ctx, items, media_type, query, year); err != nil {
+			label := "tmdb search movie"
+			if media_type == "series" {
+				label = "tmdb search tv"
 			}
-			for _, res := range results {
-				if len(items) >= max_search_results {
-					break
-				}
-				items = append(items, search_item{
-					Tmdb_id: res.Id, Media_type: "series", Title: res.Name,
-					Year: year_of(res.First_air_date), Overview: res.Overview,
-					Poster_url: tmdb_poster_url(res.Poster_path), Vote_average: res.Vote_average,
-				})
-			}
-		} else {
-			results, err := s.metadata.Search_movie(ctx, query, year)
-			if err != nil {
-				s.bad_gateway(w, err, "tmdb search movie")
-				return
-			}
-			for _, res := range results {
-				if len(items) >= max_search_results {
-					break
-				}
-				items = append(items, search_item{
-					Tmdb_id: res.Id, Media_type: "movie", Title: res.Title,
-					Year: year_of(res.Release_date), Overview: res.Overview,
-					Poster_url: tmdb_poster_url(res.Poster_path), Vote_average: res.Vote_average,
-				})
-			}
+			s.bad_gateway(w, err, label)
+			return
 		}
 	}
 
 	if local_ok {
-		media := scanner.Movie
-		if media_type == "series" {
-			media = scanner.Series
-		}
-		results, err := s.matcher.Search_local_autocomplete(ctx, query, year, media, max_search_results)
-		if err != nil {
+		var err error
+		if items, err = s.search_local(ctx, items, query, year, media_type); err != nil {
 			s.bad_gateway(w, err, "local autocomplete search")
 			return
-		}
-		for _, cand := range results {
-			if len(items) >= max_search_results {
-				break
-			}
-			if search_item_has(items, cand.Title, cand.Year) {
-				continue
-			}
-			items = append(items, search_item{
-				Imdb_id: cand.Imdb_id, Media_type: media_type, Title: cand.Title, Year: cand.Year,
-			})
 		}
 	}
 
 	write_json(w, http.StatusOK, map[string]any{"results": items})
+}
+
+// search_media_type restricts the query to one media type: anything but an
+// explicit "series" searches movies.
+func search_media_type(r *http.Request) string {
+	if r.URL.Query().Get("media_type") == "series" {
+		return "series"
+	}
+	return "movie"
+}
+
+// search_tmdb appends TMDB suggestions for the requested media type to items,
+// stopping once max_search_results is reached.
+func (s *Server) search_tmdb(ctx context.Context, items []search_item, media_type, query string, year int) ([]search_item, error) {
+	if media_type == "series" {
+		results, err := s.metadata.Search_tv(ctx, query, year)
+		if err != nil {
+			return items, err
+		}
+		for _, res := range results {
+			if len(items) >= max_search_results {
+				break
+			}
+			items = append(items, search_item{
+				Tmdb_id: res.Id, Media_type: "series", Title: res.Name,
+				Year: year_of(res.First_air_date), Overview: res.Overview,
+				Poster_url: tmdb_poster_url(res.Poster_path), Vote_average: res.Vote_average,
+			})
+		}
+		return items, nil
+	}
+	results, err := s.metadata.Search_movie(ctx, query, year)
+	if err != nil {
+		return items, err
+	}
+	for _, res := range results {
+		if len(items) >= max_search_results {
+			break
+		}
+		items = append(items, search_item{
+			Tmdb_id: res.Id, Media_type: "movie", Title: res.Title,
+			Year: year_of(res.Release_date), Overview: res.Overview,
+			Poster_url: tmdb_poster_url(res.Poster_path), Vote_average: res.Vote_average,
+		})
+	}
+	return items, nil
+}
+
+// search_local appends local IMDb index suggestions to items, skipping
+// duplicates of what TMDB already contributed.
+func (s *Server) search_local(ctx context.Context, items []search_item, query string, year int, media_type string) ([]search_item, error) {
+	media := scanner.Movie
+	if media_type == "series" {
+		media = scanner.Series
+	}
+	results, err := s.matcher.Search_local_autocomplete(ctx, query, year, media, max_search_results)
+	if err != nil {
+		return items, err
+	}
+	for _, cand := range results {
+		if len(items) >= max_search_results {
+			break
+		}
+		if search_item_has(items, cand.Title, cand.Year) {
+			continue
+		}
+		items = append(items, search_item{
+			Imdb_id: cand.Imdb_id, Media_type: media_type, Title: cand.Title, Year: cand.Year,
+		})
+	}
+	return items, nil
 }
 
 // search_item_has reports whether items already carries a suggestion with the

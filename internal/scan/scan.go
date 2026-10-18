@@ -200,27 +200,57 @@ func (s *Scanner) run(ctx context.Context, names []string, progress func(Progres
 	if err != nil {
 		return nil, fmt.Errorf("list libraries: %w", err)
 	}
-	if len(names) > 0 {
-		selected := make(map[string]bool, len(names))
-		for _, name := range names {
-			selected[name] = true
-		}
-		filtered := libraries[:0]
-		for _, library := range libraries {
-			if selected[library.Name] {
-				filtered = append(filtered, library)
-			}
-		}
-		if len(filtered) == 0 {
-			return nil, fmt.Errorf("no such library: %s", strings.Join(names, ", "))
-		}
-		libraries = filtered
+	libraries, err = filter_libraries(libraries, names)
+	if err != nil {
+		return nil, err
 	}
 	if len(libraries) == 0 {
 		result.Errors = append(result.Errors, "no libraries configured")
 		return result, nil
 	}
 
+	roots, lib_by_id, seen := s.scan_libraries(ctx, libraries, result, progress)
+
+	if err := s.mark_missing(ctx, roots, lib_by_id, seen, result); err != nil {
+		result.Errors = append(result.Errors, "mark missing: "+err.Error())
+	}
+	if progress != nil {
+		progress(Progress{
+			Phase:       "done",
+			Files_found: result.Found,
+			New_files:   result.New,
+			Skipped:     result.Skipped,
+			Errors:      len(result.Errors),
+		})
+	}
+	return result, nil
+}
+
+// filter_libraries narrows libraries down to the named ones. Naming no known
+// library is an error, so a typo does not silently scan nothing.
+func filter_libraries(libraries []database.Library, names []string) ([]database.Library, error) {
+	if len(names) == 0 {
+		return libraries, nil
+	}
+	selected := make(map[string]bool, len(names))
+	for _, name := range names {
+		selected[name] = true
+	}
+	filtered := libraries[:0]
+	for _, library := range libraries {
+		if selected[library.Name] {
+			filtered = append(filtered, library)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no such library: %s", strings.Join(names, ", "))
+	}
+	return filtered, nil
+}
+
+// scan_libraries walks every library, discovering and processing its files,
+// and returns the state mark_missing needs afterwards.
+func (s *Scanner) scan_libraries(ctx context.Context, libraries []database.Library, result *Result, progress func(Progress)) ([]string, map[int64]database.Library, map[string]bool) {
 	roots := make([]string, 0, len(libraries))
 	lib_by_id := make(map[int64]database.Library, len(libraries))
 	seen := make(map[string]bool)
@@ -259,20 +289,7 @@ func (s *Scanner) run(ctx context.Context, names []string, progress func(Progres
 			s.process_file(ctx, library, abs, file, result, progress)
 		}
 	}
-
-	if err := s.mark_missing(ctx, roots, lib_by_id, seen, result); err != nil {
-		result.Errors = append(result.Errors, "mark missing: "+err.Error())
-	}
-	if progress != nil {
-		progress(Progress{
-			Phase:       "done",
-			Files_found: result.Found,
-			New_files:   result.New,
-			Skipped:     result.Skipped,
-			Errors:      len(result.Errors),
-		})
-	}
-	return result, nil
+	return roots, lib_by_id, seen
 }
 
 // group_series_files folds plain video files that sit inside a series' show

@@ -136,9 +136,14 @@ Validation rules:
   `-junk-` style names. Also skip files smaller than a sane minimum (e.g.
   `< 50 MB` for movies; confirm during implementation) that are unlikely to be
   real content.
-- Series detection: filenames matching `S01E02`, `1x02`, or `season 1 episode 2`
-  patterns are treated as episodes. Specials (`S00x`, `special` in name) are
-  catalogued but tagged as specials.
+- Series detection: filenames matching `S01E02`/`S01.E02`, `1x02`,
+  `season 1 episode 2`, the tracker style `#01_02` (season and episode after a
+  `#`), or an absolute zero-padded episode count (`084 ...`) are treated as
+  episodes; so is any video inside a folder named after its episode
+  (`47 Závan minulosti/`). A name with no season of its own is filed under
+  season 1. Season folders may use the `S2`, `Season 2`, or `Series 2`
+  spellings. Specials (`S00x`, `special` in name) are catalogued but tagged as
+  specials.
 
 ### 6.2 Hash (OpenSubtitles movie hash)
 

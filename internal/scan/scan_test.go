@@ -527,6 +527,218 @@ func Test_run_series_folder_groups_across_even_scan(t *testing.T) {
 	}
 }
 
+// A show whose season folders are prefixed with the show name, and whose
+// episodes each live in their own per-episode folder, must still end up as one
+// series named after the show. It also covers the scene habit of joining the
+// show name to the season token with an underscore
+// ("Show.Name_S03E16_Episode.avi"), which must not turn the file into a movie.
+func Test_run_series_with_prefixed_season_and_episode_folders(t *testing.T) {
+	dir := t.TempDir()
+	const show = "The Rangers Of Pinewood"
+	season := "Series/" + show + "/" + show + " Season "
+	episode := "Series/" + show + "/" + show + " Season 1/"
+	mkdir_all(t, dir, episode+show+" 1x02 - Night Watch")
+	mkdir_all(t, dir, episode+show+" 1x13 - Double Watch")
+	mkdir_all(t, dir, season+"3")
+	mkdir_all(t, dir, season+"6")
+	mkdir_all(t, dir, season+"7")
+
+	write_file(t, dir, episode+show+" 1x02 - Night Watch/"+show+" 1x02 - Night Watch.avi", 1000)
+	write_file(t, dir, episode+show+" 1x02 - Night Watch/Episode Summary & Details.txt", 1001)
+	write_file(t, dir, episode+show+" 1x13 - Double Watch/"+show+" 1x13 - Double Watch.avi", 1002)
+	write_file(t, dir, season+"3/The.Rangers.Of.Pinewood_S03E16_Border Run.avi", 1100)
+	write_file(t, dir, season+"6/}{serie}{ Rangers Of Pinewood 6x03 Too Many Chores (dvdrip by someone).avi", 1200)
+	write_file(t, dir, season+"7/Rangers Of Pinewood 7x16 A Wedding (dvdrip by someone).avi", 1300)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 5 || result.Found != 5 {
+		t.Fatalf("result = %+v, want the 5 videos found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != show {
+		t.Fatalf("series entries = %+v, want one %q", series, show)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 5 {
+		t.Fatalf("episodes = %+v, want all 5 episode files grouped", episodes)
+	}
+	if movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"}); len(movies) != 0 {
+		t.Fatalf("movie entries = %+v, want none", movies)
+	}
+}
+
+// Files numbered with the tracker "#SS_EE" spelling must be recognized as
+// episodes rather than movies, so the show groups and is looked up as a series.
+func Test_run_series_with_hash_numbered_episodes(t *testing.T) {
+	dir := t.TempDir()
+	const show = "Harbour Lights"
+	mkdir_all(t, dir, "Series/"+show+"/S01")
+	mkdir_all(t, dir, "Series/"+show+"/S02")
+	write_file(t, dir, "Series/"+show+"/S01/#01_02_The First Case.mp4", 1000)
+	write_file(t, dir, "Series/"+show+"/S01/#01_03_Old Tricks.mp4", 1100)
+	write_file(t, dir, "Series/"+show+"/S02/#02_07_Not a Civil Servant.mp4", 1200)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 3 || result.Found != 3 {
+		t.Fatalf("result = %+v, want the 3 files found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != show {
+		t.Fatalf("series entries = %+v, want one %q", series, show)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %+v, want all 3 numbered episodes", episodes)
+	}
+	if movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"}); len(movies) != 0 {
+		t.Fatalf("movie entries = %+v, want none", movies)
+	}
+}
+
+// Files numbered by an absolute, zero-padded episode count inside a named
+// collection folder must become episodes of that collection rather than
+// standalone movies, so the collection is looked up as a series.
+func Test_run_series_with_absolute_numbered_episodes(t *testing.T) {
+	dir := t.TempDir()
+	const collection = "Meadow Friends At The Cottage"
+	base := "Series/Meadow Friends/" + collection
+	mkdir_all(t, dir, base)
+	write_file(t, dir, base+"/084 The Pond.mp4", 1000)
+	write_file(t, dir, base+"/085 The Fence.mp4", 1100)
+	write_file(t, dir, base+"/086 The Old Tree.mp4", 1200)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 3 || result.Found != 3 {
+		t.Fatalf("result = %+v, want the 3 files found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != collection {
+		t.Fatalf("series entries = %+v, want one %q", series, collection)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %+v, want all 3 numbered episodes", episodes)
+	}
+	if movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"}); len(movies) != 0 {
+		t.Fatalf("movie entries = %+v, want none", movies)
+	}
+}
+
+// A video with no episode marker of its own, sitting in a folder named after
+// its episode ("47 Závan minulosti/želvy ninja 47.avi"), must become that
+// episode of the enclosing show rather than its own movie entry.
+func Test_run_series_with_numbered_episode_folders(t *testing.T) {
+	dir := t.TempDir()
+	const show = "Meadow Friends"
+	base := "Series/" + show
+	mkdir_all(t, dir, base+"/47 The Pond")
+	mkdir_all(t, dir, base+"/48 The Fence")
+	write_file(t, dir, base+"/47 The Pond/meadow friends 47.avi", 1000)
+	write_file(t, dir, base+"/48 The Fence/meadow friends 48.avi", 1100)
+	write_file(t, dir, base+"/48 The Fence/Thumbs.db", 10)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 2 || result.Found != 2 {
+		t.Fatalf("result = %+v, want the 2 videos found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != show {
+		t.Fatalf("series entries = %+v, want one %q", series, show)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %+v, want both folders' files grouped", episodes)
+	}
+	if movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"}); len(movies) != 0 {
+		t.Fatalf("movie entries = %+v, want none", movies)
+	}
+}
+
+// The British "Series N" season spelling and the "S01.E16" episode spelling
+// must both be understood so the show groups under one entry.
+func Test_run_series_with_series_season_folder(t *testing.T) {
+	dir := t.TempDir()
+	const show = "Meadow Friends"
+	base := "Series/" + show
+	mkdir_all(t, dir, base+"/"+show+".Series1")
+	write_file(t, dir, base+"/"+show+".Series1/"+show+".S01.E16.mp4", 1000)
+	write_file(t, dir, base+"/"+show+".Series1/"+show+".S01.E25.mp4", 1100)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	result, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.New != 2 || result.Found != 2 {
+		t.Fatalf("result = %+v, want the 2 files found and new", result)
+	}
+
+	series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"})
+	if len(series) != 1 || series[0].Title != show {
+		t.Fatalf("series entries = %+v, want one %q", series, show)
+	}
+	episodes, _ := store.List_episodes(context.Background(), series[0].Id)
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %+v, want both episodes", episodes)
+	}
+	if movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"}); len(movies) != 0 {
+		t.Fatalf("movie entries = %+v, want none", movies)
+	}
+}
+
+// A movie in a released-year folder must stay a movie even though the folder
+// starts with a number that could be read as an episode.
+func Test_run_movie_in_dated_numbered_folder_stays_movie(t *testing.T) {
+	dir := t.TempDir()
+	mkdir_all(t, dir, "Movies/101 Dalmatians (1996)")
+	write_file(t, dir, "Movies/101 Dalmatians (1996)/101.Dalmatians.1996.1080p.mkv", 1000)
+
+	store := new_test_store(t)
+	s := new_test_scanner(t, store, dir)
+
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if series, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "series"}); len(series) != 0 {
+		t.Fatalf("series entries = %+v, want none", series)
+	}
+	movies, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Media_type: "movie"})
+	if len(movies) != 1 {
+		t.Fatalf("movie entries = %+v, want one", movies)
+	}
+}
+
 // The frame poster only ever fills a blank: online artwork wins, an extraction
 // failure just leaves the entry blank, and a frame that is already on disk is
 // marked without extracting it a second time.

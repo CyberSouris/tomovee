@@ -88,23 +88,68 @@ func Is_junk(name string) bool {
 }
 
 var (
-	season_episode_re = regexp.MustCompile(`(?i)\bs(\d{1,2})e(\d{1,3})\b`)
-	x_season_re       = regexp.MustCompile(`(?i)(\d{1,3})x(\d{1,3})\b`)
+	// season_episode_re matches the "S01E02" and "S01.E02" spellings: the season
+	// and episode halves may be joined directly or by a separator.
+	season_episode_re = regexp.MustCompile(`(?i)\bs(\d{1,2})[\s._-]*e(\d{1,3})\b`)
+	x_season_re       = regexp.MustCompile(`(?i)\b(\d{1,3})x(\d{1,3})\b`)
 	season_word_re    = regexp.MustCompile(`(?i)\bseason\s+(\d{1,2})\s+episode\s+(\d{1,3})\b`)
-	special_word_re   = regexp.MustCompile(`(?i)\bspecial\b`)
+	// hash_season_re matches the "#SS_EE" spelling used by some trackers and
+	// media managers, where the season and episode are joined by a separator
+	// after a leading "#" ("#01_02_The Female Factor.mp4"). The "#" keeps the
+	// two numbers from being read out of unrelated pairs such as "2019 1080p".
+	hash_season_re  = regexp.MustCompile(`(?i)#(\d{1,2})[\s._-]+(\d{1,3})\b`)
+	special_word_re = regexp.MustCompile(`(?i)\bspecial\b`)
+	// overall_episode_re matches an episode named by an absolute, zero-padded
+	// number at the start of the name, as a show's numbered collections are
+	// ("084 Bazén.mp4" is episode 84). The leading zero separates it from a
+	// release year or a numbered title ("2001 A Space Odyssey",
+	// "101 Dalmatians"), which never start with "0"; a separator and some text
+	// must follow so a bare "01" is left alone.
+	overall_episode_re = regexp.MustCompile(`^\s*0(\d{1,3})[\s._-]+\S`)
+	// numbered_folder_re matches a folder named after an episode by its bare
+	// number, as collections that give every episode its own folder do
+	// ("47 Závan minulosti"). Unlike a file name, a folder carries no release
+	// year, so a leading number is a strong episode signal there.
+	numbered_folder_re = regexp.MustCompile(`^\s*(\d{1,3})[\s._-]+\S`)
+	// year_in_name_re matches a four-digit release year, which marks a name as a
+	// movie rather than a numbered episode.
+	year_in_name_re = regexp.MustCompile(`(?:19|20)\d{2}`)
 )
 
 // Parse_episode_series extracts a series/season/episode hint from a file name.
-// Matches "Show.S01E02", "Show.1x02", "Show.season 1 episode 2", and marks
-// season 0 / "specials" as special content. Returns false for movie names.
-// The "NxM" pattern can never swallow resolutions such as "1920x1080", since
-// its width part is limited to three digits and must be followed by "x".
+// Matches "Show.S01E02", "Show.1x02", "Show.season 1 episode 2", the "#01_02"
+// tracker spelling, and collections numbered by an absolute episode count
+// ("084 Bazén.mp4"), and marks season 0 / "specials" as special content.
+// Returns false for movie names.
+// The "NxM" pattern can never swallow resolutions such as "1920x1080" or
+// "1280x720": it must start at a word boundary and its parts are limited to
+// three digits.
 func Parse_episode_series(name string) (*Episode_hint, bool) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
+	if hint, ok := parse_episode_base(base); ok {
+		return hint, true
+	}
+	return parse_overall_episode(base)
+}
+
+// episode_patterns are tried in order; the first one matching wins.
+var episode_patterns = []*regexp.Regexp{season_episode_re, x_season_re, season_word_re, hash_season_re}
+
+// parse_episode_base extracts a season/episode hint from a name whose file
+// extension, if any, has already been removed. It is shared with folder-name
+// detection, which must not strip anything after a dot: a folder such as
+// "Show.Name 1x02 - Pilot" keeps its episode marker even though it follows a dot.
+func parse_episode_base(base string) (*Episode_hint, bool) {
+	// Underscores are separator noise, not word characters, so the \b anchors
+	// in the patterns below must not treat them as part of a word: without this
+	// "Show_S01E01.mkv" and "Show.S01E01_Pilot.mkv" go unrecognized and an
+	// episode is catalogued as a movie. "_" and " " are both one byte, so the
+	// match offsets stay valid for slicing the show name later.
+	base = strings.ReplaceAll(base, "_", " ")
 
 	var match []int
 	var season, episode int
-	for _, re := range []*regexp.Regexp{season_episode_re, x_season_re, season_word_re} {
+	for _, re := range episode_patterns {
 		m := re.FindStringSubmatchIndex(base)
 		if m == nil {
 			continue
@@ -128,6 +173,54 @@ func Parse_episode_series(name string) (*Episode_hint, bool) {
 		hint.Is_special = true
 	}
 	return hint, true
+}
+
+// overall_episode_season is the season an absolute-numbered episode is filed
+// under. Those names carry no season of their own, and the parser only sees the
+// file name rather than the show's container folder, so season 1 stands in for
+// the show's first (or only) season.
+const overall_episode_season = 1
+
+// parse_overall_episode recognises an episode numbered by an absolute count
+// ("084 Bazén.mp4") rather than by a season/episode marker: a show split into
+// collections often numbers every file in one running sequence. Only the file
+// name is considered, so the number becomes the episode of
+// overall_episode_season; the show name is empty because the numbering sits at
+// the very start of the name, and callers fall back to the containing folder
+// for the title. It is deliberately kept out of parse_episode_base so a
+// numbered folder is not mistaken for a per-episode container.
+func parse_overall_episode(base string) (*Episode_hint, bool) {
+	return parse_numbered_episode(base, overall_episode_re)
+}
+
+// parse_numbered_episode_folder recognises a folder named by a bare episode
+// number ("47 Závan minulosti", "084 Bazén"): the number becomes the episode of
+// overall_episode_season, the same default an absolute-numbered file gets. The
+// leading zero that guards a file name is not required here, because a folder
+// has no release year to be confused with; parse_episode_folder screens the
+// movie-folder shape before calling this.
+func parse_numbered_episode_folder(name string) (*Episode_hint, bool) {
+	return parse_numbered_episode(name, numbered_folder_re)
+}
+
+// parse_numbered_episode extracts an absolute episode number using re, whose
+// group 1 is the number. The number becomes the episode of
+// overall_episode_season; a zero number is not an episode.
+func parse_numbered_episode(name string, re *regexp.Regexp) (*Episode_hint, bool) {
+	name = strings.ReplaceAll(name, "_", " ")
+	match := re.FindStringSubmatchIndex(name)
+	if match == nil {
+		return nil, false
+	}
+	number, _ := strconv.Atoi(name[match[2]:match[3]])
+	if number == 0 {
+		return nil, false
+	}
+	return &Episode_hint{
+		Season:     overall_episode_season,
+		Episode:    number,
+		Is_special: special_word_re.MatchString(name),
+	}, true
 }
 
 // clean_separators converts dot/underscore style separators into spaces while
@@ -156,12 +249,19 @@ func Classify(name string, size_bytes int64, min_size_bytes int64) Classified {
 	return Classified{Kind: Video, Type: Movie}
 }
 
+// season_folder_re matches the container folders that name a season: "Season 2",
+// "Season.2", the British "Series 2", and the short "S2" spelling, whether the
+// folder is bare or is prefixed with the show name ("Show Name Season 2",
+// "Show.Name.S02", "Thundercats.Series1"). Group 1 is the season number. The
+// short spelling must start a token so that a show name merely ending in "s"
+// ("Friends 2012") is not mistaken for one.
+var season_folder_re = regexp.MustCompile(`(?i)(?:^|[\s._-])(?:season|series|s)\s*[\s._-]*(\d{1,3})$`)
+
 // series_folder_patterns matches directory names that hold episodes for a show
 // rather than naming the show itself: season folders, specials, extras, and
 // similar containers. A series' identity is the folder above these.
 var series_folder_patterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)^season\s*[\s._-]*\d+$`),
-	regexp.MustCompile(`(?i)^s\d+$`),
+	season_folder_re,
 	regexp.MustCompile(`(?i)^specials?$`),
 	regexp.MustCompile(`(?i)^extras?$`),
 	regexp.MustCompile(`(?i)^bonus(\s*\w*)$`),
@@ -198,10 +298,6 @@ func Skip_series_folder(name string) bool {
 	return false
 }
 
-// season_folder_re matches the container folders that name a season: "Season 2",
-// "Season.2" and the short "S2" spelling.
-var season_folder_re = regexp.MustCompile(`(?i)^(?:season\s*[\s._-]*|s)(\d{1,3})$`)
-
 // Season_of returns the season the container folder of the file at path
 // declares: "Season 3", "S3" and their year-tagged forms ("S03 (2001)") give 3,
 // while specials and extras containers ("Specials", "Extras", "Behind the
@@ -223,13 +319,15 @@ func Season_of(path string) (season int, ok bool) {
 }
 
 // Series_root_of returns the directory that names the series for a file at
-// path, stepping out of season/special/extras folders. When the immediate
-// parent is a plain show folder that folder is returned unchanged; trailing
-// container folders are peeled until the first non-container one. File paths
-// may be absolute or relative to a library root.
+// path, stepping out of every container between the file and the show: season
+// folders ("Season 2", "Show.Name.S02"), specials/extras folders, and folders
+// named after the single episode they hold ("Show.S01E01.Pilot", "Show 1x02 -
+// Daisy's Song"). When the immediate parent is a plain show folder that folder
+// is returned unchanged; container folders are peeled until the first
+// non-container one. File paths may be absolute or relative to a library root.
 func Series_root_of(path string) string {
 	dir := filepath.Dir(path)
-	for Skip_series_folder(filepath.Base(dir)) {
+	for is_series_container(filepath.Base(dir)) {
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			break
@@ -237,6 +335,48 @@ func Series_root_of(path string) string {
 		dir = parent
 	}
 	return dir
+}
+
+// is_series_container reports whether a directory base name is a container
+// inside a show's folder tree rather than the show title itself: a
+// season/specials/extras folder, or a folder named after the episode it holds.
+func is_series_container(name string) bool {
+	if Skip_series_folder(name) {
+		return true
+	}
+	_, ok := parse_episode_folder(name)
+	return ok
+}
+
+// parse_episode_folder returns the episode a directory name declares, either by
+// an explicit season/episode marker ("Show 1x02 - Pilot") or by the bare number
+// some collections give each episode's own folder ("47 Závan minulosti"). A
+// folder carrying a release year is a movie folder, so the bare number is only
+// trusted when no year tag is present.
+func parse_episode_folder(name string) (*Episode_hint, bool) {
+	if hint, ok := parse_episode_base(name); ok {
+		return hint, true
+	}
+	if folder_year_tag_re.MatchString(name) {
+		return nil, false
+	}
+	return parse_numbered_episode_folder(name)
+}
+
+// episode_hint_of_folder returns the episode a file's containing folder names,
+// for a file that has no episode marker of its own but sits in an episode
+// folder ("47 Závan minulosti/želvy ninja 47.avi"). The library root is never
+// treated as an episode folder, and a file carrying a release year is left as a
+// movie.
+func episode_hint_of_folder(path, root string) (*Episode_hint, bool) {
+	dir := filepath.Dir(path)
+	if dir == root {
+		return nil, false
+	}
+	if year_in_name_re.MatchString(filepath.Base(path)) {
+		return nil, false
+	}
+	return parse_episode_folder(filepath.Base(dir))
 }
 
 // Series_folder_name returns the base name of the directory that names the

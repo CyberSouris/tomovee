@@ -99,6 +99,11 @@ func Discover(ctx context.Context, opts Discover_options) ([]Found_file, error) 
 			return nil
 		}
 		classified := Classify(name, info.Size(), opts.Min_size_bytes)
+		if classified.Kind == Video && classified.Type == Movie {
+			if hint, ok := episode_hint_of_folder(path, root); ok {
+				classified = Classified{Kind: Video, Type: Series, Episode: hint}
+			}
+		}
 		if classified.Kind != Video {
 			return nil
 		}

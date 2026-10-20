@@ -60,6 +60,43 @@ func (s *Store) Find_catalog_entry(ctx context.Context, entry Catalog_entry) (in
 	return id, id > 0, nil
 }
 
+// Find_entry_by_external_id returns the id of the catalog entry that already
+// holds the given IMDb or TMDB id, or 0 when none does. exclude skips one entry
+// (typically the one being matched) so a caller can ask "does any *other* entry
+// already own this id?". The unique indexes on both columns mean at most one
+// entry can answer each lookup, and IMDb id wins when both are set.
+func (s *Store) Find_entry_by_external_id(ctx context.Context, imdb_id string, tmdb_id int64, exclude int64) (int64, error) {
+	var id int64
+	err := s.with_tx(ctx, func(tx *sql.Tx) error {
+		if imdb_id != "" {
+			found, ok, err := query_id_tx(ctx, tx,
+				"SELECT id FROM catalog_entry WHERE imdb_id = ? AND id != ? LIMIT 1", imdb_id, exclude)
+			if err != nil {
+				return err
+			}
+			if ok {
+				id = found
+				return nil
+			}
+		}
+		if tmdb_id > 0 {
+			found, ok, err := query_id_tx(ctx, tx,
+				"SELECT id FROM catalog_entry WHERE tmdb_id = ? AND id != ? LIMIT 1", tmdb_id, exclude)
+			if err != nil {
+				return err
+			}
+			if ok {
+				id = found
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 func find_entry_tx(ctx context.Context, tx *sql.Tx, entry Catalog_entry) (int64, error) {
 	if entry.Imdb_id != "" {
 		if id, ok, err := query_id_tx(ctx, tx, "SELECT id FROM catalog_entry WHERE imdb_id = ? LIMIT 1", entry.Imdb_id); err != nil || ok {

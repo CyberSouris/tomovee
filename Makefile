@@ -10,12 +10,25 @@ PKG := ./cmd/tomovee
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo unknown)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build frontend test vet fmt fmt-check clean version run e2e coverage
+.PHONY: all build cross frontend test vet fmt fmt-check clean version run e2e coverage
 
 all: frontend build
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) $(PKG)
+
+# Cross-compiled static binaries for the release architectures. SQLite is
+# pure-Go, so CGO stays off and each binary is fully static. The names mirror
+# the release artifacts: bin/tomovee-linux-<goarch>.
+CROSS_ARCHES := riscv64 arm64
+
+cross:
+	@for arch in $(CROSS_ARCHES); do \
+		echo "building bin/tomovee-linux-$$arch"; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
+			go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o bin/tomovee-linux-$$arch $(PKG) || exit 1; \
+	done
 
 version:
 	@echo $(VERSION)

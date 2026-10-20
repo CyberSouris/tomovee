@@ -249,14 +249,7 @@ func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry
 	if entry.Media_type == "series" {
 		kind = scanner.Series
 	}
-	name, from_folder := lookup_name(entry, version)
-	match := m.matcher.Match(ctx, matcher.Input{
-		Path:        version.File_path,
-		File_name:   name,
-		Folder_name: from_folder,
-		Hash:        version.Hash,
-		Kind:        kind,
-	})
+	match := m.matcher.Match(ctx, match_input(version, kind, lookup_names(entry, version)))
 	m.logger.Debug("matching: entry done",
 		"title", entry.Title, "matched", match.Matched, "source", match.Source)
 
@@ -310,6 +303,51 @@ func lookup_name(entry database.Catalog_entry, version database.Version) (name s
 		return entry.Title, true
 	}
 	return filepath.Base(version.File_path), false
+}
+
+// lookup_names returns every plausible name for an entry, most likely first.
+// A series usually has one name — its show folder — but the folder and the
+// title the catalog recorded for the entry can disagree: a show folder may be
+// an abbreviation of the show the entry is named after, or a re-titled release
+// of it. Either reading may be the real one, so the matcher tries each in turn
+// instead of committing to the folder. A movie, and a series with no show
+// folder, still has a single name.
+func lookup_names(entry database.Catalog_entry, version database.Version) []name_reading {
+	primary, from_folder := lookup_name(entry, version)
+	names := []name_reading{{name: primary, folder: from_folder}}
+	if entry.Media_type != "series" || entry.Title == "" {
+		return names
+	}
+	// The title is a second reading only when it names something the primary
+	// name does not already say.
+	if title := strings.TrimSpace(entry.Title); title != "" && title != primary {
+		names = append(names, name_reading{name: title, folder: true})
+	}
+	return names
+}
+
+// name_reading is one way to name an entry for the matcher: the string, and
+// whether it should be read as a folder name.
+type name_reading struct {
+	name   string
+	folder bool
+}
+
+// match_input builds the matcher input for an entry's file, carrying both of
+// lookup_names' readings so the matcher can try each.
+func match_input(version database.Version, kind scanner.Media_type, names []name_reading) matcher.Input {
+	input := matcher.Input{
+		Path:        version.File_path,
+		File_name:   names[0].name,
+		Folder_name: names[0].folder,
+		Hash:        version.Hash,
+		Kind:        kind,
+	}
+	if len(names) > 1 {
+		input.Alt_file_name = names[1].name
+		input.Alt_folder_name = names[1].folder
+	}
+	return input
 }
 
 // scanned_title_year reconstructs the title and release year a scan would have
@@ -460,14 +498,7 @@ func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied boo
 	if entry.Media_type == "series" {
 		kind = scanner.Series
 	}
-	name, from_folder := lookup_name(*entry, version)
-	result := m.matcher.Match(ctx, matcher.Input{
-		Path:        version.File_path,
-		File_name:   name,
-		Folder_name: from_folder,
-		Hash:        version.Hash,
-		Kind:        kind,
-	})
+	result := m.matcher.Match(ctx, match_input(version, kind, lookup_names(*entry, version)))
 	if result == nil || !result.Matched {
 		if result == nil {
 			return false, nil, nil

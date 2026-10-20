@@ -487,6 +487,97 @@ func Test_series_is_looked_up_by_its_show_name(t *testing.T) {
 	}
 }
 
+func Test_series_falls_back_to_entry_title_when_folder_differs(t *testing.T) {
+	// The offline dataset only knows the show by its full title. The show
+	// folder abbreviates it, so the folder reading misses and the entry-title
+	// reading has to rescue the match.
+	source := new_recording_offline("Show Extended", matcher.Offline_candidate{
+		Imdb_id: "tt1000001", Title: "Show Extended", Year: 1999, Media_type: scanner.Series,
+	})
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "Show Extended",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1,
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	// The folder is an abbreviation of the title the entry records.
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib,
+		File_path: "Show/Season 1/Episode 1.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	applied, _, err := service.Rematch_one(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("rematch: %v", err)
+	}
+	if !applied {
+		t.Fatalf("rematch did not match, queries = %v", source.queries)
+	}
+	entry, err := store.Get_catalog_entry(ctx, entry_id)
+	if err != nil || entry == nil {
+		t.Fatalf("get entry: %v, %v", entry, err)
+	}
+	if entry.Imdb_id != "tt1000001" {
+		t.Errorf("entry = %+v, want tt1000001", entry)
+	}
+	if len(source.queries) != 2 || source.queries[0] != "Show" || source.queries[1] != "Show Extended" {
+		t.Errorf("queries = %v, want [Show \"Show Extended\"]", source.queries)
+	}
+}
+
+func Test_series_folder_reading_wins_when_it_matches(t *testing.T) {
+	// The folder names the show exactly, so the title (a wrong, stale name on
+	// the entry) must never override the folder's confident match.
+	source := new_recording_offline("Show", matcher.Offline_candidate{
+		Imdb_id: "tt1000002", Title: "Show", Year: 2001, Media_type: scanner.Series,
+	})
+	service, store := new_offline_service(t, source)
+	ctx := context.Background()
+	lib := library_id(t, store, "TV", t.TempDir())
+
+	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
+		Media_type: "series", Title: "Stale Other Name",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	episode_id, err := store.Upsert_episode(ctx, database.Episode{
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1,
+	})
+	if err != nil {
+		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Episode_id: episode_id, Library_id: lib,
+		File_path: "Show/Season 1/Episode 1.mkv", Size_bytes: 9000,
+	}); err != nil {
+		t.Fatalf("save version: %v", err)
+	}
+
+	applied, _, err := service.Rematch_one(ctx, entry_id)
+	if err != nil {
+		t.Fatalf("rematch: %v", err)
+	}
+	if !applied {
+		t.Fatalf("rematch did not match, queries = %v", source.queries)
+	}
+	if len(source.queries) != 1 || source.queries[0] != "Show" {
+		t.Errorf("queries = %v, want only the folder reading", source.queries)
+	}
+}
+
 func Test_run_looks_series_up_by_its_show_name(t *testing.T) {
 	source := office_offline()
 	service, store := new_offline_service(t, source)

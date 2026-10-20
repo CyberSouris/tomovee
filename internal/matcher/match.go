@@ -102,8 +102,16 @@ type Input struct {
 	// extension stripping normally applied to media file names, so dotted show
 	// folders ("The.Office") resolve to the right title.
 	Folder_name bool
-	Hash        string
-	Kind        scanner.Media_type
+	// Alt_file_name is a second, equally plausible name for the same file,
+	// tried when File_name does not match confidently. A show folder and the
+	// title the catalog recorded for it can disagree (an abbreviation versus
+	// the full name), and either reading may be the real one. Empty (or
+	// parsing to the same title) disables the second lookup.
+	Alt_file_name string
+	// Alt_folder_name marks Alt_file_name as a folder name, like Folder_name.
+	Alt_folder_name bool
+	Hash            string
+	Kind            scanner.Media_type
 }
 
 // Candidate is one possible match, kept for manual review.
@@ -238,13 +246,14 @@ func (m *Matcher) Has_sources() bool {
 
 // Match identifies a file, always returning a result. A result with
 // Matched == false carries the parsed title/year and any candidates for manual
-// matching.
+// matching. When Input carries an Alt_file_name it is read as a second,
+// equally plausible name for the same file: the hash is tried once, then each
+// reading drives a search of its own, and a confident match under either name
+// wins.
 func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 	sub, meta := m.source()
-	hint := Parse_filename(input.File_name)
-	if input.Folder_name {
-		hint = Parse_foldername(input.File_name)
-	}
+	hints := input_hints(input)
+	hint := hints[0]
 	m.logger.Debug("match: start",
 		"file", input.File_name, "kind", input.Kind,
 		"title", hint.Title, "year", hint.Year,
@@ -267,35 +276,67 @@ func (m *Matcher) Match(ctx context.Context, input Input) *Result {
 		}
 	}
 
-	if meta != nil {
-		search_result := m.match_by_search(ctx, input, hint)
-		search_result.Warnings = append(search_result.Warnings, result.Warnings...)
-		if search_result.Matched {
-			m.logger.Debug("match: search matched", "file", input.File_name,
-				"source", search_result.Source, "title", search_result.Title,
-				"year", search_result.Year, "tmdb_id", search_result.Tmdb_id,
-				"confidence", search_result.Confidence)
-			return search_result
+	// Try each reading of the name in turn. A match under the first name ends
+	// the search; otherwise every reading contributes candidates, so an
+	// ambiguous file still offers the user every plausible title.
+	for _, h := range hints {
+		if meta != nil {
+			search_result := m.match_by_search(ctx, input, h)
+			search_result.Candidates = merge_candidates(result.Candidates, search_result.Candidates)
+			search_result.Warnings = append(search_result.Warnings, result.Warnings...)
+			if search_result.Matched {
+				m.logger.Debug("match: search matched", "file", input.File_name,
+					"source", search_result.Source, "title", search_result.Title,
+					"year", search_result.Year, "tmdb_id", search_result.Tmdb_id,
+					"confidence", search_result.Confidence)
+				return search_result
+			}
+			result = search_result
 		}
-		result = search_result
-	}
-	if ref := m.offline.Load(); ref != nil {
-		m.match_offline(ctx, input, hint, result, ref.src)
+		if ref := m.offline.Load(); ref != nil {
+			m.match_offline(ctx, input, h, result, ref.src)
+			if result.Matched {
+				m.logger.Debug("match: offline matched", "file", input.File_name,
+					"source", result.Source, "title", result.Title,
+					"year", result.Year, "imdb_id", result.Imdb_id,
+					"confidence", result.Confidence)
+				return result
+			}
+		}
 	}
 	if !result.Matched && len(result.Warnings) == 0 && meta == nil && m.offline.Load() == nil {
 		result.Warnings = append(result.Warnings, "no metadata source configured")
 	}
-	if result.Matched {
-		m.logger.Debug("match: offline matched", "file", input.File_name,
-			"source", result.Source, "title", result.Title,
-			"year", result.Year, "imdb_id", result.Imdb_id,
-			"confidence", result.Confidence)
-	} else {
+	if !result.Matched {
 		m.logger.Debug("match: no match",
 			"file", input.File_name, "candidates", len(result.Candidates),
 			"warnings", result.Warnings)
 	}
 	return result
+}
+
+// input_hints parses the one or two names an Input carries into the filename
+// hints the search layers use, in priority order. The alternate name is
+// dropped when it is empty or parses to the same title, so a name with no
+// second reading costs nothing.
+func input_hints(input Input) []Filename_hint {
+	hints := []Filename_hint{parse_input_name(input.File_name, input.Folder_name)}
+	if input.Alt_file_name == "" {
+		return hints
+	}
+	alt := parse_input_name(input.Alt_file_name, input.Alt_folder_name)
+	if alt.Title == "" || alt.Title == hints[0].Title {
+		return hints
+	}
+	return append(hints, alt)
+}
+
+// parse_input_name parses one name of an Input, honouring the folder flag.
+func parse_input_name(name string, folder bool) Filename_hint {
+	if folder {
+		return Parse_foldername(name)
+	}
+	return Parse_filename(name)
 }
 
 func (m *Matcher) match_by_hash(ctx context.Context, input Input, hint Filename_hint) (*Result, error) {

@@ -568,6 +568,182 @@ func Test_match_offline_error_records_warning(t *testing.T) {
 	}
 }
 
+// query_offline answers for each title it was told to recognise, and remembers
+// every query it saw.
+type query_offline struct {
+	answer  map[string]Offline_candidate
+	queries []string
+}
+
+func (f *query_offline) Search(_ context.Context, query string, _ int, _ scanner.Media_type) ([]Offline_candidate, error) {
+	f.queries = append(f.queries, query)
+	hit, ok := f.answer[query]
+	if !ok {
+		return nil, nil
+	}
+	return []Offline_candidate{hit}, nil
+}
+
+func Test_match_tries_alternate_name_when_primary_fails(t *testing.T) {
+	offline := &query_offline{answer: map[string]Offline_candidate{
+		"Show Extended": {Imdb_id: "tt1000001", Title: "Show Extended", Year: 1999, Media_type: scanner.Series},
+	}}
+	m := New(Options{Offline: offline})
+
+	// The folder abbreviates the show ("Show"); the entry title spells it out
+	// ("Show Extended"). Only the spelled-out reading matches.
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true,
+		Alt_file_name: "Show Extended", Alt_folder_name: true,
+		Kind: scanner.Series,
+	})
+	if !result.Matched || result.Imdb_id != "tt1000001" {
+		t.Fatalf("expected the alternate name to match, got %+v (queries %v)", result, offline.queries)
+	}
+	if len(offline.queries) != 2 || offline.queries[0] != "Show" || offline.queries[1] != "Show Extended" {
+		t.Errorf("queries = %v, want [Show \"Show Extended\"]", offline.queries)
+	}
+}
+
+func Test_match_prefers_primary_name_over_alternate(t *testing.T) {
+	// Both readings are plausible and the offline layer answers both; the
+	// primary (folder) reading must win and stop the search.
+	offline := &query_offline{answer: map[string]Offline_candidate{
+		"Show":          {Imdb_id: "tt1000002", Title: "Show", Year: 2001, Media_type: scanner.Series},
+		"Show Extended": {Imdb_id: "tt1000006", Title: "Show Extended", Year: 1999, Media_type: scanner.Series},
+	}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true,
+		Alt_file_name: "Show Extended", Alt_folder_name: true,
+		Kind: scanner.Series,
+	})
+	if !result.Matched || result.Imdb_id != "tt1000002" {
+		t.Fatalf("expected the primary name to match, got %+v (queries %v)", result, offline.queries)
+	}
+	if len(offline.queries) != 1 || offline.queries[0] != "Show" {
+		t.Errorf("queries = %v, want only the primary name", offline.queries)
+	}
+}
+
+func Test_match_alternate_name_merges_candidates(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt1000003", Title: "Totally Unrelated", Year: 1970, Media_type: scanner.Series,
+	}}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true,
+		Alt_file_name: "Show Extended", Alt_folder_name: true,
+		Kind: scanner.Series,
+	})
+	if result.Matched {
+		t.Fatalf("nothing should match: %+v", result)
+	}
+	if offline.calls != 2 {
+		t.Errorf("offline consulted %d times, want once per reading", offline.calls)
+	}
+	// The one weak candidate is shared by both readings; merging must not
+	// duplicate it.
+	if len(result.Candidates) != 1 {
+		t.Errorf("candidates = %d, want the duplicate dropped to 1", len(result.Candidates))
+	}
+}
+
+func Test_match_without_alternate_name_queries_once(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt1000004", Title: "Show", Year: 2001, Media_type: scanner.Series,
+	}}}
+	m := New(Options{Offline: offline})
+
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true, Kind: scanner.Series,
+	})
+	if !result.Matched {
+		t.Fatalf("expected a match: %+v", result)
+	}
+	if offline.calls != 1 {
+		t.Errorf("offline consulted %d times, want 1 without an alternate name", offline.calls)
+	}
+}
+
+func Test_match_same_alternate_name_is_ignored(t *testing.T) {
+	offline := &fake_offline{candidates: []Offline_candidate{{
+		Imdb_id: "tt1000005", Title: "Show", Year: 2001, Media_type: scanner.Series,
+	}}}
+	m := New(Options{Offline: offline})
+
+	// An alternate that parses to the primary's title is not a second reading.
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true,
+		Alt_file_name: "Show", Alt_folder_name: true,
+		Kind: scanner.Series,
+	})
+	if !result.Matched {
+		t.Fatalf("expected a match: %+v", result)
+	}
+	if offline.calls != 1 {
+		t.Errorf("offline consulted %d times, want 1 for identical names", offline.calls)
+	}
+}
+
+// query_metadata records the titles searched and answers only for the ones it
+// was told to recognise, so a test can prove which readings were queried.
+type query_metadata struct {
+	tv      map[string]tmdb.Tv_search_result
+	queries []string
+}
+
+func (f *query_metadata) Search_movie(_ context.Context, _ string, _ int) ([]tmdb.Movie_search_result, error) {
+	return nil, nil
+}
+
+func (f *query_metadata) Search_tv(_ context.Context, query string, _ int) ([]tmdb.Tv_search_result, error) {
+	f.queries = append(f.queries, query)
+	if hit, ok := f.tv[query]; ok {
+		return []tmdb.Tv_search_result{hit}, nil
+	}
+	return nil, nil
+}
+
+func (f *query_metadata) Movie_details(context.Context, int) (*tmdb.Movie_details, error) {
+	return nil, nil
+}
+
+func (f *query_metadata) Tv_details(_ context.Context, id int) (*tmdb.Tv_details, error) {
+	return &tmdb.Tv_details{Id: id, Name: "Show Extended", First_air_date: "1999-09-01"}, nil
+}
+
+func (f *query_metadata) Find_by_imdb(context.Context, string) (*tmdb.Find_result, error) {
+	return &tmdb.Find_result{}, nil
+}
+
+func Test_match_tries_alternate_name_in_tmdb_search(t *testing.T) {
+	meta := &query_metadata{tv: map[string]tmdb.Tv_search_result{
+		"Show Extended": {Id: 4242, Name: "Show Extended", First_air_date: "1999-09-01"},
+	}}
+	m := New(Options{Metadata: meta})
+
+	result := m.Match(context.Background(), Input{
+		Path:      "/tv/Show/Season 1/Episode 1.mkv",
+		File_name: "Show", Folder_name: true,
+		Alt_file_name: "Show Extended", Alt_folder_name: true,
+		Kind: scanner.Series,
+	})
+	if !result.Matched || result.Source != "tmdb" || result.Tmdb_id != 4242 {
+		t.Fatalf("expected the alternate name to match via tmdb, got %+v (queries %v)", result, meta.queries)
+	}
+	if len(meta.queries) != 2 || meta.queries[0] != "Show" || meta.queries[1] != "Show Extended" {
+		t.Errorf("tmdb queries = %v, want [Show \"Show Extended\"]", meta.queries)
+	}
+}
+
 // offline_lookup is a scripted Offline_resolver for the manual-match fallback.
 type offline_lookup struct {
 	fake_offline

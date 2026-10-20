@@ -69,7 +69,7 @@ func stream_fixture(t *testing.T) (*Server, int64) {
 	}
 	entry_id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
-		Imdb_id: "tt0133093", Status: "matched",
+		Imdb_id: "tt0133093",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
@@ -146,7 +146,7 @@ func Test_version_file_unknown_or_missing(t *testing.T) {
 		t.Fatalf("register library: %v", err)
 	}
 	entry_id, _ := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "movie", Title: "Gone", Status: "matched",
+		Media_type: "movie", Title: "Gone",
 	})
 	libraries, _ := store.List_libraries(context.Background())
 	if len(libraries) == 0 {
@@ -176,7 +176,7 @@ func Test_version_file_confined_to_library_root(t *testing.T) {
 		t.Fatalf("list libraries: %v (%d)", err, len(libraries))
 	}
 	entry_id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "movie", Title: "Sneaky", Status: "matched",
+		Media_type: "movie", Title: "Sneaky",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
@@ -226,7 +226,7 @@ func stream_version_server(t *testing.T, media_file, transcode, video_codec stri
 		t.Fatalf("list libraries: %v (%d)", err, len(libraries))
 	}
 	entry_id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "movie", Title: "Remuxed", Status: "matched",
+		Media_type: "movie", Title: "Remuxed",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)

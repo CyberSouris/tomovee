@@ -269,6 +269,15 @@ func (m *Matching) match_entry(ctx context.Context, entry database.Catalog_entry
 	if err := m.store.Update_catalog_entry(ctx, entry.Id, updated); err != nil {
 		return false, err
 	}
+	// A title is matched exactly when one of its files is, so the accepted match
+	// is written onto the files this entry owns.
+	if err := m.store.Set_entry_files_status(ctx, entry.Id, "matched"); err != nil {
+		return false, err
+	}
+	// A decided title no longer offers a picker, so drop any stored shortlist.
+	if err := m.store.Clear_candidates(ctx, entry.Id); err != nil {
+		return false, err
+	}
 	if entry.Media_type == "series" {
 		if err := m.enrich_series(ctx, entry.Id, match); err != nil {
 			m.logger.Warn("matching: episode enrichment failed", "title", entry.Title, "error", err)
@@ -380,6 +389,15 @@ func (m *Matching) enrich_series(ctx context.Context, entry_id int64, match *mat
 	if err := m.store.Upsert_series_metadata(ctx, meta); err != nil {
 		return err
 	}
+	// Enriching a series means the show is matched; that state lives on its
+	// files, so record it here too. A decided title no longer offers a picker,
+	// so its pending shortlist is dropped.
+	if err := m.store.Set_entry_files_status(ctx, entry_id, "matched"); err != nil {
+		return err
+	}
+	if err := m.store.Clear_candidates(ctx, entry_id); err != nil {
+		return err
+	}
 
 	episodes, err := m.store.List_episodes(ctx, entry_id)
 	if err != nil {
@@ -399,12 +417,8 @@ func (m *Matching) enrich_series(ctx context.Context, entry_id int64, match *mat
 	}
 
 	for _, episode := range episodes {
-		episode.Status = "matched"
 		if et, ok := episode_titles[[2]int{episode.Season_number, episode.Episode_number}]; ok {
 			episode.Title = et.Primary_title
-			if et.Start_year > 0 {
-				episode.Airdate = fmt.Sprintf("%04d", et.Start_year)
-			}
 		}
 		if _, err := m.store.Upsert_episode(ctx, episode); err != nil {
 			return err
@@ -463,6 +477,15 @@ func (m *Matching) Rematch_one(ctx context.Context, entry_id int64) (applied boo
 	updated := scan.Catalog_entry_from_match(result)
 	updated.Id = entry.Id
 	if err := m.store.Update_catalog_entry(ctx, entry.Id, updated); err != nil {
+		return false, nil, err
+	}
+	// The accepted match lives on the files: a title is matched when one of its
+	// files is.
+	if err := m.store.Set_entry_files_status(ctx, entry.Id, "matched"); err != nil {
+		return false, nil, err
+	}
+	// The title is decided, so its pending shortlist is cleared.
+	if err := m.store.Clear_candidates(ctx, entry.Id); err != nil {
 		return false, nil, err
 	}
 	if entry.Media_type == "series" {
@@ -634,7 +657,7 @@ func (m *Matching) collect_folder_owners(ctx context.Context, roots []string, ro
 			owners[version.Entry_id] = b
 		}
 		b.versions = append(b.versions, version)
-		if version.Entry_media_type == "series" {
+		if version.Entry_media_type == database.Media_type_series {
 			b.series = true
 		}
 	}
@@ -747,8 +770,6 @@ func (m *Matching) fold_series_version(ctx context.Context, target_id int64, ver
 			Catalog_entry_id: target_id,
 			Season_number:    hint.Season,
 			Episode_number:   hint.Episode,
-			Is_special:       hint.Season == 0,
-			Status:           "needs_lookup",
 		})
 		if err != nil {
 			return false, err
@@ -807,8 +828,6 @@ func (m *Matching) number_series_versions(ctx context.Context, entry_id int64, v
 				Catalog_entry_id: entry_id,
 				Season_number:    season,
 				Episode_number:   next[season],
-				Is_special:       season == 0,
-				Status:           "needs_lookup",
 			})
 			if err != nil {
 				return err
@@ -921,7 +940,6 @@ func (m *Matching) Split_version_to_movie(ctx context.Context, version_id int64)
 		Media_type:   "movie",
 		Title:        title,
 		Release_year: hint.Year,
-		Status:       "needs_lookup",
 	})
 	if err != nil {
 		return 0, err
@@ -970,8 +988,6 @@ func (m *Matching) Assign_version_to_episode(ctx context.Context, version_id int
 		Catalog_entry_id: owner_id,
 		Season_number:    season,
 		Episode_number:   episode,
-		Is_special:       season == 0,
-		Status:           "needs_lookup",
 	})
 	if err != nil {
 		return 0, err

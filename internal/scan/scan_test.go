@@ -146,13 +146,20 @@ func Test_run_keeps_matched_entries_untouched(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	matched_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Original_title: "The Matrix",
+		Media_type: "movie", Title: "The Matrix",
 		Release_year: 1999, Imdb_id: "tt0133093", Tmdb_id: 603,
-		Overview: "A hacker learns the truth.", Rating: 8.2,
-		Status: "matched", Genres: []string{"Action"},
+		Genres: []string{"Action"},
 	})
 	if err != nil {
 		t.Fatalf("upsert matched entry: %v", err)
+	}
+	// A title is matched once it owns a matched file; before the scan its file
+	// is a placeholder in another library, so the new file joins the same entry.
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: matched_id, File_path: "existing.mkv", Size_bytes: 1,
+		Status: "matched",
+	}); err != nil {
+		t.Fatalf("save matched file: %v", err)
 	}
 
 	s := new_test_scanner(t, store, dir)
@@ -164,11 +171,11 @@ func Test_run_keeps_matched_entries_untouched(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" || entry.Overview != "A hacker learns the truth." {
+	if !entry.Matched || entry.Imdb_id != "tt0133093" {
 		t.Fatalf("matched entry was degraded: %+v", entry)
 	}
 	versions, _ := store.List_versions_for_entry(ctx, matched_id)
-	if len(versions) != 1 {
+	if len(versions) != 2 {
 		t.Fatalf("versions = %d, want the new file attached", len(versions))
 	}
 }
@@ -231,6 +238,8 @@ func Test_run_records_per_file_failures_and_keeps_going(t *testing.T) {
 	}
 }
 
+// A file that vanishes from disk loses its row, and a title left with no files
+// is pruned rather than kept as a stale "missing" entry.
 func Test_run_marks_missing(t *testing.T) {
 	dir := t.TempDir()
 	path := write_file(t, dir, "Old.Movie.2001.mkv", 1000)
@@ -251,9 +260,9 @@ func Test_run_marks_missing(t *testing.T) {
 	if result.Missing != 1 {
 		t.Fatalf("missing = %d, want 1", result.Missing)
 	}
-	missing, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{Status: "missing"})
-	if len(missing) != 1 {
-		t.Fatalf("missing entries = %+v", missing)
+	entries, _ := store.List_catalog_entries(context.Background(), database.Catalog_filter{})
+	if len(entries) != 0 {
+		t.Fatalf("entries = %+v, want the orphaned entry pruned", entries)
 	}
 }
 
@@ -325,7 +334,7 @@ func Test_force_libraries_rebuilds_catalog(t *testing.T) {
 		t.Fatalf("entries = %+v, want 1", entries)
 	}
 	stale_id := entries[0].Id
-	if err := store.Set_catalog_status(ctx, stale_id, "matched"); err != nil {
+	if err := store.Set_entry_files_status(ctx, stale_id, "matched"); err != nil {
 		t.Fatalf("mark matched: %v", err)
 	}
 
@@ -335,7 +344,7 @@ func Test_force_libraries_rebuilds_catalog(t *testing.T) {
 	} else if result.Skipped != 1 || result.New != 0 {
 		t.Fatalf("plain rescan = %+v, want 1 skipped and 0 new", result)
 	}
-	if entry, _ := store.Get_catalog_entry(ctx, stale_id); entry == nil || entry.Status != "matched" {
+	if entry, _ := store.Get_catalog_entry(ctx, stale_id); entry == nil || !entry.Matched {
 		t.Fatalf("plain rescan dropped the match: %+v", entry)
 	}
 
@@ -354,7 +363,7 @@ func Test_force_libraries_rebuilds_catalog(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries after force = %+v, want 1 rebuilt", entries)
 	}
-	if entries[0].Id == stale_id || entries[0].Status != "needs_lookup" {
+	if entries[0].Id == stale_id || entries[0].Matched {
 		t.Fatalf("entry not rebuilt from scratch: %+v", entries[0])
 	}
 	if versions, _ := store.List_versions_for_entry(ctx, entries[0].Id); len(versions) != 1 {
@@ -373,7 +382,7 @@ func Test_run_normalizes_legacy_absolute_version(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	entry, _ := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "Old Movie", Status: "needs_lookup",
+		Media_type: "movie", Title: "Old Movie",
 	})
 	// A pre-library row: absolute path, no library.
 	if _, err := store.Save_version(ctx, database.Version{
@@ -449,19 +458,19 @@ func Test_run_series_episodes(t *testing.T) {
 	if len(entries) != 1 || entries[0].Title != "Breaking Bad" {
 		t.Fatalf("entries = %+v", entries)
 	}
-	if entries[0].Status != "needs_lookup" {
-		t.Fatalf("entry status = %q, want needs_lookup", entries[0].Status)
+	if entries[0].Matched {
+		t.Fatalf("entry matched = true, want an unmatched series")
 	}
 	episodes, _ := store.List_episodes(context.Background(), entries[0].Id)
 	if len(episodes) != 2 || episodes[0].Episode_number != 1 || episodes[1].Episode_number != 2 {
 		t.Fatalf("episodes = %+v", episodes)
 	}
-	if episodes[0].Status != "needs_lookup" {
-		t.Fatalf("episode status = %q, want needs_lookup", episodes[0].Status)
-	}
 	versions, _ := store.List_versions_for_episode(context.Background(), episodes[0].Id)
 	if len(versions) != 1 {
 		t.Fatalf("versions = %+v", versions)
+	}
+	if versions[0].Status != "needs_lookup" {
+		t.Fatalf("file status = %q, want needs_lookup", versions[0].Status)
 	}
 }
 
@@ -760,7 +769,7 @@ func Test_ensure_frame_poster_prefers_existing_art_and_never_fails_the_scan(t *t
 	new_entry := func(title, poster string) int64 {
 		t.Helper()
 		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-			Media_type: "movie", Title: title, Poster_path: poster, Status: "needs_lookup",
+			Media_type: "movie", Title: title, Poster_path: poster,
 		})
 		if err != nil {
 			t.Fatalf("upsert %s: %v", title, err)

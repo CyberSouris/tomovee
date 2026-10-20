@@ -142,7 +142,6 @@
         <option value="">Any status</option>
         <option value="matched">Matched</option>
         <option value="needs_lookup">Needs lookup</option>
-        <option value="missing">Missing</option>
       </select>
     </label>
     <label class="toolbar-field">
@@ -151,7 +150,6 @@
         <option value="added">Recently added</option>
         <option value="title">Title</option>
         <option value="year">Year</option>
-        <option value="rating">Rating</option>
       </select>
     </label>
     <button type="button" class="chip" class:active-chip={status === 'needs_lookup'} on:click={toggle_unmatched}>

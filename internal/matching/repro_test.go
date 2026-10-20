@@ -18,13 +18,13 @@ func Test_repro_two_entries_same_show_do_not_collide(t *testing.T) {
 	// sit under one show folder, so lookup_name resolves them to the same show.
 	for i, title := range []string{"Breaking Badx", "Breaking Bady"} {
 		entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-			Media_type: "series", Title: title, Status: "needs_lookup",
+			Media_type: "series", Title: title,
 		})
 		if err != nil {
 			t.Fatalf("upsert entry: %v", err)
 		}
 		ep_id, err := store.Upsert_episode(ctx, database.Episode{
-			Catalog_entry_id: entry_id, Season_number: 2, Episode_number: 7 + i, Status: "needs_lookup",
+			Catalog_entry_id: entry_id, Season_number: 2, Episode_number: 7 + i,
 		})
 		if err != nil {
 			t.Fatalf("upsert episode: %v", err)
@@ -46,8 +46,11 @@ func Test_repro_two_entries_same_show_do_not_collide(t *testing.T) {
 	for _, e := range result.Errors {
 		t.Logf("error: %s", e)
 	}
+	if len(result.Errors) > 0 {
+		t.Fatalf("matching collided on the shared show: %v", result.Errors)
+	}
 	entries, _ := store.List_catalog_entries(ctx, database.Catalog_filter{})
 	for _, e := range entries {
-		t.Logf("entry %d: title=%q imdb=%q tmdb=%d status=%q type=%q", e.Id, e.Title, e.Imdb_id, e.Tmdb_id, e.Status, e.Media_type)
+		t.Logf("entry %d: title=%q imdb=%q tmdb=%d matched=%v type=%q", e.Id, e.Title, e.Imdb_id, e.Tmdb_id, e.Matched, e.Media_type)
 	}
 }

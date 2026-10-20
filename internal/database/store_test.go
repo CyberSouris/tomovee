@@ -17,13 +17,26 @@ func new_test_store(t *testing.T) *Store {
 	return New_store(d)
 }
 
+// save_file writes a media file for an entry with a status, so tests that care
+// about a title's match state can drive it through the files that own it.
+func save_file(t *testing.T, store *Store, ctx context.Context, entry int64, path, status string) int64 {
+	t.Helper()
+	id, err := store.Save_version(ctx, Version{
+		Catalog_entry_id: entry, File_path: path, Size_bytes: 1, Status: status,
+	})
+	if err != nil {
+		t.Fatalf("save file %s: %v", path, err)
+	}
+	return id
+}
+
 func Test_upsert_catalog_entry_groups_by_imdb_id(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
 	first, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
-		Imdb_id: "tt0133093", Tmdb_id: 603, Status: "matched",
+		Imdb_id: "tt0133093", Tmdb_id: 603,
 		Genres: []string{"Action", "Science Fiction"},
 	})
 	if err != nil {
@@ -31,7 +44,7 @@ func Test_upsert_catalog_entry_groups_by_imdb_id(t *testing.T) {
 	}
 	second, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
-		Imdb_id: "tt0133093", Tmdb_id: 603, Status: "matched", Overview: "updated",
+		Imdb_id: "tt0133093", Tmdb_id: 603,
 	})
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
@@ -44,9 +57,6 @@ func Test_upsert_catalog_entry_groups_by_imdb_id(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if entry.Overview != "updated" {
-		t.Errorf("overview = %q, want updated", entry.Overview)
-	}
 	if !reflect.DeepEqual(entry.Genres, []string{"Action", "Science Fiction"}) {
 		t.Errorf("genres = %v", entry.Genres)
 	}
@@ -57,14 +67,14 @@ func Test_upsert_preserves_poster_when_empty(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+		Media_type: "movie", Title: "Mystery",
 		Poster_path: "local://frame.jpg",
 	})
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+		Media_type: "movie", Title: "Mystery",
 	}); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -83,16 +93,16 @@ func Test_upsert_catalog_entry_groups_by_title_year_without_ids(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Some Indie", Status: "needs_lookup",
+		Media_type: "movie", Title: "Some Indie",
 	})
 	second, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Some Indie", Status: "needs_lookup",
+		Media_type: "movie", Title: "Some Indie",
 	})
 	if first != second {
 		t.Fatalf("unmatched entries did not group: %d vs %d", first, second)
 	}
 	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Some Indie", Status: "needs_lookup",
+		Media_type: "series", Title: "Some Indie",
 	})
 	if series == first {
 		t.Error("movie and series should not share an entry")
@@ -103,18 +113,18 @@ func Test_upsert_episode(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Imdb_id: "tt0903747", Status: "matched",
+		Media_type: "series", Title: "Breaking Bad", Imdb_id: "tt0903747",
 	})
 
 	first, err := store.Upsert_episode(ctx, Episode{
-		Catalog_entry_id: entry, Season_number: 1, Episode_number: 1, Status: "matched",
+		Catalog_entry_id: entry, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("first episode: %v", err)
 	}
 	second, err := store.Upsert_episode(ctx, Episode{
 		Catalog_entry_id: entry, Season_number: 1, Episode_number: 1,
-		Title: "Pilot", Status: "matched",
+		Title: "Pilot",
 	})
 	if err != nil {
 		t.Fatalf("second episode: %v", err)
@@ -131,43 +141,47 @@ func Test_upsert_episode(t *testing.T) {
 	}
 }
 
-// An episode's status is what keeps it on the unmatched list, so setting it has
-// to be readable back through the same query the list uses.
-func Test_set_episode_status(t *testing.T) {
+// A file's status is the single place a title's match state lives, so it has to
+// be readable back through the queries the catalog list uses.
+func Test_file_status_drives_entry_status(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	entry, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Imdb_id: "tt0903747", Status: "matched",
+		Media_type: "movie", Title: "The Matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
 	}
-	id, err := store.Upsert_episode(ctx, Episode{
-		Catalog_entry_id: entry, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
-	})
-	if err != nil {
-		t.Fatalf("upsert episode: %v", err)
+	file_id := save_file(t, store, ctx, entry, "matrix.mkv", "needs_lookup")
+
+	entry_row, err := store.Get_catalog_entry(ctx, entry)
+	if err != nil || entry_row == nil {
+		t.Fatalf("get entry: %+v, %v", entry_row, err)
 	}
-	if err := store.Set_episode_status(ctx, id, "matched"); err != nil {
-		t.Fatalf("set status: %v", err)
+	if entry_row.Matched {
+		t.Errorf("entry matched with only a needs_lookup file: %+v", entry_row)
 	}
-	episode, err := store.Get_episode(ctx, id)
-	if err != nil || episode == nil {
-		t.Fatalf("get episode: %+v, %v", episode, err)
+
+	if err := store.Set_entry_files_status(ctx, entry, "matched"); err != nil {
+		t.Fatalf("set files status: %v", err)
 	}
-	if episode.Status != "matched" {
-		t.Errorf("status = %q, want matched", episode.Status)
+	entry_row, _ = store.Get_catalog_entry(ctx, entry)
+	if !entry_row.Matched {
+		t.Errorf("entry not matched after its file was: %+v", entry_row)
 	}
-	// An unknown episode is not an error: there is simply nothing to update.
-	if err := store.Set_episode_status(ctx, 9999, "matched"); err != nil {
-		t.Errorf("unknown episode = %v, want no error", err)
+	file, err := store.Get_version(ctx, file_id)
+	if err != nil || file == nil {
+		t.Fatalf("get file: %+v, %v", file, err)
+	}
+	if file.Status != "matched" {
+		t.Errorf("file status = %q, want matched", file.Status)
 	}
 }
 
 func Test_save_version_replaces_tracks(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
-	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M", Status: "matched"})
+	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M"})
 	if err := store.Upsert_library(ctx, "Media", "/media", true); err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -178,7 +192,7 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 
 	version_id, err := store.Save_version(ctx, Version{
 		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "m.mkv", Size_bytes: 100,
-		Mtime: "2026-01-01T00:00:00Z", Resolution_label: "1080p",
+		Mtime: "2026-01-01T00:00:00Z", Resolution_height: 1080,
 		Audio:     []Audio_track{{Language: "eng", Codec: "aac", Channels: 2}},
 		Subtitles: []Subtitle_track{{Language: "eng", Format: "subrip"}},
 	})
@@ -187,7 +201,7 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 	}
 	if _, err := store.Save_version(ctx, Version{
 		Catalog_entry_id: entry, Library_id: libraries[0].Id, File_path: "m.mkv", Size_bytes: 100,
-		Mtime: "2026-01-01T00:00:00Z", Resolution_label: "4K",
+		Mtime: "2026-01-01T00:00:00Z", Resolution_height: 2160,
 		Audio: []Audio_track{{Language: "fre", Codec: "dts", Channels: 6}},
 	}); err != nil {
 		t.Fatalf("resave: %v", err)
@@ -201,7 +215,7 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 		t.Errorf("version id changed on resave: %d vs %d", ref.Id, version_id)
 	}
 	versions, _ := store.List_versions_for_entry(ctx, entry)
-	if len(versions) != 1 || versions[0].Resolution_label != "4K" {
+	if len(versions) != 1 || versions[0].Resolution_label != "4Kp" {
 		t.Fatalf("versions = %+v", versions)
 	}
 	audio, subtitles, err := store.Version_tracks(ctx, version_id)
@@ -216,35 +230,63 @@ func Test_save_version_replaces_tracks(t *testing.T) {
 	}
 }
 
+// resolution_height maps to a stored label derived on read, so the heights the
+// scanner records still translate to the labels the UI filters on.
+func Test_version_resolution_label_derived(t *testing.T) {
+	cases := []struct {
+		height int
+		want   string
+	}{
+		{4320, "8Kp"}, {2160, "4Kp"}, {1440, "2Kp"}, {1080, "1080p"},
+		{720, "720p"}, {576, "576p"}, {480, "480p"}, {240, "SDp"}, {0, ""},
+	}
+	for _, c := range cases {
+		if got := resolution_label(c.height); got != c.want {
+			t.Errorf("resolution_label(%d) = %q, want %q", c.height, got, c.want)
+		}
+	}
+}
+
 func Test_list_catalog_entries_filters(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
 	matrix, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "matched",
-		Rating: 8.2, Genres: []string{"Action"},
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
+		Genres: []string{"Action"},
 	})
+	// The Matrix and Breaking Bad are matched (they own a matched file);
+	// Mystery Film is not.
+	save_file(t, store, ctx, matrix, "/m/matrix.mkv", "matched")
 	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Release_year: 2008, Status: "matched",
+		Media_type: "series", Title: "Breaking Bad", Release_year: 2008,
 		Genres: []string{"Drama"},
 	}); err != nil {
 		t.Fatalf("upsert series: %v", err)
 	}
+	bad, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "series", Title: "Breaking Bad", Release_year: 2008,
+	})
+	save_file(t, store, ctx, bad, "bb.s01e01.mkv", "matched")
 	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Mystery Film", Release_year: 2020, Status: "needs_lookup",
+		Media_type: "movie", Title: "Mystery Film", Release_year: 2020,
 	}); err != nil {
 		t.Fatalf("upsert mystery film: %v", err)
 	}
-	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: matrix, File_path: "/m/matrix.mkv", Resolution_label: "1080p",
-		Audio: []Audio_track{{Language: "eng"}}}); err != nil {
+	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: matrix, File_path: "/m/matrix-4k.mkv", Resolution_height: 1080,
+		Status: "matched", Audio: []Audio_track{{Language: "eng"}}}); err != nil {
 		t.Fatalf("save version: %v", err)
 	}
 
 	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Media_type: "movie"}); len(got) != 2 {
 		t.Errorf("movie filter = %d, want 2", len(got))
 	}
-	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Status: "needs_lookup"}); len(got) != 1 {
-		t.Errorf("status filter = %d, want 1", len(got))
+	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Status: "matched"}); len(got) != 2 {
+		t.Errorf("status filter = %d, want 2", len(got))
+	}
+	unmatched, _ := store.List_catalog_entries(ctx, Catalog_filter{Status: "needs_lookup"})
+	if len(unmatched) != 1 || unmatched[0].Title != "Mystery Film" {
+		t.Errorf("needs_lookup filter = %+v, want Mystery Film", unmatched)
 	}
 	if got, _ := store.List_catalog_entries(ctx, Catalog_filter{Search: "matrix"}); len(got) != 1 {
 		t.Errorf("search filter = %d, want 1", len(got))
@@ -285,10 +327,10 @@ func Test_list_catalog_entries_filtered_by_library(t *testing.T) {
 	}
 
 	movie, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Status: "needs_lookup",
+		Media_type: "movie", Title: "The Matrix",
 	})
 	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Status: "needs_lookup",
+		Media_type: "series", Title: "Breaking Bad",
 	})
 	if _, err := store.Save_version(ctx, Version{Catalog_entry_id: movie, Library_id: lib_id("Movies"), File_path: "matrix.mkv"}); err != nil {
 		t.Fatalf("save movie version: %v", err)
@@ -311,11 +353,11 @@ func Test_list_catalog_entries_filtered_by_library(t *testing.T) {
 
 // seed_clause_catalog fills a fresh store with the fixture the catalog WHERE
 // clause tests query against: two libraries and three entries, each with a
-// single version. The Matrix is a matched 1999 Action/Sci-Fi movie with a
-// poster in Movies at 1080p with an eng track; Blade Runner is a matched 1982
-// Drama/Sci-Fi movie without a poster in Movies at 4K with a fre track;
-// Breaking Bad is an unmatched 2008 Crime/Drama series with a poster in Shows
-// at 1080p with an eng track.
+// single file. The Matrix is a matched 1999 Action/Sci-Fi movie with a poster in
+// Movies at 1080p with an eng track; Blade Runner is a matched 1982 Drama/Sci-Fi
+// movie without a poster in Movies at 4K with a fre track; Breaking Bad is an
+// unmatched 2008 Crime/Drama series with a poster in Shows at 1080p with an eng
+// track. A title is matched when one of its files is.
 func seed_clause_catalog(t *testing.T) *Store {
 	t.Helper()
 	store := new_test_store(t)
@@ -342,47 +384,52 @@ func seed_clause_catalog(t *testing.T) *Store {
 
 	matrix, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
-		Status: "matched", Poster_path: "/p/matrix.jpg",
-		Genres: []string{"Action", "Sci-Fi"},
+		Poster_path: "/p/matrix.jpg",
+		Genres:      []string{"Action", "Sci-Fi"},
 	})
 	if err != nil {
 		t.Fatalf("upsert matrix: %v", err)
 	}
 	runner, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "movie", Title: "Blade Runner", Release_year: 1982,
-		Status: "matched", Genres: []string{"Drama", "Sci-Fi"},
+		Genres: []string{"Drama", "Sci-Fi"},
 	})
 	if err != nil {
 		t.Fatalf("upsert runner: %v", err)
 	}
 	bad, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
 		Media_type: "series", Title: "Breaking Bad", Release_year: 2008,
-		Status: "needs_lookup", Poster_path: "/p/bb.jpg",
-		Genres: []string{"Crime", "Drama"},
+		Poster_path: "/p/bb.jpg",
+		Genres:      []string{"Crime", "Drama"},
 	})
 	if err != nil {
 		t.Fatalf("upsert breaking bad: %v", err)
 	}
 
-	versions := []struct {
-		entry      int64
-		library    string
-		file       string
-		resolution string
-		language   string
+	files := []struct {
+		entry    int64
+		library  string
+		file     string
+		height   int
+		language string
+		matched  bool
 	}{
-		{matrix, "Movies", "matrix.mkv", "1080p", "eng"},
-		{runner, "Movies", "blade-runner.mkv", "4K", "fre"},
-		{bad, "Shows", "bb.s01e01.mkv", "1080p", "eng"},
+		{matrix, "Movies", "matrix.mkv", 1080, "eng", true},
+		{runner, "Movies", "blade-runner.mkv", 2160, "fre", true},
+		{bad, "Shows", "bb.s01e01.mkv", 1080, "eng", false},
 	}
-	for _, version := range versions {
+	for _, file := range files {
+		status := "needs_lookup"
+		if file.matched {
+			status = "matched"
+		}
 		if _, err := store.Save_version(ctx, Version{
-			Catalog_entry_id: version.entry, Library_id: lib_id(version.library),
-			File_path: version.file, Size_bytes: 1, Mtime: "2026-01-01T00:00:00Z",
-			Resolution_label: version.resolution,
-			Audio:            []Audio_track{{Language: version.language}},
+			Catalog_entry_id: file.entry, Library_id: lib_id(file.library),
+			File_path: file.file, Size_bytes: 1, Mtime: "2026-01-01T00:00:00Z",
+			Resolution_height: file.height, Status: status,
+			Audio: []Audio_track{{Language: file.language}},
 		}); err != nil {
-			t.Fatalf("save version %s: %v", version.file, err)
+			t.Fatalf("save version %s: %v", file.file, err)
 		}
 	}
 	return store
@@ -404,8 +451,9 @@ func list_titles(t *testing.T, store *Store, ctx context.Context, filter Catalog
 	return titles
 }
 
-// The plural status filter binds one IN-list placeholder per value, so it has
-// to accept any list length and match every status it names.
+// The plural status filter mirrors the single status filter: it derives matched
+// state from the files, so a list of both known statuses narrows to nothing and
+// a single one selects that half.
 func Test_list_catalog_entries_statuses_filter(t *testing.T) {
 	store := seed_clause_catalog(t)
 	ctx := context.Background()
@@ -428,8 +476,8 @@ func Test_list_catalog_entries_statuses_filter(t *testing.T) {
 		t.Errorf("statuses [needs_lookup] = %v, want Breaking Bad", got)
 	}
 	if got := list_titles(t, store, ctx,
-		Catalog_filter{Statuses: []string{"nope"}}); len(got) != 0 {
-		t.Errorf("unknown status = %v, want nothing", got)
+		Catalog_filter{Statuses: []string{"nope"}}); len(got) != 3 {
+		t.Errorf("unknown status = %v, want all 3 entries (no known status named)", got)
 	}
 	// An empty status list must not filter at all: the clause builder guards
 	// zero-length lists before it ever reaches the placeholder join.
@@ -530,24 +578,23 @@ func Test_genre_counts(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
-	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Status: "matched",
+	matrix, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "The Matrix",
 		Genres: []string{"Action"},
-	}); err != nil {
-		t.Fatalf("upsert matrix: %v", err)
-	}
-	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Alien", Status: "matched",
+	})
+	alien, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
+		Media_type: "movie", Title: "Alien",
 		Genres: []string{"Action", "Science Fiction"},
-	}); err != nil {
-		t.Fatalf("upsert alien: %v", err)
-	}
+	})
 	if _, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Unmatched Drama", Status: "needs_lookup",
+		Media_type: "movie", Title: "Unmatched Drama",
 		Genres: []string{"Drama"},
 	}); err != nil {
 		t.Fatalf("upsert unmatched drama: %v", err)
 	}
+	// The Matrix and Alien are matched; Unmatched Drama has no file.
+	save_file(t, store, ctx, matrix, "matrix.mkv", "matched")
+	save_file(t, store, ctx, alien, "alien.mkv", "matched")
 
 	matched, err := store.Genre_counts(ctx, "matched")
 	if err != nil {
@@ -672,7 +719,7 @@ func Test_normalize_library_versions(t *testing.T) {
 	libraries, _ := store.List_libraries(ctx)
 	lib := libraries[0]
 
-	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M", Status: "matched"})
+	entry, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "M"})
 	if _, err := store.Save_version(ctx, Version{
 		Catalog_entry_id: entry, File_path: "/media/sub/movie.mkv", Size_bytes: 100,
 	}); err != nil {
@@ -715,7 +762,7 @@ func Test_candidates_roundtrip_and_batch(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Ambiguous Title", Status: "needs_lookup",
+		Media_type: "movie", Title: "Ambiguous Title",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -762,12 +809,16 @@ func Test_candidates_roundtrip_and_batch(t *testing.T) {
 	}
 }
 
-func Test_update_catalog_entry_to_matched_clears_candidates(t *testing.T) {
+// Updating an entry's stored metadata must not touch its pending shortlist: a
+// poster-only refresh goes through Update_catalog_entry and has to leave a
+// still-ambiguous title's picker intact. Clearing is a separate, explicit act
+// performed only by the paths that record a match decision.
+func Test_update_catalog_entry_preserves_candidates(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 
 	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Ambiguous", Status: "needs_lookup",
+		Media_type: "movie", Title: "Ambiguous",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -777,7 +828,7 @@ func Test_update_catalog_entry_to_matched_clears_candidates(t *testing.T) {
 	}
 
 	if err := store.Update_catalog_entry(ctx, id, Catalog_entry{
-		Media_type: "movie", Title: "Ambiguous", Tmdb_id: 10, Status: "matched",
+		Media_type: "movie", Title: "Ambiguous", Tmdb_id: 10,
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -785,8 +836,15 @@ func Test_update_catalog_entry_to_matched_clears_candidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(left) != 0 {
-		t.Fatalf("candidates survived a matched update: %+v", left)
+	if len(left) != 1 {
+		t.Fatalf("candidates after a metadata update = %+v, want the shortlist kept", left)
+	}
+
+	if err := store.Clear_candidates(ctx, id); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if gone, _ := store.List_candidates(ctx, id); len(gone) != 0 {
+		t.Fatalf("candidates after an explicit clear = %+v", gone)
 	}
 }
 
@@ -796,7 +854,7 @@ func Test_version_tracks_lists_subtitles_with_unknown_fields(t *testing.T) {
 	store := new_test_store(t)
 	ctx := context.Background()
 	entry, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "M", Status: "matched",
+		Media_type: "movie", Title: "M",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
@@ -864,11 +922,11 @@ func Test_reset_catalogs_scopes_to_named_libraries(t *testing.T) {
 	}
 
 	only_a, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Only A", Status: "needs_lookup"})
+		Media_type: "movie", Title: "Only A"})
 	shared, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Shared", Status: "needs_lookup"})
+		Media_type: "movie", Title: "Shared"})
 	only_b, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "movie", Title: "Only B", Status: "needs_lookup"})
+		Media_type: "movie", Title: "Only B"})
 
 	if _, err := store.Save_version(ctx, Version{
 		Catalog_entry_id: only_a, Library_id: ids["A"], File_path: "Only.A.mkv", Size_bytes: 1}); err != nil {
@@ -889,9 +947,9 @@ func Test_reset_catalogs_scopes_to_named_libraries(t *testing.T) {
 
 	// A series episode backed only by library A must go with it.
 	series, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Only A Series", Status: "needs_lookup"})
+		Media_type: "series", Title: "Only A Series"})
 	episode, err := store.Upsert_episode(ctx, Episode{
-		Catalog_entry_id: series, Season_number: 1, Episode_number: 1, Status: "needs_lookup"})
+		Catalog_entry_id: series, Season_number: 1, Episode_number: 1})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
 	}
@@ -938,20 +996,24 @@ func Test_reset_entry_match_clears_matched_metadata(t *testing.T) {
 	store := new_test_store(t)
 
 	id, err := store.Upsert_catalog_entry(ctx, Catalog_entry{
-		Media_type: "series", Title: "Old Match", Original_title: "Old Original",
-		Release_year: 2008, Overview: "an overview", Runtime_minutes: 49,
-		Rating: 9.5, Vote_count: 12000, Imdb_id: "tt0903747", Tmdb_id: 1396,
-		Poster_path: "/poster.jpg", Status: "matched", Genres: []string{"Drama"},
+		Media_type: "series", Title: "Old Match",
+		Release_year: 2008, Imdb_id: "tt0903747", Tmdb_id: 1396,
+		Poster_path: "/poster.jpg", Genres: []string{"Drama"},
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
 	}
 	episode_id, err := store.Upsert_episode(ctx, Episode{
 		Catalog_entry_id: id, Season_number: 1, Episode_number: 1,
-		Title: "Pilot", Overview: "pilot overview", Airdate: "2008", Status: "matched",
+		Title: "Pilot",
 	})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
+	}
+	if _, err := store.Save_version(ctx, Version{
+		Episode_id: episode_id, File_path: "bb.s01e01.mkv", Size_bytes: 1, Status: "matched",
+	}); err != nil {
+		t.Fatalf("save file: %v", err)
 	}
 	if err := store.Upsert_series_metadata(ctx, Series_metadata{
 		Catalog_entry_id: id, First_air_date: "2008-01-20", Num_episodes: 62,
@@ -972,13 +1034,11 @@ func Test_reset_entry_match_clears_matched_metadata(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "needs_lookup" || entry.Title != "Breaking Bad" || entry.Release_year != 0 {
-		t.Errorf("entry = %+v, want needs_lookup/raw title raw year", entry)
+	if entry.Matched || entry.Title != "Breaking Bad" || entry.Release_year != 0 {
+		t.Errorf("entry = %+v, want unmatched/raw title raw year", entry)
 	}
-	if entry.Original_title != "" || entry.Overview != "" || entry.Runtime_minutes != 0 ||
-		entry.Rating != 0 || entry.Vote_count != 0 || entry.Imdb_id != "" ||
-		entry.Tmdb_id != 0 || entry.Poster_path != "" {
-		t.Errorf("matched metadata survived reset: %+v", entry)
+	if entry.Imdb_id != "" || entry.Tmdb_id != 0 || entry.Poster_path != "" {
+		t.Errorf("matched identity survived reset: %+v", entry)
 	}
 	if len(entry.Genres) != 0 {
 		t.Errorf("genres survived reset: %+v", entry.Genres)
@@ -996,12 +1056,59 @@ func Test_reset_entry_match_clears_matched_metadata(t *testing.T) {
 	if len(episodes) != 1 {
 		t.Fatalf("episodes = %d, want the row kept", len(episodes))
 	}
-	if episodes[0].Id != episode_id || episodes[0].Status != "needs_lookup" ||
-		episodes[0].Title != "" || episodes[0].Overview != "" || episodes[0].Airdate != "" {
-		t.Errorf("episode = %+v, want cleared match state", episodes[0])
+	if episodes[0].Id != episode_id || episodes[0].Title != "" {
+		t.Errorf("episode = %+v, want cleared title", episodes[0])
 	}
-	// Versions survive: only the match is dropped, the files stay catalogued.
-	if versions, _ := store.List_versions_for_entry(ctx, id); len(versions) != 0 {
-		t.Errorf("unexpected version rows: %+v", versions)
+	// Files survive: only the match is dropped, the media stays catalogued, and
+	// their own status follows the entry back to needs_lookup.
+	files, _ := store.List_versions_for_episode(ctx, episode_id)
+	if len(files) != 1 || files[0].Status != "needs_lookup" {
+		t.Errorf("files = %+v, want the file kept and reset to needs_lookup", files)
+	}
+}
+
+// Deleting an entry no longer destroys its files: they are detached and reset,
+// because the file row is the primary record and the catalog entry only points
+// at it.
+func Test_delete_catalog_entry_detaches_files(t *testing.T) {
+	ctx := context.Background()
+	store := new_test_store(t)
+
+	id, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "Gone"})
+	file_id := save_file(t, store, ctx, id, "gone.mkv", "matched")
+
+	if err := store.Delete_catalog_entry(ctx, id); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	file, err := store.Get_version(ctx, file_id)
+	if err != nil || file == nil {
+		t.Fatalf("file dropped with its entry: %+v, %v", file, err)
+	}
+	if file.Catalog_entry_id != 0 || file.Status != "needs_lookup" {
+		t.Errorf("file = %+v, want detached and needs_lookup", file)
+	}
+}
+
+// A title exists only as long as a file backs it: once the last file is gone
+// the entry is pruned rather than left empty.
+func Test_delete_orphan_entries_prunes_empty_entries(t *testing.T) {
+	ctx := context.Background()
+	store := new_test_store(t)
+
+	id, _ := store.Upsert_catalog_entry(ctx, Catalog_entry{Media_type: "movie", Title: "Solo"})
+	file_id := save_file(t, store, ctx, id, "solo.mkv", "matched")
+
+	if err := store.Delete_version(ctx, file_id); err != nil {
+		t.Fatalf("delete file: %v", err)
+	}
+	n, err := store.Delete_orphan_entries(ctx)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("pruned = %d, want 1", n)
+	}
+	if entry, _ := store.Get_catalog_entry(ctx, id); entry != nil {
+		t.Errorf("orphan entry survived: %+v", entry)
 	}
 }

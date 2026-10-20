@@ -136,7 +136,7 @@ func Test_handle_catalog_detail_series(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Status: "matched",
+		Media_type: "series", Title: "Breaking Bad",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -148,7 +148,7 @@ func Test_handle_catalog_detail_series(t *testing.T) {
 	}
 	episode_id, err := store.Upsert_episode(ctx, database.Episode{
 		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1,
-		Title: "Pilot", Status: "matched",
+		Title: "Pilot",
 	})
 	if err != nil {
 		t.Fatalf("episode: %v", err)
@@ -370,7 +370,7 @@ func Test_handle_reclassify_movie_to_series_ambiguous(t *testing.T) {
 	server, store := new_test_server_with_offline(t, fake_offline_low{})
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -409,7 +409,7 @@ func Test_handle_reclassify_series_to_movie_applied(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+		Media_type: "series", Title: "The Matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -435,7 +435,7 @@ func Test_handle_reclassify_series_to_movie_applied(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("entry: %v", err)
 	}
-	if entry.Media_type != "movie" || entry.Status != "matched" {
+	if entry.Media_type != "movie" || !entry.Matched {
 		t.Errorf("entry = %+v, want matched movie", entry)
 	}
 }
@@ -466,13 +466,13 @@ func Test_handle_reclassify_movie_to_series_returns_the_merged_series(t *testing
 	lib := libraries[0].Id
 
 	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert series: %v", err)
 	}
 	episode_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
@@ -483,7 +483,7 @@ func Test_handle_reclassify_movie_to_series_returns_the_merged_series(t *testing
 		t.Fatalf("save series version: %v", err)
 	}
 	movie_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "Office Interviews", Status: "needs_lookup",
+		Media_type: "movie", Title: "Office Interviews",
 	})
 	if err != nil {
 		t.Fatalf("upsert movie: %v", err)
@@ -1028,7 +1028,7 @@ func Test_handle_version_split_into_movie(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+		Media_type: "series", Title: "The Matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1067,7 +1067,7 @@ func Test_handle_version_episode_assignment(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1108,7 +1108,7 @@ func Test_handle_version_episode_rejects_bad_numbers(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1131,7 +1131,7 @@ func Test_handle_version_actions_reject_bad_requests(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1186,7 +1186,7 @@ func Test_handle_version_split_persists_candidates_when_unmatched(t *testing.T) 
 	server, store := new_test_server_with_offline(t, fake_offline_low{})
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Matrix Collection", Status: "needs_lookup",
+		Media_type: "series", Title: "The Matrix Collection",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1233,7 +1233,7 @@ func Test_handle_version_split_persists_candidates_when_unmatched(t *testing.T) 
 func Test_handle_version_split_waits_for_a_running_job(t *testing.T) {
 	server, store := new_test_server(t)
 	entry_id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+		Media_type: "series", Title: "The Matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1299,7 +1299,7 @@ func (imdb_find_metadata) Find_by_imdb(_ context.Context, imdb_id string) (*tmdb
 func upsert_movie_entry(t *testing.T, store *database.Store, title string) int64 {
 	t.Helper()
 	id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "movie", Title: title, Status: "needs_lookup",
+		Media_type: "movie", Title: title,
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1380,6 +1380,11 @@ func Test_manual_match_requires_an_identifier(t *testing.T) {
 func Test_manual_match_imdb_resolves_via_tmdb_find(t *testing.T) {
 	server, store := new_test_server_with(t, imdb_find_metadata{default_test_metadata()}, fake_offline{})
 	id := upsert_movie_entry(t, store, "matrix")
+	if _, err := store.Save_version(context.Background(), database.Version{
+		Catalog_entry_id: id, File_path: "/media/matrix.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save file: %v", err)
+	}
 
 	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/match", `{"imdb_id":"tt0133093"}`)
 	if rec.Code != http.StatusOK {
@@ -1802,19 +1807,17 @@ func Test_rematch_ambiguous_replace_failure_is_internal_error(t *testing.T) {
 func Test_rematch_status_update_failure_is_internal_error(t *testing.T) {
 	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
 	id := upsert_movie_entry(t, store, "Completely Different")
-	if err := store.Set_catalog_status(context.Background(), id, "matched"); err != nil {
-		t.Fatalf("set status: %v", err)
-	}
 	// A file name that does not echo the offline candidate's title keeps the
 	// rematch ambiguous — a movie is looked up by its file — so the status
 	// write runs after the shortlist is persisted instead of the match being
 	// applied first.
 	if _, err := store.Save_version(context.Background(), database.Version{
 		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv", Size_bytes: 1000,
+		Status: "matched",
 	}); err != nil {
 		t.Fatalf("save version: %v", err)
 	}
-	inject_failure(t, database_path, `CREATE TRIGGER fail_entry_update BEFORE UPDATE ON catalog_entry
+	inject_failure(t, database_path, `CREATE TRIGGER fail_status_update BEFORE UPDATE ON media_file
 		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
 
 	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/rematch", "")
@@ -1830,7 +1833,7 @@ func Test_split_version_job_failure_is_internal_error(t *testing.T) {
 	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline{})
 	id := upsert_movie_entry(t, store, "The Matrix")
 	if err := store.Update_catalog_entry(context.Background(), id, database.Catalog_entry{
-		Media_type: "series", Title: "The Matrix", Status: "needs_lookup",
+		Media_type: "series", Title: "The Matrix",
 	}); err != nil {
 		t.Fatalf("flip media type: %v", err)
 	}
@@ -1863,13 +1866,13 @@ func series_show_folder_fixture(t *testing.T, store *database.Store) (movie_id i
 		t.Fatalf("list libraries: %v", err)
 	}
 	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert series: %v", err)
 	}
 	episode_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
@@ -1881,7 +1884,7 @@ func series_show_folder_fixture(t *testing.T, store *database.Store) (movie_id i
 		t.Fatalf("save series version: %v", err)
 	}
 	movie_id, err = store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+		Media_type: "movie", Title: "The Office Interviews",
 	})
 	if err != nil {
 		t.Fatalf("upsert movie: %v", err)
@@ -1901,7 +1904,7 @@ func series_show_folder_fixture(t *testing.T, store *database.Store) (movie_id i
 func Test_reclassify_merge_update_failure_is_internal_error(t *testing.T) {
 	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
 	id := series_show_folder_fixture(t, store)
-	inject_failure(t, database_path, `CREATE TRIGGER fail_version_update BEFORE UPDATE ON version
+	inject_failure(t, database_path, `CREATE TRIGGER fail_version_update BEFORE UPDATE ON media_file
 		BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`)
 
 	rec := do_request(t, server, http.MethodPost, "/api/v1/catalog/"+itoa(id)+"/reclassify", `{"media_type":"series"}`)
@@ -1941,7 +1944,7 @@ func Test_reclassify_rename_failure_is_internal_error(t *testing.T) {
 		t.Fatalf("list libraries: %v", err)
 	}
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+		Media_type: "movie", Title: "The Office Interviews",
 	})
 	if err != nil {
 		t.Fatalf("upsert movie: %v", err)
@@ -1997,7 +2000,7 @@ func Test_reclassify_absorbed_ambiguous_reports_target_entry(t *testing.T) {
 func Test_manual_match_enrich_failure_is_internal_error(t *testing.T) {
 	server, store, database_path := new_trigger_server(t, default_test_metadata(), fake_offline_low{})
 	id, err := store.Upsert_catalog_entry(context.Background(), database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert series: %v", err)

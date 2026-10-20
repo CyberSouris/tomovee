@@ -245,7 +245,7 @@ func Test_catalog_list_and_detail(t *testing.T) {
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
 		Imdb_id: "tt0133093", Tmdb_id: 603, Poster_path: "/matrix.jpg",
-		Status: "matched", Genres: []string{"Action"},
+		Genres: []string{"Action"},
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -276,13 +276,24 @@ func Test_catalog_list_and_detail(t *testing.T) {
 func Test_categories(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
-	for _, entry := range []database.Catalog_entry{
-		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
-		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
-		{Media_type: "movie", Title: "Needs Review", Status: "needs_lookup"},
+	// Two matched movies and one still-waiting title: categories count matched
+	// titles, so the first two carry a matched file and the third does not.
+	for i, entry := range []database.Catalog_entry{
+		{Media_type: "movie", Title: "The Matrix", Genres: []string{"Action"}},
+		{Media_type: "movie", Title: "Alien", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "Needs Review"},
 	} {
-		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
+		id, err := store.Upsert_catalog_entry(ctx, entry)
+		if err != nil {
 			t.Fatalf("upsert: %v", err)
+		}
+		if i == 2 {
+			continue
+		}
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: id, File_path: entry.Title + ".mkv", Size_bytes: 1000, Status: "matched",
+		}); err != nil {
+			t.Fatalf("save file: %v", err)
 		}
 	}
 
@@ -324,8 +335,8 @@ func Test_catalog_multiple_genres_intersect(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	for _, entry := range []database.Catalog_entry{
-		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
-		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
+		{Media_type: "movie", Title: "Alien", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "The Matrix", Genres: []string{"Action"}},
 	} {
 		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
 			t.Fatalf("upsert: %v", err)
@@ -352,13 +363,19 @@ func Test_categories_scoped_to_filter(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	for _, entry := range []database.Catalog_entry{
-		{Media_type: "movie", Title: "Alien", Status: "matched", Genres: []string{"Action", "Science Fiction"}},
-		{Media_type: "movie", Title: "The Matrix", Status: "matched", Genres: []string{"Action"}},
-		{Media_type: "movie", Title: "Up", Status: "matched", Genres: []string{"Comedy"}},
-		{Media_type: "series", Title: "Breaking Bad", Status: "matched", Genres: []string{"Drama"}},
+		{Media_type: "movie", Title: "Alien", Genres: []string{"Action", "Science Fiction"}},
+		{Media_type: "movie", Title: "The Matrix", Genres: []string{"Action"}},
+		{Media_type: "movie", Title: "Up", Genres: []string{"Comedy"}},
+		{Media_type: "series", Title: "Breaking Bad", Genres: []string{"Drama"}},
 	} {
-		if _, err := store.Upsert_catalog_entry(ctx, entry); err != nil {
+		id, err := store.Upsert_catalog_entry(ctx, entry)
+		if err != nil {
 			t.Fatalf("upsert: %v", err)
+		}
+		if _, err := store.Save_version(ctx, database.Version{
+			Catalog_entry_id: id, File_path: entry.Title + ".mkv", Size_bytes: 1000, Status: "matched",
+		}); err != nil {
+			t.Fatalf("save file: %v", err)
 		}
 	}
 
@@ -400,7 +417,7 @@ func Test_empty_lists_encode_as_arrays(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "Empty Show", Status: "needs_lookup",
+		Media_type: "series", Title: "Empty Show",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -433,7 +450,7 @@ func Test_poster_serves_local_frame(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "Mystery", Status: "needs_lookup",
+		Media_type: "movie", Title: "Mystery",
 		Poster_path: thumbnail.Local_marker,
 	})
 	if err != nil {
@@ -457,10 +474,15 @@ func Test_unmatched_and_manual_match(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "matrix", Status: "needs_lookup",
+		Media_type: "movie", Title: "matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/matrix.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save file: %v", err)
 	}
 
 	unmatched := do_request(t, server, http.MethodGet, "/api/v1/unmatched", "")
@@ -494,7 +516,7 @@ func Test_unmatched_lists_candidate_entries_first(t *testing.T) {
 	late := func(title string) int64 {
 		time.Sleep(1 * time.Millisecond)
 		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-			Media_type: "movie", Title: title, Status: "needs_lookup",
+			Media_type: "movie", Title: title,
 		})
 		if err != nil {
 			t.Fatalf("upsert: %v", err)
@@ -552,10 +574,15 @@ func Test_manual_match_without_tmdb_key(t *testing.T) {
 	server.metadata = nil
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "matrix", Status: "needs_lookup",
+		Media_type: "movie", Title: "matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/matrix.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save file: %v", err)
 	}
 
 	// Matching by a bare IMDb id must work without TMDB when the offline index
@@ -575,7 +602,7 @@ func Test_manual_match_without_tmdb_key(t *testing.T) {
 
 	// An unknown id must surface a clear error instead of a false match.
 	other_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "other", Status: "needs_lookup",
+		Media_type: "movie", Title: "other",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -603,10 +630,15 @@ func Test_manual_match_tmdb_id_falls_back_to_persisted_offline_candidate(t *test
 	server.metadata = nil
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "matrix", Status: "needs_lookup",
+		Media_type: "movie", Title: "matrix",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.Save_version(ctx, database.Version{
+		Catalog_entry_id: id, File_path: "/media/matrix.mkv", Size_bytes: 1000,
+	}); err != nil {
+		t.Fatalf("save file: %v", err)
 	}
 	// A candidate persisted from an earlier rematch carries only a tmdb id that
 	// maps to an offline-resolvable imdb id.
@@ -771,7 +803,7 @@ func Test_poster_prune_removes_unreferenced(t *testing.T) {
 	server, store := new_test_server(t)
 	ctx := context.Background()
 	if _, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "Keep", Poster_path: "/keep.jpg", Status: "matched",
+		Media_type: "movie", Title: "Keep", Poster_path: "/keep.jpg",
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -843,7 +875,7 @@ func Test_handle_scan_start_force_rebuilds_catalog(t *testing.T) {
 		t.Fatalf("libraries = %+v, %v", libraries, err)
 	}
 	entry, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "Stale", Status: "matched",
+		Media_type: "movie", Title: "Stale",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
@@ -897,7 +929,7 @@ func Test_parallel_match_primary_is_stable(t *testing.T) {
 
 	for _, lib := range []string{"lib1", "lib2"} {
 		id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-			Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+			Media_type: "movie", Title: "The Matrix", Release_year: 1999,
 		})
 		if err != nil {
 			t.Fatalf("upsert entry: %v", err)
@@ -1024,7 +1056,7 @@ func unmatched_entry_with_version(t *testing.T, store *database.Store) int64 {
 	t.Helper()
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Matrix", Release_year: 1999, Status: "needs_lookup",
+		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -1077,7 +1109,7 @@ func Test_match_job_matches_offline(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" || entry.Title != "The Matrix" {
+	if !entry.Matched || entry.Imdb_id != "tt0133093" || entry.Title != "The Matrix" {
 		t.Fatalf("entry = %+v, want matched matrix", entry)
 	}
 }
@@ -1089,14 +1121,14 @@ func matched_entry_with_version(t *testing.T, store *database.Store) int64 {
 	ctx := context.Background()
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
 		Media_type: "movie", Title: "The Matrix", Release_year: 1999,
-		Imdb_id: "tt0000000", Status: "matched",
+		Imdb_id: "tt0000000",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if _, err := store.Save_version(ctx, database.Version{
 		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv",
-		Size_bytes: 9000, Hash: "hash-1",
+		Size_bytes: 9000, Hash: "hash-1", Status: "matched",
 	}); err != nil {
 		t.Fatalf("save version: %v", err)
 	}
@@ -1136,7 +1168,7 @@ func Test_rematch_all_re_runs_matched_entries(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" {
+	if !entry.Matched || entry.Imdb_id != "tt0133093" {
 		t.Fatalf("entry = %+v, want re-matched matrix (imdb tt0133093)", entry)
 	}
 }
@@ -1159,7 +1191,7 @@ func Test_rematch_all_force_drops_unmatchable_match(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "needs_lookup" || entry.Imdb_id != "" || entry.Tmdb_id != 0 {
+	if entry.Matched || entry.Imdb_id != "" || entry.Tmdb_id != 0 {
 		t.Fatalf("entry = %+v, want the stale match dropped", entry)
 	}
 	if entry.Title != "The Matrix" || entry.Release_year != 1999 {
@@ -1184,7 +1216,7 @@ func Test_rematch_all_plain_keeps_unmatchable_match(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Imdb_id != "tt0000000" {
+	if !entry.Matched || entry.Imdb_id != "tt0000000" {
 		t.Fatalf("plain rematch dropped an existing match: %+v", entry)
 	}
 }
@@ -1245,8 +1277,8 @@ func Test_rematch_all_queues_behind_running_job(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" {
-		t.Fatalf("entry status = %s, want matched after queued rematch all", entry.Status)
+	if !entry.Matched {
+		t.Fatalf("entry matched = false, want matched after queued rematch all")
 	}
 }
 
@@ -1276,13 +1308,13 @@ func Test_match_job_searches_series_by_folder(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "Whatever", Status: "needs_lookup",
+		Media_type: "series", Title: "Whatever",
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	episode_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+		Catalog_entry_id: id, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
@@ -1304,7 +1336,7 @@ func Test_match_job_searches_series_by_folder(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Imdb_id != "tt0133093" {
+	if !entry.Matched || entry.Imdb_id != "tt0133093" {
 		t.Fatalf("entry = %+v, want matched matrix", entry)
 	}
 	if !strings.EqualFold(capture.got, "The Matrix") {
@@ -1424,8 +1456,8 @@ func Test_rematch_ambiguous_persists_candidates(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "needs_lookup" {
-		t.Fatalf("entry status = %q, want needs_lookup", entry.Status)
+	if entry.Matched {
+		t.Fatalf("entry matched = true, want needs_lookup")
 	}
 }
 
@@ -1536,7 +1568,7 @@ func Test_rematch_queues_behind_running_job(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" {
-		t.Fatalf("entry status = %s, want matched after queued rematch", entry.Status)
+	if !entry.Matched {
+		t.Fatalf("entry matched = false, want matched after queued rematch")
 	}
 }

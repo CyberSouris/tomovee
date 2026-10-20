@@ -64,35 +64,26 @@ func (s *Scanner) entry_id(ctx context.Context, entry database.Catalog_entry) (i
 		if err != nil {
 			return 0, err
 		}
-		if existing != nil && existing.Status == "matched" {
+		if existing != nil && existing.Matched {
 			return existing.Id, nil
 		}
 	}
 	return s.store.Upsert_catalog_entry(ctx, entry)
 }
 
-// Catalog_entry_from_match converts a matcher result into a catalog entry,
-// deriving its status from whether the match succeeded. It is exported for the
-// web API's matching pipeline.
+// Catalog_entry_from_match converts a matcher result into a catalog entry.
+// Only the locally-cached identity and artwork are taken; the match's overview,
+// rating, vote count, and runtime come from the source on demand. It is
+// exported for the web API's matching pipeline.
 func Catalog_entry_from_match(match *matcher.Result) database.Catalog_entry {
-	status := "needs_lookup"
-	if match.Matched {
-		status = "matched"
-	}
 	return database.Catalog_entry{
-		Media_type:      media_type_string(match.Media_type),
-		Title:           match.Title,
-		Original_title:  match.Original_title,
-		Release_year:    match.Year,
-		Overview:        match.Overview,
-		Runtime_minutes: match.Runtime_minutes,
-		Rating:          match.Rating,
-		Vote_count:      match.Vote_count,
-		Imdb_id:         match.Imdb_id,
-		Tmdb_id:         match.Tmdb_id,
-		Poster_path:     match.Poster_path,
-		Status:          status,
-		Genres:          match.Genres,
+		Media_type:   media_type_string(match.Media_type),
+		Title:        match.Title,
+		Release_year: match.Year,
+		Imdb_id:      match.Imdb_id,
+		Tmdb_id:      match.Tmdb_id,
+		Poster_path:  match.Poster_path,
+		Genres:       match.Genres,
 	}
 }
 
@@ -122,7 +113,6 @@ func catalog_entry_from(file scanner.Found_file, media_type string) database.Cat
 		Media_type:   media_type,
 		Title:        title,
 		Release_year: release_year,
-		Status:       "needs_lookup",
 	}
 }
 
@@ -131,8 +121,6 @@ func episode_from(entry_id int64, file scanner.Found_file) database.Episode {
 		Catalog_entry_id: entry_id,
 		Season_number:    file.Episode.Season,
 		Episode_number:   file.Episode.Episode,
-		Is_special:       file.Is_special,
-		Status:           "needs_lookup",
 	}
 }
 
@@ -143,11 +131,11 @@ func version_from(file scanner.Found_file, info *metadata.File_info) database.Ve
 		Mtime:            format_mtime(file.Mtime),
 		Duration_seconds: info.Duration_seconds,
 		Container:        info.Container,
+		Status:           "needs_lookup",
 	}
 	if info.Video != nil {
 		version.Resolution_width = info.Video.Width
 		version.Resolution_height = info.Video.Height
-		version.Resolution_label = info.Video.Resolution_label
 		version.Video_codec = info.Video.Codec
 		version.Hdr = info.Video.Hdr
 		version.Frame_rate = info.Video.Frame_rate

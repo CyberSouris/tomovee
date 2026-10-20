@@ -381,8 +381,8 @@ func (s *Server) handle_catalog_detail(w http.ResponseWriter, r *http.Request) {
 			versions, _ := s.store.List_versions_for_episode(r.Context(), episode.Id)
 			response.Episodes = append(response.Episodes, episode_item{
 				Id: episode.Id, Season_number: episode.Season_number, Episode_number: episode.Episode_number,
-				Title: episode.Title, Overview: episode.Overview, Airdate: episode.Airdate,
-				Is_special: episode.Is_special, Status: episode.Status,
+				Title:    episode.Title,
+				Status:   episode_status(versions),
 				Versions: s.version_items(r.Context(), versions),
 			})
 		}
@@ -470,13 +470,32 @@ func catalog_item_from(entry database.Catalog_entry) catalog_item {
 	}
 	item := catalog_item{
 		Id: entry.Id, Media_type: entry.Media_type, Title: entry.Title,
-		Original_title: entry.Original_title, Release_year: entry.Release_year,
-		Overview: entry.Overview, Runtime_minutes: entry.Runtime_minutes,
-		Rating: entry.Rating, Vote_count: entry.Vote_count, Imdb_id: entry.Imdb_id,
-		Tmdb_id: entry.Tmdb_id, Status: entry.Status, Genres: genres,
+		Release_year: entry.Release_year, Imdb_id: entry.Imdb_id,
+		Tmdb_id: entry.Tmdb_id, Status: entry_status(entry), Genres: genres,
 	}
 	if entry.Poster_path != "" {
 		item.Poster_url = "/api/v1/posters/" + itoa(entry.Id)
 	}
 	return item
+}
+
+// entry_status reports a title's match state from its files: an entry with any
+// matched file is "matched", otherwise it needs a lookup. The catalog no longer
+// stores a status column, so the view derives it here.
+func entry_status(entry database.Catalog_entry) string {
+	if entry.Matched {
+		return "matched"
+	}
+	return "needs_lookup"
+}
+
+// episode_status reports an episode's match state from its files, the same way
+// entry_status does for a title.
+func episode_status(versions []database.Version) string {
+	for _, version := range versions {
+		if version.Status == "matched" {
+			return "matched"
+		}
+	}
+	return "needs_lookup"
 }

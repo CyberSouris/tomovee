@@ -402,52 +402,32 @@ func (s *Scanner) add_error(result *Result, path string, err error) {
 	s.opts.Logger.Warn("scan: file failed", "path", path, "error", err)
 }
 
-// mark_missing flags entries and episodes under the scanned roots whose files
-// were not seen during this scan. A catalog entry is only flagged missing when
-// none of its versions remain present. Entries that still have versions in a
-// library that was not part of this scan (or in legacy absolute-path rows) are
-// never flagged, so a partial library refresh cannot hide files elsewhere.
+// mark_missing removes catalogued media files under the scanned roots that were
+// not seen during this scan, then drops any catalog entry left with no file.
+// A file that is gone has nothing to catalogue, so its row is deleted rather
+// than flagged; a title's media outside the scanned roots (another library, or
+// legacy absolute-path rows) is never touched, so a partial refresh cannot
+// hide files elsewhere.
 func (s *Scanner) mark_missing(ctx context.Context, roots []string, lib_by_id map[int64]database.Library, seen map[string]bool, result *Result) error {
 	refs, err := s.store.List_version_refs(ctx)
 	if err != nil {
 		return err
 	}
-	entries := make(map[int64]bool)
-	present := make(map[int64]bool)
-	excluded := make(map[int64]bool)
 	for _, ref := range refs {
 		path := existing_version_path(ref, lib_by_id)
-		in_scope := under_any_root(path, roots)
-		if ref.Catalog_entry_id > 0 {
-			if in_scope {
-				entries[ref.Catalog_entry_id] = true
-				if seen[path] {
-					present[ref.Catalog_entry_id] = true
-				}
-			} else {
-				excluded[ref.Catalog_entry_id] = true
-			}
-		}
-		if !in_scope {
+		if !under_any_root(path, roots) {
 			continue
 		}
-		if ref.Episode_id > 0 && !seen[path] {
-			if err := s.store.Set_episode_status(ctx, ref.Episode_id, "missing"); err != nil {
-				return err
-			}
-			result.Missing++
-		}
-	}
-	for entry_id := range entries {
-		if excluded[entry_id] || present[entry_id] {
+		if seen[path] {
 			continue
 		}
-		if err := s.store.Set_catalog_status(ctx, entry_id, "missing"); err != nil {
+		if err := s.store.Delete_version(ctx, ref.Id); err != nil {
 			return err
 		}
 		result.Missing++
 	}
-	return nil
+	_, err = s.store.Delete_orphan_entries(ctx)
+	return err
 }
 
 // existing_version_path reconstructs the filesystem path of a version row.

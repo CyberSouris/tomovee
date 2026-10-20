@@ -57,13 +57,13 @@ func merge_show_folder_fixture(t *testing.T, store *database.Store) int64 {
 	lib := library_id(t, store, "TV", t.TempDir())
 
 	series_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "The Office", Status: "needs_lookup",
+		Media_type: "series", Title: "The Office",
 	})
 	if err != nil {
 		t.Fatalf("upsert series: %v", err)
 	}
 	episode_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+		Catalog_entry_id: series_id, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode: %v", err)
@@ -75,7 +75,7 @@ func merge_show_folder_fixture(t *testing.T, store *database.Store) int64 {
 	}
 
 	movie_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+		Media_type: "movie", Title: "The Office Interviews",
 	})
 	if err != nil {
 		t.Fatalf("upsert movie: %v", err)
@@ -96,7 +96,7 @@ func movie_show_folder_fixture(t *testing.T, store *database.Store) int64 {
 	ctx := context.Background()
 	lib := library_id(t, store, "TV", t.TempDir())
 	movie_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "The Office Interviews", Status: "needs_lookup",
+		Media_type: "movie", Title: "The Office Interviews",
 	})
 	if err != nil {
 		t.Fatalf("upsert movie: %v", err)
@@ -116,7 +116,7 @@ func movie_show_folder_fixture(t *testing.T, store *database.Store) int64 {
 func Test_reclassify_merge_fold_failure_returns_error(t *testing.T) {
 	service, store, database_path := new_trigger_service(t, fake_series_hit{})
 	movie_id := merge_show_folder_fixture(t, store)
-	inject_failure(t, database_path, `CREATE TRIGGER fail_version_update BEFORE UPDATE ON version
+	inject_failure(t, database_path, `CREATE TRIGGER fail_version_update BEFORE UPDATE ON media_file
 		BEGIN SELECT RAISE(ABORT, 'injected fold failure'); END`)
 
 	target, applied, candidates, err := service.Reclassify(context.Background(), movie_id, true)

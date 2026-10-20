@@ -98,8 +98,7 @@ func (s *Store) Count_catalog_entries(ctx context.Context, filter Catalog_filter
 func (s *Store) List_episodes(ctx context.Context, catalog_entry_id int64) ([]Episode, error) {
 	rows, err := s.db.db.QueryContext(ctx, `
 		SELECT id, catalog_entry_id, COALESCE(season_number, 0), COALESCE(episode_number, 0),
-		       COALESCE(title, ''), COALESCE(overview, ''), COALESCE(airdate, ''),
-		       is_special, status
+		       COALESCE(title, '')
 		FROM episode WHERE catalog_entry_id = ?
 		ORDER BY season_number, episode_number`, catalog_entry_id)
 	if err != nil {
@@ -109,13 +108,10 @@ func (s *Store) List_episodes(ctx context.Context, catalog_entry_id int64) ([]Ep
 	var out []Episode
 	for rows.Next() {
 		var episode Episode
-		var special int
 		if err := rows.Scan(&episode.Id, &episode.Catalog_entry_id, &episode.Season_number,
-			&episode.Episode_number, &episode.Title, &episode.Overview, &episode.Airdate,
-			&special, &episode.Status); err != nil {
+			&episode.Episode_number, &episode.Title); err != nil {
 			return nil, err
 		}
-		episode.Is_special = special == 1
 		out = append(out, episode)
 	}
 	return out, rows.Err()
@@ -125,22 +121,18 @@ func (s *Store) List_episodes(ctx context.Context, catalog_entry_id int64) ([]Ep
 // exist.
 func (s *Store) Get_episode(ctx context.Context, id int64) (*Episode, error) {
 	var episode Episode
-	var special int
 	err := s.db.db.QueryRowContext(ctx, `
 		SELECT id, catalog_entry_id, COALESCE(season_number, 0), COALESCE(episode_number, 0),
-		       COALESCE(title, ''), COALESCE(overview, ''), COALESCE(airdate, ''),
-		       is_special, status
+		       COALESCE(title, '')
 		FROM episode WHERE id = ?`, id).
 		Scan(&episode.Id, &episode.Catalog_entry_id, &episode.Season_number,
-			&episode.Episode_number, &episode.Title, &episode.Overview, &episode.Airdate,
-			&special, &episode.Status)
+			&episode.Episode_number, &episode.Title)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	episode.Is_special = special == 1
 	return &episode, nil
 }
 
@@ -226,7 +218,7 @@ func (s *Store) Version_tracks(ctx context.Context, version_id int64) ([]Audio_t
 func (s *Store) list_audio_tracks(ctx context.Context, version_id int64) ([]Audio_track, error) {
 	rows, err := s.db.db.QueryContext(ctx, `
 		SELECT COALESCE(language, ''), COALESCE(codec, ''), COALESCE(channels, 0), source
-		FROM audio_track WHERE version_id = ? ORDER BY id`, version_id)
+		FROM audio_track WHERE media_file_id = ? ORDER BY id`, version_id)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +237,7 @@ func (s *Store) list_audio_tracks(ctx context.Context, version_id int64) ([]Audi
 func (s *Store) list_subtitle_tracks(ctx context.Context, version_id int64) ([]Subtitle_track, error) {
 	rows, err := s.db.db.QueryContext(ctx, `
 		SELECT COALESCE(language, ''), COALESCE(format, ''), source
-		FROM subtitle_track WHERE version_id = ? ORDER BY id`, version_id)
+		FROM subtitle_track WHERE media_file_id = ? ORDER BY id`, version_id)
 	if err != nil {
 		return nil, err
 	}
@@ -262,11 +254,13 @@ func (s *Store) list_subtitle_tracks(ctx context.Context, version_id int64) ([]S
 }
 
 const catalog_columns = `
-	SELECT ce.id, ce.media_type, ce.title, COALESCE(ce.original_title, ''),
-	       COALESCE(ce.release_year, 0), COALESCE(ce.overview, ''),
-	       COALESCE(ce.runtime_minutes, 0), COALESCE(ce.rating, 0), COALESCE(ce.vote_count, 0),
+	SELECT ce.id, ce.media_type, ce.title,
+	       COALESCE(ce.release_year, 0),
 	       COALESCE(ce.imdb_id, ''), COALESCE(ce.tmdb_id, 0), COALESCE(ce.poster_path, ''),
-	       ce.status
+	       EXISTS (SELECT 1 FROM media_file mf
+	               WHERE mf.status = 1
+	                 AND (mf.catalog_entry_id = ce.id
+	                      OR mf.episode_id IN (SELECT id FROM episode WHERE catalog_entry_id = ce.id)))
 	FROM catalog_entry ce`
 
 const version_columns = `
@@ -274,9 +268,9 @@ const version_columns = `
 	       COALESCE(v.library_id, 0), v.file_path,
 	       COALESCE(v.size_bytes, 0), COALESCE(v.mtime, ''), COALESCE(v.duration_seconds, 0),
 	       COALESCE(v.container, ''), COALESCE(v.resolution_width, 0), COALESCE(v.resolution_height, 0),
-	       COALESCE(v.resolution_label, ''), COALESCE(v.video_codec, ''), COALESCE(v.hdr, 0),
-	       COALESCE(v.frame_rate, 0), COALESCE(v.bit_depth, 0), COALESCE(v.hash, '')
-	FROM version v`
+	       COALESCE(v.video_codec, ''), COALESCE(v.hdr, 0),
+	       COALESCE(v.frame_rate, 0), COALESCE(v.bit_depth, 0), COALESCE(v.hash, ''), v.status
+	FROM media_file v`
 
 // where_builder accumulates SQL WHERE clauses and their bind arguments, one
 // pair per filter dimension, so each clause helper stays a flat two-liner.
@@ -301,13 +295,16 @@ func string_args(values []string) []any {
 
 func add_media_type_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Media_type != "" {
-		w.add("ce.media_type = ?", filter.Media_type)
+		w.add("ce.media_type = ?", Media_type_code(filter.Media_type))
 	}
 }
 
+// add_status_clause narrows to entries whose files are matched or not. Status is
+// not a catalog column any more: an entry is "matched" when any of its files is,
+// and "needs_lookup" when none is.
 func add_status_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Status != "" {
-		w.add("ce.status = ?", filter.Status)
+		w.add(matched_exists_clause()+" = ?", bool_to_int(filter.Status == "matched"))
 	}
 }
 
@@ -315,15 +312,37 @@ func add_statuses_clause(w *where_builder, filter Catalog_filter) {
 	if len(filter.Statuses) == 0 {
 		return
 	}
-	placeholders := strings.Repeat("?,", len(filter.Statuses))
-	placeholders = strings.TrimSuffix(placeholders, ",")
-	w.add("ce.status IN ("+placeholders+")", string_args(filter.Statuses)...)
+	// Both known statuses together match every entry, so the clause only bites
+	// when exactly one of them is requested.
+	matched := false
+	needs := false
+	for _, status := range filter.Statuses {
+		switch status {
+		case "matched":
+			matched = true
+		case "needs_lookup":
+			needs = true
+		}
+	}
+	if matched && !needs {
+		w.add(matched_exists_clause() + " = 1")
+	} else if needs && !matched {
+		w.add(matched_exists_clause() + " = 0")
+	}
+}
+
+// matched_exists_clause reports whether an entry owns at least one matched file,
+// either directly or through one of its episodes.
+func matched_exists_clause() string {
+	return `EXISTS (SELECT 1 FROM media_file mf
+		WHERE mf.status = 1
+		  AND (mf.catalog_entry_id = ce.id
+		       OR mf.episode_id IN (SELECT id FROM episode WHERE catalog_entry_id = ce.id)))`
 }
 
 func add_search_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Search != "" {
-		like := "%" + filter.Search + "%"
-		w.add("(ce.title LIKE ? OR ce.original_title LIKE ?)", like, like)
+		w.add("ce.title LIKE ?", "%"+filter.Search+"%")
 	}
 }
 
@@ -361,10 +380,29 @@ func add_has_poster_clause(w *where_builder, filter Catalog_filter) {
 	}
 }
 
+// resolution_label_sql derives the stored file's resolution label from its
+// height, the way metadata.Resolution_label does, so filters over the dropped
+// resolution_label column still work. Interlaced content (the "i" suffix) is
+// not distinguishable from stored data, so only the progressive labels match.
+func resolution_label_sql(prefix string) string {
+	return `CASE
+		WHEN ` + prefix + `resolution_height >= 4320 THEN '8Kp'
+		WHEN ` + prefix + `resolution_height >= 2160 THEN '4Kp'
+		WHEN ` + prefix + `resolution_height >= 1440 THEN '2Kp'
+		WHEN ` + prefix + `resolution_height >= 1080 THEN '1080p'
+		WHEN ` + prefix + `resolution_height >= 720  THEN '720p'
+		WHEN ` + prefix + `resolution_height >= 576  THEN '576p'
+		WHEN ` + prefix + `resolution_height >= 480  THEN '480p'
+		WHEN ` + prefix + `resolution_height > 0    THEN 'SDp'
+		ELSE ''
+	END`
+}
+
 func add_resolution_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Resolution != "" {
 		w.add(`EXISTS (
-			SELECT 1 FROM version v WHERE v.catalog_entry_id = ce.id AND v.resolution_label = ?)`,
+			SELECT 1 FROM media_file v WHERE v.catalog_entry_id = ce.id AND `+
+			resolution_label_sql("v.")+` = ?)`,
 			filter.Resolution)
 	}
 }
@@ -372,7 +410,7 @@ func add_resolution_clause(w *where_builder, filter Catalog_filter) {
 func add_language_clause(w *where_builder, filter Catalog_filter) {
 	if filter.Language != "" {
 		w.add(`EXISTS (
-			SELECT 1 FROM version v JOIN audio_track a ON a.version_id = v.id
+			SELECT 1 FROM media_file v JOIN audio_track a ON a.media_file_id = v.id
 			WHERE v.catalog_entry_id = ce.id AND a.language = ?)`,
 			filter.Language)
 	}
@@ -381,7 +419,7 @@ func add_language_clause(w *where_builder, filter Catalog_filter) {
 func add_library_clauses(w *where_builder, filter Catalog_filter) {
 	if filter.Library != "" {
 		w.add(`EXISTS (
-			SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+			SELECT 1 FROM media_file v JOIN library lib ON lib.id = v.library_id
 			WHERE v.catalog_entry_id = ce.id AND lib.name = ?)`,
 			filter.Library)
 	}
@@ -391,7 +429,7 @@ func add_library_clauses(w *where_builder, filter Catalog_filter) {
 	placeholders := strings.Repeat("?,", len(filter.Libraries))
 	placeholders = strings.TrimSuffix(placeholders, ",")
 	w.add(`EXISTS (
-		SELECT 1 FROM version v JOIN library lib ON lib.id = v.library_id
+		SELECT 1 FROM media_file v JOIN library lib ON lib.id = v.library_id
 		WHERE v.catalog_entry_id = ce.id AND lib.name IN (`+placeholders+`))`,
 		string_args(filter.Libraries)...)
 }
@@ -420,8 +458,6 @@ func catalog_order(filter Catalog_filter) string {
 	switch filter.Sort {
 	case "year":
 		column = "ce.release_year"
-	case "rating":
-		column = "ce.rating"
 	case "added":
 		column = "ce.created_at"
 	}
@@ -438,28 +474,59 @@ type row_scanner interface {
 
 func scan_catalog_entry(row row_scanner) (*Catalog_entry, error) {
 	var entry Catalog_entry
-	err := row.Scan(&entry.Id, &entry.Media_type, &entry.Title, &entry.Original_title,
-		&entry.Release_year, &entry.Overview, &entry.Runtime_minutes, &entry.Rating,
-		&entry.Vote_count, &entry.Imdb_id, &entry.Tmdb_id, &entry.Poster_path, &entry.Status)
+	var media_type int
+	var matched int
+	err := row.Scan(&entry.Id, &media_type, &entry.Title, &entry.Release_year,
+		&entry.Imdb_id, &entry.Tmdb_id, &entry.Poster_path, &matched)
 	if err != nil {
 		return nil, err
 	}
+	entry.Media_type = Media_type_name(media_type)
+	entry.Matched = matched == 1
 	return &entry, nil
 }
 
 func scan_version(row row_scanner) (*Version, error) {
 	var version Version
 	var hdr int
+	var status int
 	err := row.Scan(&version.Id, &version.Catalog_entry_id, &version.Episode_id,
 		&version.Library_id, &version.File_path,
 		&version.Size_bytes, &version.Mtime, &version.Duration_seconds, &version.Container,
-		&version.Resolution_width, &version.Resolution_height, &version.Resolution_label,
-		&version.Video_codec, &hdr, &version.Frame_rate, &version.Bit_depth, &version.Hash)
+		&version.Resolution_width, &version.Resolution_height,
+		&version.Video_codec, &hdr, &version.Frame_rate, &version.Bit_depth, &version.Hash, &status)
 	if err != nil {
 		return nil, err
 	}
 	version.Hdr = hdr == 1
+	version.Status = File_status_name(status)
+	version.Resolution_label = resolution_label(version.Resolution_height)
 	return &version, nil
+}
+
+// resolution_label maps a frame height to a human label such as "1080p", the
+// same mapping metadata.Resolution_label uses. It lives here too because the
+// label is derived on read now that media_file no longer stores it.
+func resolution_label(height int) string {
+	switch {
+	case height >= 4320:
+		return "8Kp"
+	case height >= 2160:
+		return "4Kp"
+	case height >= 1440:
+		return "2Kp"
+	case height >= 1080:
+		return "1080p"
+	case height >= 720:
+		return "720p"
+	case height >= 576:
+		return "576p"
+	case height >= 480:
+		return "480p"
+	case height > 0:
+		return "SDp"
+	}
+	return ""
 }
 
 func (s *Store) attach_genres(ctx context.Context, entries []Catalog_entry) error {
@@ -506,14 +573,17 @@ type Genre_count struct {
 }
 
 // Genre_counts returns each genre name and how many entries of the given
-// status carry it, ordered by count descending for the browse category chips.
+// match state carry it, ordered by count descending for the browse category
+// chips. A "matched" status counts entries with at least one matched file;
+// "needs_lookup" counts the rest.
 func (s *Store) Genre_counts(ctx context.Context, status string) ([]Genre_count, error) {
+	filter := Catalog_filter{Status: status}
+	where, args := catalog_where(filter)
 	rows, err := s.db.db.QueryContext(ctx, `
 		SELECT g.name, COUNT(*) FROM genre g
 		JOIN catalog_entry_genre ceg ON ceg.genre_id = g.id
-		JOIN catalog_entry ce ON ce.id = ceg.catalog_entry_id
-		WHERE ce.status = ?
-		GROUP BY g.id ORDER BY COUNT(*) DESC, g.name`, status)
+		JOIN catalog_entry ce ON ce.id = ceg.catalog_entry_id`+where+`
+		GROUP BY g.id ORDER BY COUNT(*) DESC, g.name`, args...)
 	if err != nil {
 		return nil, err
 	}

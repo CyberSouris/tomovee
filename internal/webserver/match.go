@@ -115,13 +115,23 @@ func (s *Server) resolve_manual_candidate(ctx context.Context, w http.ResponseWr
 }
 
 // apply_manual_match stores the resolved match on the entry and re-enriches
-// episode titles when the match was confident. It writes the failure response
-// itself and returns ok=false on a storage failure.
+// episode titles when the match was confident. A manual pick is an accepted
+// match by definition, so the entry's files are marked matched. It writes the
+// failure response itself and returns ok=false on a storage failure.
 func (s *Server) apply_manual_match(ctx context.Context, w http.ResponseWriter, id int64, result *matcher.Result) bool {
 	updated := scan.Catalog_entry_from_match(result)
 	updated.Id = id
 	if err := s.store.Update_catalog_entry(ctx, id, updated); err != nil {
 		s.internal_error(w, err, "update catalog entry")
+		return false
+	}
+	if err := s.store.Set_entry_files_status(ctx, id, "matched"); err != nil {
+		s.internal_error(w, err, "mark files matched")
+		return false
+	}
+	// The manual pick decides the title, so its pending shortlist is cleared.
+	if err := s.store.Clear_candidates(ctx, id); err != nil {
+		s.internal_error(w, err, "clear candidates")
 		return false
 	}
 	if result.Matched && s.matching != nil {
@@ -192,7 +202,7 @@ func (s *Server) record_match_outcome(ctx context.Context, progress func(matchin
 			return nil, err
 		}
 		if len(candidates) > 0 && prev_status != "needs_lookup" {
-			if err := s.store.Set_catalog_status(ctx, entry_id, "needs_lookup"); err != nil {
+			if err := s.store.Set_entry_files_status(ctx, entry_id, "needs_lookup"); err != nil {
 				return nil, err
 			}
 		}
@@ -271,7 +281,7 @@ func (s *Server) run_rematch_one(id int64, entry *database.Catalog_entry) (bool,
 		if run_err != nil {
 			return nil, run_err
 		}
-		return s.record_match_outcome(ctx, progress, id, entry.Media_type, entry.Status, entry.Title, applied, candidates)
+		return s.record_match_outcome(ctx, progress, id, entry.Media_type, entry_status(*entry), entry.Title, applied, candidates)
 	})
 	return applied, candidates, err
 }
@@ -452,7 +462,7 @@ func (s *Server) run_reclassify(id int64, entry *database.Catalog_entry, as_seri
 		if run_err != nil {
 			return nil, run_err
 		}
-		return s.record_match_outcome(ctx, progress, result_id, media_type, entry.Status, entry.Title, applied, candidates)
+		return s.record_match_outcome(ctx, progress, result_id, media_type, entry_status(*entry), entry.Title, applied, candidates)
 	})
 	return result_id, applied, candidates, err
 }

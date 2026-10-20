@@ -82,19 +82,19 @@ func add_series(t *testing.T, store *database.Store) (int64, int64, int64) {
 	t.Helper()
 	ctx := context.Background()
 	entry_id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "series", Title: "Breaking Bad", Status: "needs_lookup",
+		Media_type: "series", Title: "Breaking Bad",
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
 	}
 	ep1_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1, Status: "needs_lookup",
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 1,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode 1: %v", err)
 	}
 	ep2_id, err := store.Upsert_episode(ctx, database.Episode{
-		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 2, Status: "needs_lookup",
+		Catalog_entry_id: entry_id, Season_number: 1, Episode_number: 2,
 	})
 	if err != nil {
 		t.Fatalf("upsert episode 2: %v", err)
@@ -109,6 +109,23 @@ func add_series(t *testing.T, store *database.Store) (int64, int64, int64) {
 		}
 	}
 	return entry_id, ep1_id, ep2_id
+}
+
+// episode_matched reports whether any file of an episode is marked matched,
+// which is how an episode's match state is derived now that the episode itself
+// stores none.
+func episode_matched(t *testing.T, store *database.Store, episode_id int64) bool {
+	t.Helper()
+	versions, err := store.List_versions_for_episode(context.Background(), episode_id)
+	if err != nil {
+		t.Fatalf("list episode versions: %v", err)
+	}
+	for _, version := range versions {
+		if version.Status == "matched" {
+			return true
+		}
+	}
+	return false
 }
 
 func Test_run_matches_and_enriches_series(t *testing.T) {
@@ -128,7 +145,7 @@ func Test_run_matches_and_enriches_series(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "matched" || entry.Title != "Breaking Bad" ||
+	if !entry.Matched || entry.Title != "Breaking Bad" ||
 		entry.Imdb_id != "tt0903747" || entry.Media_type != "series" {
 		t.Fatalf("entry = %+v, want matched series", entry)
 	}
@@ -153,11 +170,11 @@ func Test_run_matches_and_enriches_series(t *testing.T) {
 		by_number[episode.Episode_number] = episode
 	}
 	ep1 := by_number[1]
-	if ep1.Status != "matched" || ep1.Title != "Pilot" || ep1.Airdate != "2008" {
-		t.Errorf("episode 1 = %+v, want matched pilot airdate 2008", ep1)
+	if !episode_matched(t, store, ep1.Id) || ep1.Title != "Pilot" {
+		t.Errorf("episode 1 = %+v, want matched pilot", ep1)
 	}
 	ep2 := by_number[2]
-	if ep2.Status != "matched" || ep2.Title != "Cat's in the Bag..." {
+	if !episode_matched(t, store, ep2.Id) || ep2.Title != "Cat's in the Bag..." {
 		t.Errorf("episode 2 = %+v, want matched with offline title", ep2)
 	}
 }
@@ -198,10 +215,10 @@ func Test_set_datasets_after_construction_enriches(t *testing.T) {
 	for _, episode := range episodes {
 		by_number[episode.Episode_number] = episode
 	}
-	if ep1 := by_number[1]; ep1.Status != "matched" || ep1.Title != "Pilot" || ep1.Airdate != "2008" {
-		t.Errorf("episode 1 = %+v, want matched pilot airdate 2008", ep1)
+	if ep1 := by_number[1]; !episode_matched(t, store, ep1.Id) || ep1.Title != "Pilot" {
+		t.Errorf("episode 1 = %+v, want matched pilot", ep1)
 	}
-	if ep2 := by_number[2]; ep2.Status != "matched" || ep2.Title != "Cat's in the Bag..." {
+	if ep2 := by_number[2]; !episode_matched(t, store, ep2.Id) || ep2.Title != "Cat's in the Bag..." {
 		t.Errorf("episode 2 = %+v, want matched with offline title", ep2)
 	}
 }
@@ -212,16 +229,15 @@ func Test_run_force_rematch_drops_unmatchable_match(t *testing.T) {
 
 	id, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
 		Media_type: "movie", Title: "The Matrix Reloaded", Release_year: 2003,
-		Overview: "stale overview", Runtime_minutes: 138, Rating: 7.1,
-		Vote_count: 5000, Imdb_id: "tt0234215", Tmdb_id: 604,
-		Poster_path: "/reloaded.jpg", Status: "matched", Genres: []string{"Action"},
+		Imdb_id: "tt0234215", Tmdb_id: 604,
+		Poster_path: "/reloaded.jpg", Genres: []string{"Action"},
 	})
 	if err != nil {
 		t.Fatalf("upsert entry: %v", err)
 	}
 	if _, err := store.Save_version(ctx, database.Version{
 		Catalog_entry_id: id, File_path: "/media/The.Matrix.1999.mkv",
-		Size_bytes: 9000, Hash: "hash-1",
+		Size_bytes: 9000, Hash: "hash-1", Status: "matched",
 	}); err != nil {
 		t.Fatalf("save version: %v", err)
 	}
@@ -240,14 +256,13 @@ func Test_run_force_rematch_drops_unmatchable_match(t *testing.T) {
 	if err != nil || entry == nil {
 		t.Fatalf("get entry: %v", err)
 	}
-	if entry.Status != "needs_lookup" {
-		t.Errorf("status = %q, want needs_lookup", entry.Status)
+	if entry.Matched {
+		t.Errorf("entry matched = true, want needs_lookup")
 	}
 	if entry.Title != "The Matrix" || entry.Release_year != 1999 {
 		t.Errorf("title/year = %q/%d, want the file-derived The Matrix/1999", entry.Title, entry.Release_year)
 	}
-	if entry.Imdb_id != "" || entry.Tmdb_id != 0 || entry.Overview != "" ||
-		entry.Poster_path != "" || entry.Rating != 0 || entry.Vote_count != 0 {
+	if entry.Imdb_id != "" || entry.Tmdb_id != 0 || entry.Poster_path != "" {
 		t.Errorf("stale match metadata survived: %+v", entry)
 	}
 	if len(entry.Genres) != 0 {
@@ -285,7 +300,7 @@ func Test_run_force_rematch_rematches_series(t *testing.T) {
 	if err != nil || fresh == nil {
 		t.Fatalf("get fresh entry: %v", err)
 	}
-	if fresh.Title != "Breaking Bad" || fresh.Imdb_id != "tt0903747" || fresh.Status != "matched" {
+	if fresh.Title != "Breaking Bad" || fresh.Imdb_id != "tt0903747" || !fresh.Matched {
 		t.Errorf("entry = %+v, want re-matched Breaking Bad", fresh)
 	}
 }
@@ -294,7 +309,7 @@ func Test_run_leaves_versionless_entries_unmatched(t *testing.T) {
 	service, store := new_test_service(t)
 	ctx := context.Background()
 	if _, err := store.Upsert_catalog_entry(ctx, database.Catalog_entry{
-		Media_type: "movie", Title: "No Files Yet", Status: "needs_lookup",
+		Media_type: "movie", Title: "No Files Yet",
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}

@@ -112,16 +112,29 @@ func (s *Store) Upsert_library(ctx context.Context, name, path string, enabled b
 		name, path, bool_to_int(enabled))
 }
 
-// Delete_library removes name from the library table along with every version
-// row that belonged to it. Catalog entries are global, so an entry is only
-// dropped when this was the last library holding any version of it; entries
-// still referenced by another library survive untouched, as do all of their
-// episodes and genres (those cascade only when the entry itself goes away).
+// Delete_library removes name from the library table along with every media
+// file that belonged to it. Catalog entries are global, so an entry is only
+// dropped when nothing backs it any more — neither a media file nor an episode
+// pointing at it; entries still referenced by another library survive untouched,
+// as do all of their episodes and genres (those cascade only when the entry
+// itself goes away).
 func (s *Store) Delete_library(ctx context.Context, name string) error {
-	return s.exec_tx(ctx, `
-		DELETE FROM version WHERE library_id IN (SELECT id FROM library WHERE name = ?);
-		DELETE FROM catalog_entry WHERE id NOT IN (SELECT DISTINCT catalog_entry_id FROM version);
-		DELETE FROM library WHERE name = ?`, name, name)
+	return s.with_tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM media_file WHERE library_id IN (SELECT id FROM library WHERE name = ?)", name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM catalog_entry
+			WHERE NOT EXISTS (
+				SELECT 1 FROM media_file mf
+				WHERE mf.catalog_entry_id = catalog_entry.id
+				   OR mf.episode_id IN (SELECT id FROM episode WHERE catalog_entry_id = catalog_entry.id))`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "DELETE FROM library WHERE name = ?", name)
+		return err
+	})
 }
 
 // Reset_catalogs drops the derived catalog belonging to the given libraries so
@@ -156,7 +169,7 @@ func reset_library_catalog_tx(ctx context.Context, tx *sql.Tx, library_id int64)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM version WHERE library_id = ?", library_id); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM media_file WHERE library_id = ?", library_id); err != nil {
 		return err
 	}
 	for _, entry_id := range entries {
@@ -164,14 +177,14 @@ func reset_library_catalog_tx(ctx context.Context, tx *sql.Tx, library_id int64)
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM episode
 			WHERE catalog_entry_id = ?
-			  AND id NOT IN (SELECT episode_id FROM version WHERE episode_id IS NOT NULL)`, entry_id); err != nil {
+			  AND id NOT IN (SELECT episode_id FROM media_file WHERE episode_id IS NOT NULL)`, entry_id); err != nil {
 			return err
 		}
 		// The entry itself, once nothing references it.
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM catalog_entry
 			WHERE id = ?
-			  AND id NOT IN (SELECT catalog_entry_id FROM version WHERE catalog_entry_id IS NOT NULL)
+			  AND id NOT IN (SELECT catalog_entry_id FROM media_file WHERE catalog_entry_id IS NOT NULL)
 			  AND id NOT IN (SELECT catalog_entry_id FROM episode)`, entry_id); err != nil {
 			return err
 		}
@@ -185,7 +198,7 @@ func reset_library_catalog_tx(ctx context.Context, tx *sql.Tx, library_id int64)
 func entry_ids_backed_by_library_tx(ctx context.Context, tx *sql.Tx, library_id int64) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT DISTINCT COALESCE(v.catalog_entry_id, ep.catalog_entry_id)
-		FROM version v
+		FROM media_file v
 		LEFT JOIN episode ep ON ep.id = v.episode_id
 		WHERE v.library_id = ? AND COALESCE(v.catalog_entry_id, ep.catalog_entry_id) IS NOT NULL`, library_id)
 	if err != nil {
@@ -215,7 +228,7 @@ func (s *Store) Touch_library(ctx context.Context, name, last_scan string) error
 // fresher row is dropped. It returns the number of rows rewritten.
 func (s *Store) Normalize_library_versions(ctx context.Context, library Library) (int, error) {
 	rows, err := s.db.db.QueryContext(ctx,
-		"SELECT id, file_path FROM version WHERE library_id IS NULL")
+		"SELECT id, file_path FROM media_file WHERE library_id IS NULL")
 	if err != nil {
 		return 0, err
 	}
@@ -246,10 +259,10 @@ func (s *Store) Normalize_library_versions(ctx context.Context, library Library)
 			}
 			var replaced int64
 			dup := tx.QueryRowContext(ctx, `
-				SELECT id FROM version WHERE library_id = ? AND file_path = ? LIMIT 1`,
+				SELECT id FROM media_file WHERE library_id = ? AND file_path = ? LIMIT 1`,
 				library.Id, relative).Scan(&replaced)
 			if dup == nil {
-				if _, err := tx.ExecContext(ctx, "DELETE FROM version WHERE id = ?", candidate.id); err != nil {
+				if _, err := tx.ExecContext(ctx, "DELETE FROM media_file WHERE id = ?", candidate.id); err != nil {
 					return err
 				}
 				rewritten++
@@ -259,7 +272,7 @@ func (s *Store) Normalize_library_versions(ctx context.Context, library Library)
 				return dup
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE version SET library_id = ?, file_path = ?
+				UPDATE media_file SET library_id = ?, file_path = ?
 				WHERE id = ? AND library_id IS NULL`,
 				library.Id, relative, candidate.id); err != nil {
 				return err
